@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { URL } from "node:url";
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+
+const args = process.argv.slice(2);
+
+if (args.includes("--version") || args.includes("-v")) {
+  console.log(pkg.version);
+  process.exit(0);
+}
+
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`khazai-ai v${pkg.version} - AI coding agent
+
+Usage:
+  khazai-ai              Interactive REPL
+  khazai-ai "prompt"     One-shot mode
+  khazai-ai --model claude
+`);
+  process.exit(0);
+}
+
+const modelIdx = args.indexOf("--model");
+const model = modelIdx >= 0 ? args[modelIdx + 1] : undefined;
+
+const inline = args.filter(a => !a.startsWith("--")).join(" ");
+if (inline) {
+  const { Agent } = await import("../app/agent.js");
+  const { Registry } = await import("../app/registry.js");
+  const { readTool, writeTool, editTool } = await import("../tools/file.js");
+  const { globTool, grepTool } = await import("../tools/search.js");
+  const { bashTool } = await import("../tools/shell.js");
+  const { webTool } = await import("../tools/web.js");
+  const { questionTool } = await import("../tools/question.js");
+  const { taskTool } = await import("../tools/task.js");
+
+  const r = new Registry();
+  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, webTool, questionTool, taskTool]) r.register(t);
+  const agent = new Agent(r, { model });
+
+  for await (const ev of agent.loop(inline)) {
+    if (ev.type === "answer") console.log(ev.content);
+    else if (ev.type === "tool-call") console.log(`[${ev.tool}] ${JSON.stringify(ev.args)}`);
+    else if (ev.type === "error") console.error(ev.content);
+  }
+  process.exit(0);
+}
+
+const { startUI } = await import("../ui/app.js");
+await startUI();
