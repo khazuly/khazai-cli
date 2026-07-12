@@ -17,6 +17,8 @@ function fixCommand(cmd) {
   return fixed;
 }
 
+const SERVER_CMDS = /^node\s+(?!.*--check)(?!.*-e\s)|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
+
 export const bashTool = {
   name: "bash",
   description: "Execute a shell command (timeout in seconds). Retries up to 2 times on timeout with doubled timeout.",
@@ -24,6 +26,12 @@ export const bashTool = {
   async execute({ command, timeout = 60, workdir }) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
     const fixed = fixCommand(command);
+
+    if (SERVER_CMDS.test(fixed)) {
+      return `BLOCKED: Cannot start a long-running server. It will hang forever.\nInstead, write all files and tell the user to run it themselves.\n\nTo run: cd ${workdir || "."} && ${fixed.split("&&")[0].trim()}`;
+    }
+
+    const isLongRunning = /node\s+server|python.*http\.server|python.*SimpleHTTP|npm\s+start|yarn\s+start|pm2\s+|forever\s+|nodemon\s+/i.test(fixed);
     let lastErr = null;
     let attempts = 0;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -36,6 +44,7 @@ export const bashTool = {
       } catch (err) {
         lastErr = err;
         if (!err.killed) break;
+        if (isLongRunning) break;
       }
     }
     const stderr = lastErr.stderr?.trim() ?? "";

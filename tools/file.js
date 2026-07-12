@@ -222,7 +222,10 @@ export const writeTool = {
   async execute({ path, content }) {
     requireWorkspace(path);
     const abs = resolve(process.cwd(), String(path));
-    const next = String(content);
+    let next = String(content);
+    if (!next.includes("\n") && next.includes("\\n")) {
+      next = next.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+    }
     const existing = existsSync(abs) ? readFileSync(abs, "utf-8") : null;
     if (existing === next) return `No changes to ${path}`;
     mkdirSync(dirname(abs), { recursive: true });

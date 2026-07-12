@@ -2,6 +2,10 @@ import { countTokens } from "../lib/tokens.js";
 import { loadConfig, findProjectInstructions } from "../config/index.js";
 import { chat, resetSession } from "../lib/llm.js";
 
+import { execAsync } from "../lib/exec-async.js";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -32,40 +36,57 @@ export class Agent {
     this._aborted = false;
     this._plan = null;
     this._planIndex = 0;
+    this._lastToolIsRead = false;
+    this._depsInstalled = false;
   }
 
   abort() { this._aborted = true; }
   setModel(model) { this._model = model; }
 
+  _cleanAnswer(text) {
+    let clean = text
+      .replace(/```\w*\n[\s\S]*?```/g, (m) => {
+        const code = m.replace(/```\w*\n?/g, "").trim();
+        return code;
+      })
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return clean;
+  }
+
   _buildSystem() {
     const parts = [
       this._config.system,
       "",
-      "You are a coding agent with file/search/shell/web tools. Respond in the user's language.",
+      "You are a coding agent with file/search/shell/web tools.",
+      "",
+      "TOOL CALL FORMAT:",
+      "- Respond with EXACTLY one JSON object: {\"tool\":\"name\",\"args\":{...}}",
+      "- No text before or after the JSON. No markdown. No explanation.",
       "",
       "RULES:",
-      "- Call tools one at a time: {\"tool\":\"name\",\"args\":{...}} — no extra text.",
-      "- Never narrate steps. Just call the next tool immediately.",
-      "- When user asks to create/write files, do it immediately. No confirmation needed.",
-      "- When user asks to delete, list files first with ls/glob, then delete specific files.",
+      "- Create/write files immediately when asked. No confirmation needed.",
       "- Never ask 'Do you want me to...' — just do it.",
-      "- Keep final answers short. Use **bold** and `code` sparingly.",
-      "- If edit fails (syntax/text not found), re-read the file and retry with write.",
-      "- If a command fails, read the error carefully. Fix the issue (typo, missing package, wrong path) before retrying. Never repeat the exact same broken command.",
-      "- READ ONCE then ACT. Never read the same file twice in a row. After reading, immediately edit/write/bash.",
-      "- Do NOT use bash to read files (cat/tail/head). Use the read tool instead.",
-      "- Do NOT list files or check contents repeatedly. Read once, then do the work.",
+      "- Keep final answers concise.",
+      "- If edit fails, re-read the file and retry with write.",
+      "- If a bash command times out (result contains 'Timeout'), do NOT retry it. Tell the user to run it manually.",
+      "- Never repeat the exact same broken command.",
+      "- READ ONCE then ACT. After reading a file, immediately edit/write/bash.",
+      "- Do NOT use bash to read files (cat/tail/head). Use the read tool.",
+      "- To check if a directory exists (like node_modules), use: {\"tool\":\"bash\",\"args\":{\"command\":\"ls -d node_modules 2>/dev/null && echo EXISTS || echo MISSING\"}}. Do NOT use glob for directories.",
+      "- When all files are written and deps installed, give the final answer.",
+      "- Keep final answers SHORT. Just say what was done and how to run it. No extra formatting.",
       "",
-      "HOW TO RUN CODE:",
-      "- When user asks to run/test code (apapun bahasanya: run, jalankan, tes, coba run, coba jalankan, coba tes, etc.), DETECT project type and run it.",
-      "- Check files first (glob/ls), then:",
-      "  1. package.json exists → read it, run scripts.dev if exists, else scripts.start, else node <main>, else node index.js",
-      "  2. Single .html → python3 -m http.server",
-      "  3. Single .js → node filename.js",
-      "  4. Single .py → python3 filename.py",
-      "  5. mix.exs → mix run",
-      "  6. Makefile → make run or make",
-      "- NEVER ask 'which file do you want to run'. Just detect and run it.",
+      "WHEN USER ASKS TO RUN CODE:",
+      "- NEVER start long-lived servers (node server.js, npm start, python3 -m http.server). They block forever.",
+      "- Instead, write all files and tell the user how to run it themselves.",
+      "",
+      "DEPENDENCY MANAGEMENT:",
+      "- Before npm install, check if node_modules/ exists using bash: ls -d node_modules.",
+      "- If node_modules exists and package.json has not changed, skip npm install.",
+      "- Only run npm install when package.json is new or changed.",
+      "",
+      "- If command times out: run 'ps aux | grep <process>' to find background processes, kill them with 'kill -9 PID', then retry.",
       `- Workspace: ${this._workspace}. Stay inside.`,
       "",
     ];
@@ -78,24 +99,49 @@ export class Agent {
     return parts.join("\n");
   }
 
+  _parseToolJson(parsed) {
+    if (typeof parsed?.tool === "string" && parsed.tool.trim() && isObject(parsed.args)) {
+      return { name: parsed.tool, args: parsed.args };
+    }
+    const keys = Object.keys(parsed || {});
+    if (keys.length === 1 && isObject(parsed[keys[0]]) && this._registry.get(keys[0])) {
+      return { name: keys[0], args: parsed[keys[0]] };
+    }
+    return null;
+  }
+
   _extractTool(text) {
     const reply = text.trim();
-    const looksLikeTool = /["']tool["']\s*:/.test(reply);
-    let parsed;
+    const toolNames = this._registry.list().map(t => t.name).join("|");
+
     try {
-      parsed = JSON.parse(reply);
-    } catch {
-      return looksLikeTool
-        ? { tool: null, error: "Tool calls must be one valid JSON object; multiple or malformed JSON objects are not allowed." }
-        : { tool: null, error: null };
+      const parsed = JSON.parse(reply);
+      const tool = this._parseToolJson(parsed);
+      if (tool) return { tool, error: null };
+    } catch {}
+
+    const jsonCandidates = [];
+    const codeBlockRe = /```(?:json|javascript)?\s*\n(\{[\s\S]*?\})\s*\n```/g;
+    let m;
+    while ((m = codeBlockRe.exec(reply)) !== null) jsonCandidates.push(m[1].trim());
+    if (jsonCandidates.length === 0) {
+      const standaloneRe = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+      while ((m = standaloneRe.exec(reply)) !== null) jsonCandidates.push(m[0]);
     }
 
-    if (typeof parsed?.tool !== "string" || !parsed.tool.trim() || !isObject(parsed.args)) {
-      return looksLikeTool
-        ? { tool: null, error: 'A tool response must have the exact shape {"tool":"name","args":{...}}.' }
-        : { tool: null, error: null };
+    for (const candidate of jsonCandidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const tool = this._parseToolJson(parsed);
+        if (tool) return { tool, error: null };
+      } catch { continue; }
     }
-    return { tool: { name: parsed.tool, args: parsed.args }, error: null };
+
+    if (new RegExp(`"${toolNames}"\\s*:`).test(reply)) {
+      return { tool: null, error: "Found tool-like text but could not parse a valid JSON tool call." };
+    }
+
+    return { tool: null, error: null };
   }
 
   _compactMessages() {
@@ -227,14 +273,23 @@ export class Agent {
           yield { type: "plan", items: plan };
           continue;
         }
-        if (/next|let'?s|i'?ll|proceed|going to|calling/i.test(reply)) {
+        const isNarration = /^(?:Next|Let'?s|I'?ll|Going to|Calling|Now I)/i.test(reply);
+        if (isNarration && this._turn < this._config.maxTurns - 1) {
           this._messages.push({
             role: "user",
             content: "Don't narrate what you'll do next. If more work remains, call the next tool directly with a JSON object. If done, give the final answer concisely.",
           });
           continue;
         }
-        yield { type: "answer", content: reply };
+        if (this._lastToolIsRead && this._turn < this._config.maxTurns - 1) {
+          this._messages.push({
+            role: "user",
+            content: "You have the file contents. Do NOT reply with text. Call a tool now — edit or write to make the changes the user requested.",
+          });
+          this._lastToolIsRead = false;
+          continue;
+        }
+        yield { type: "answer", content: this._cleanAnswer(reply) };
         return;
       }
 
@@ -252,6 +307,16 @@ export class Agent {
       if (!t) {
         result = `Unknown tool "${tool.name}". Available: ${this._registry.list().map(x => x.name).join(", ")}`;
       } else {
+        if (tool.name === "bash" && !tool.args.workdir) {
+          tool.args.workdir = this._workspace;
+        }
+        if (tool.name === "write" && tool.args?.path) {
+          const writePath = resolve(this._workspace, String(tool.args.path));
+          if (existsSync(writePath) && !this._lastToolIsRead) {
+            const existing = readFileSync(writePath, "utf-8");
+            this._messages.push({ role: "user", content: `---AUTO-READ: ${tool.args.path}---\n${existing.slice(0, 1500)}` });
+          }
+        }
         try { result = await t.execute(tool.args); }
         catch (err) { result = `Error: ${err.message}`; }
       }
@@ -259,10 +324,24 @@ export class Agent {
         this._lastAnalysis = result.slice(0, 1000);
       }
       yield { type: "tool-result", tool: tool.name, result };
+      this._lastToolIsRead = ["read", "glob", "grep"].includes(tool.name);
+
       if (this._plan && this._plan.length > 0) {
         const failed = result.startsWith("Error") || result.startsWith("Syntax validation") || result.startsWith("Exit: -1");
         yield { type: "plan-update", index: this._planIndex, status: failed ? "failed" : "done" };
         this._planIndex++;
+      }
+
+      if (tool.name === "bash") {
+        const cmd = String(tool.args?.command || "");
+        const isRunCode = /^node\s+[^-]|^python[3]?\s+[^-]|^npm\s+start|^yarn\s+start|^pm2\s|^forever\s|^nodemon\s|^cargo\s+run|^mix\s+run/i.test(cmd);
+        if (isRunCode && (result.includes("Timeout") || result.includes("Terminated") || /Exit:\s*-1/.test(result))) {
+          yield { type: "answer", content: "All files are ready. To start the project, run in your terminal:\n\n```bash\ncd " + this._workspace + "\n" + cmd + "\n```" };
+          return;
+        }
+        if (/^npm\s+install|^yarn\s+install|^pnpm\s+install/i.test(cmd) && !result.startsWith("Error")) {
+          this._depsInstalled = true;
+        }
       }
 
       if (["edit", "write"].includes(tool.name) && (result.startsWith("Syntax validation failed") || result.startsWith("Error: text not found"))) {
@@ -287,14 +366,39 @@ export class Agent {
         const cmd = verifyCmds[ext];
         if (cmd) verifyExtra = `\n\nVerify the fix:\n  ${cmd}`;
       }
-      this._messages.push({ role: "user", content: `---TOOL RESULT: ${tool.name}---\n${result.slice(0, 1500)}${result.length > 1500 ? "\n...(truncated)" : ""}${verifyExtra}` });
+      let msgContent = `---TOOL RESULT: ${tool.name}---\n${result.slice(0, 1500)}${result.length > 1500 ? "\n...(truncated)" : ""}${verifyExtra}`;
+
+      if (tool.name === "write" && tool.args?.path) {
+        const writtenPath = String(tool.args.path);
+        if (writtenPath.endsWith("package.json") && !result.startsWith("Error") && !result.startsWith("Syntax validation")) {
+          const pkgDir = resolve(this._workspace, writtenPath.replace(/package\.json$/, ""));
+          const nodeModulesPath = resolve(pkgDir, "node_modules");
+          if (!existsSync(nodeModulesPath)) {
+            yield { type: "tool-call", tool: "bash", args: { command: "npm install", workdir: pkgDir } };
+            try {
+              const installResult = await execAsync("npm install", { cwd: pkgDir, timeoutMs: 60000 });
+              this._depsInstalled = true;
+              msgContent += "\n\n[auto] Dependencies installed automatically.";
+            } catch (e) {
+              msgContent += "\n\n[auto] npm install failed — run it manually.";
+            }
+          } else {
+            this._depsInstalled = true;
+          }
+        }
+      }
+
+      if (this._depsInstalled && tool.name !== "bash") {
+        msgContent += "\n\nAll dependencies are installed. Give the final answer now. Do NOT run any more commands.";
+      }
+      this._messages.push({ role: "user", content: msgContent });
 
       const lastTwo = this._messages.slice(-2).map(m => m.content);
       const isRead = (n) => n === "read" || n === "glob" || n === "grep";
       if (isRead(tool.name) && lastTwo.length === 2 && /^---TOOL RESULT: (read|glob|grep)---/.test(lastTwo[1])) {
         this._messages.push({
           role: "user",
-          content: "You already have the file contents. Stop reading and DO the work now — edit or write the file immediately. Do NOT read any more files.",
+          content: "You already have the file contents. Do NOT respond with text. Call the next tool immediately — edit or write the file. If the user asked for changes, apply them now.",
         });
       }
     }
