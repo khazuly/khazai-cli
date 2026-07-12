@@ -1,12 +1,32 @@
 {
-  "name": "bubble-wrap-landing",
-  "version": "1.0.0",
-  "description": "Simple bubble wrap landing page",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
+  "name": "khazai-ai",
+  "version": "0.3.0",
+  "description": "AI coding agent — file ops, search, shell, sub-agents",
+  "type": "module",
+  "bin": {
+    "khazai-ai": "./bin/khazai-ai"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "llm"
+  ],
+  "files": [
+    "bin",
+    "app",
+    "tools",
+    "ui",
+    "config",
+    "lib"
+  ],
   "dependencies": {
-    "express": "^4.18.2"
+    "chalk": "^5.3.0",
+    "ink": "^5.2.1",
+    "react": "^18.3.1"
   }
 }
