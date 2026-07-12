@@ -231,7 +231,7 @@ export class Agent {
             suppressStartIdx = streamBuf.length - 1;
           } else if (/^\s*[{\[]/.test(acc) && streamBuf.length <= 3) {
             toolSuppressed = true;
-            suppressStartIdx = 0;
+            suppressStartIdx = streamBuf.length;
           } else {
             yield { type: "stream", token };
           }
@@ -246,6 +246,8 @@ export class Agent {
           this._streamBuffer = "";
           tokenQueue.length = 0; tokenResolve = null;
           streamBuf.length = 0;
+          toolSuppressed = false;
+          suppressStartIdx = 0;
           reply = await chat(ctx, { model: this._model, onToken });
         } catch (retryErr) {
           yield { type: "error", content: `LLM error: ${retryErr.message}` };
