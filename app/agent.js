@@ -229,9 +229,6 @@ export class Agent {
           if (hasToolJson || hasFnXml) {
             toolSuppressed = true;
             suppressStartIdx = streamBuf.length - 1;
-          } else if (/^\s*[{\[]/.test(acc) && streamBuf.length <= 3) {
-            toolSuppressed = true;
-            suppressStartIdx = streamBuf.length;
           } else {
             yield { type: "stream", token };
           }
