@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bubble Wrap - Pop & Relax</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .bubble {
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .bubble:hover {
+      transform: scale(1.1);
+    }
+    .bubble.popped {
+      background-color: #e5e7eb !important;
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+    }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+    .bounce-in {
+      animation: bounce 0.6s ease-in-out;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+  <div class="container mx-auto px-4 py-12">
+    <!-- Header -->
+    <div class="text-center mb-12">
+      <h1 class="text-5xl font-bold text-indigo-600 mb-4">🫧 Bubble Wrap</h1>
+      <p class="text-xl text-gray-600">Click the bubbles to pop them. Simple, satisfying, and relaxing!</p>
+    </div>
+
+    <!-- Stats -->
+    <div class="flex justify-center gap-8 mb-12">
+      <div class="bg-white rounded-lg shadow-md p-6 text-center">
+        <p class="text-gray-600 text-sm font-semibold">BUBBLES POPPED</p>
+        <p class="text-4xl font-bold text-indigo-600" id="popCount">0</p>
+      </div>
+      <div class="bg-white rounded-lg shadow-md p-6 text-center">
+        <p class="text-gray-600 text-sm font-semibold">REMAINING</p>
+        <p class="text-4xl font-bold text-blue-600" id="remainingCount">100</p>
+      </div>
+    </div>
+
+    <!-- Bubble Grid -->
+    <div class="bg-white rounded-xl shadow-lg p-8 mb-8" id="bubbleContainer">
+      <div class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-4" id="bubbleGrid">
+        <!-- Bubbles will be generated here -->
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex justify-center gap-4">
+      <button onclick="resetGame()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-lg shadow-md transition duration-200 transform hover:scale-105">
+        🔄 Reset Game
+      </button>
+      <button onclick="popAll()" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-lg shadow-md transition duration-200 transform hover:scale-105">
+        💥 Pop All
+      </button>
+    </div>
+
+    <!-- Footer -->
+    <div class="text-center mt-12 text-gray-500">
+      <p>Made with 💙 and Tailwind CSS</p>
+    </div>
+  </div>
+
+  <script>
+    let popCount = 0;
+    let bubbles = [];
+
+    function createBubbles() {
+      const grid = document.getElementById('bubbleGrid');
+      grid.innerHTML = '';
+      bubbles = [];
+
+      for (let i = 0; i < 100; i++) {
+        const bubble = document.createElement('div');
+        const colors = [
+          'bg-red-400',
+          'bg-blue-400',
+          'bg-yellow-400',
+          'bg-green-400',
+          'bg-purple-400',
+          'bg-pink-400',
+          'bg-orange-400',
+          'bg-cyan-400'
+        ];
+        const randomColor = colors[Math.floor(Math.random() * colors.length)];
+
+        bubble.className = `bubble w-12 h-12 rounded-full ${randomColor} shadow-lg`;
+        bubble.dataset.index = i;
+        bubble.dataset.popped = 'false';
+
+        bubble.addEventListener('click', () => popBubble(bubble));
+
+        grid.appendChild(bubble);
+        bubbles.push(bubble);
+      }
+    }
+
+    function popBubble(bubble) {
+      if (bubble.dataset.popped === 'true') return;
+
+      bubble.dataset.popped = 'true';
+      bubble.classList.add('popped');
+      bubble.classList.add('bounce-in');
+
+      popCount++;
+      updateStats();
+
+      // Pop sound effect (visual feedback)
+      bubble.style.transform = 'scale(0.8)';
+    }
+
+    function updateStats() {
+      document.getElementById('popCount').textContent = popCount;
+      document.getElementById('remainingCount').textContent = 100 - popCount;
+
+      if (popCount === 100) {
+        setTimeout(() => {
+          alert('🎉 You popped all the bubbles! Refresh to play again.');
+        }, 300);
+      }
+    }
+
+    function resetGame() {
+      popCount = 0;
+      createBubbles();
+      updateStats();
+    }
+
+    function popAll() {
+      bubbles.forEach(bubble => popBubble(bubble));
+    }
+
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', () => {
+      createBubbles();
+      updateStats();
+    });
+  </script>
+</body>
+</html>

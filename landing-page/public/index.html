@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bubble Wrap - Pop & Relax</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .bubble {
+      transition: all 0.2s ease;
+      cursor: pointer;
+      user-select: none;
+    }
+    .bubble:hover {
+      transform: scale(1.1);
+    }
+    .bubble.popped {
+      opacity: 0;
+      transform: scale(0.5);
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-20px); }
+    }
+    .float {
+      animation: float 3s ease-in-out infinite;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-purple-400 via-pink-300 to-blue-300 min-h-screen">
+  <div class="flex flex-col items-center justify-center min-h-screen p-4">
+    <!-- Header -->
+    <div class="text-center mb-12 float">
+      <h1 class="text-6xl font-bold text-white mb-4 drop-shadow-lg">🫧 Bubble Wrap</h1>
+      <p class="text-xl text-white drop-shadow-md">Pop bubbles to relax and have fun!</p>
+    </div>
+
+    <!-- Bubble Grid -->
+    <div class="bg-white bg-opacity-20 backdrop-blur-lg rounded-3xl p-8 shadow-2xl max-w-2xl">
+      <div id="bubbleContainer" class="grid grid-cols-5 gap-4 md:grid-cols-6 lg:grid-cols-8">
+        <!-- Bubbles will be generated here -->
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="mt-12 text-center">
+      <p class="text-2xl font-bold text-white drop-shadow-md">Popped: <span id="popCount" class="text-yellow-300">0</span></p>
+      <button onclick="resetGame()" class="mt-4 px-8 py-3 bg-white text-purple-600 font-bold rounded-full hover:bg-yellow-300 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105">
+        Reset
+      </button>
+    </div>
+  </div>
+
+  <script>
+    let popCount = 0;
+    const totalBubbles = 48;
+
+    function createBubbles() {
+      const container = document.getElementById('bubbleContainer');
+      container.innerHTML = '';
+      
+      for (let i = 0; i < totalBubbles; i++) {
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble w-12 h-12 bg-gradient-to-br from-pink-400 to-purple-500 rounded-full shadow-lg border-2 border-white border-opacity-50';
+        bubble.onclick = () => popBubble(bubble);
+        container.appendChild(bubble);
+      }
+    }
+
+    function popBubble(bubble) {
+      if (bubble.classList.contains('popped')) return;
+      
+      bubble.classList.add('popped');
+      popCount++;
+      document.getElementById('popCount').textContent = popCount;
+      
+      // Play pop sound effect (using Web Audio API)
+      playPopSound();
+      
+      // Create pop effect
+      createPopEffect(bubble);
+    }
+
+    function createPopEffect(bubble) {
+      const rect = bubble.getBoundingClientRect();
+      const effect = document.createElement('div');
+      effect.style.position = 'fixed';
+      effect.style.left = rect.left + 'px';
+      effect.style.top = rect.top + 'px';
+      effect.style.width = '50px';
+      effect.style.height = '50px';
+      effect.style.fontSize = '24px';
+      effect.style.pointerEvents = 'none';
+      effect.style.zIndex = '9999';
+      effect.textContent = '✨';
+      document.body.appendChild(effect);
+      
+      setTimeout(() => effect.remove(), 600);
+    }
+
+    function playPopSound() {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(400, audioContext.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(100, audioContext.currentTime + 0.1);
+      
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.1);
+    }
+
+    function resetGame() {
+      popCount = 0;
+      document.getElementById('popCount').textContent = '0';
+      createBubbles();
+    }
+
+    // Initialize bubbles on page load
+    createBubbles();
+  </script>
+</body>
+</html>

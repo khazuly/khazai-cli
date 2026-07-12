@@ -38,6 +38,10 @@ export class Agent {
     this._planIndex = 0;
     this._lastToolIsRead = false;
     this._depsInstalled = false;
+    this._readFiles = new Map();
+    this._autoReadDone = new Set();
+    this._consecutiveWrites = 0;
+    this._consecutiveBash = 0;
   }
 
   abort() { this._aborted = true; }
@@ -307,14 +311,28 @@ export class Agent {
       if (!t) {
         result = `Unknown tool "${tool.name}". Available: ${this._registry.list().map(x => x.name).join(", ")}`;
       } else {
-        if (tool.name === "bash" && !tool.args.workdir) {
+        if (tool.name === "bash") {
           tool.args.workdir = this._workspace;
+        }
+        if (["write", "edit"].includes(tool.name) && tool.args?.path && !tool.args.path.startsWith("/")) {
+          tool.args.path = resolve(this._workspace, tool.args.path);
+        }
+        if (["write", "edit"].includes(tool.name) && tool.args?.path) {
+          tool.args._agentWorkspace = this._workspace;
+        }
+        if (tool.name === "bash" && tool.args?.command && tool.args.workdir) {
+          const cmd = tool.args.command;
+          if (/^npm\s+install\s+\S/.test(cmd) && !cmd.includes("--prefix")) {
+            tool.args.command = cmd.replace(/^npm\s+install\s+/, "npm install --prefix . ");
+          }
         }
         if (tool.name === "write" && tool.args?.path) {
           const writePath = resolve(this._workspace, String(tool.args.path));
-          if (existsSync(writePath) && !this._lastToolIsRead) {
+          const pathKey = String(tool.args.path);
+          if (existsSync(writePath) && !this._lastToolIsRead && !this._autoReadDone.has(pathKey)) {
             const existing = readFileSync(writePath, "utf-8");
             this._messages.push({ role: "user", content: `---AUTO-READ: ${tool.args.path}---\n${existing.slice(0, 1500)}` });
+            this._autoReadDone.add(pathKey);
           }
         }
         try { result = await t.execute(tool.args); }
@@ -326,6 +344,22 @@ export class Agent {
       yield { type: "tool-result", tool: tool.name, result };
       this._lastToolIsRead = ["read", "glob", "grep"].includes(tool.name);
 
+      if (["read", "glob", "grep"].includes(tool.name)) {
+        const filePath = tool.args?.path || tool.args?.pattern || "";
+        const count = (this._readFiles.get(filePath) || 0) + 1;
+        this._readFiles.set(filePath, count);
+        if (count >= 3) {
+          this._messages.push({
+            role: "user",
+            content: `You have read "${filePath}" ${count} times already. Stop reading. You have enough information. Call a tool to ACT now — edit, write, or bash. If you need to modify a file, use write with the full new content.`,
+          });
+          this._readFiles.clear();
+          continue;
+        }
+      } else if (!["read", "glob", "grep"].includes(tool.name)) {
+        this._readFiles.clear();
+      }
+
       if (this._plan && this._plan.length > 0) {
         const failed = result.startsWith("Error") || result.startsWith("Syntax validation") || result.startsWith("Exit: -1");
         yield { type: "plan-update", index: this._planIndex, status: failed ? "failed" : "done" };
@@ -333,6 +367,15 @@ export class Agent {
       }
 
       if (tool.name === "bash") {
+        this._consecutiveBash++;
+        if (this._consecutiveBash >= 3) {
+          this._messages.push({
+            role: "user",
+            content: `STOP running bash commands. You have run ${this._consecutiveBash} in a row. You have enough information. Call the write tool now, or give the final answer. Do NOT run more bash commands.`,
+          });
+          this._consecutiveBash = 0;
+          continue;
+        }
         const cmd = String(tool.args?.command || "");
         const isRunCode = /^node\s+[^-]|^python[3]?\s+[^-]|^npm\s+start|^yarn\s+start|^pm2\s|^forever\s|^nodemon\s|^cargo\s+run|^mix\s+run/i.test(cmd);
         if (isRunCode && (result.includes("Timeout") || result.includes("Terminated") || /Exit:\s*-1/.test(result))) {
@@ -342,6 +385,8 @@ export class Agent {
         if (/^npm\s+install|^yarn\s+install|^pnpm\s+install/i.test(cmd) && !result.startsWith("Error")) {
           this._depsInstalled = true;
         }
+      } else {
+        this._consecutiveBash = 0;
       }
 
       if (["edit", "write"].includes(tool.name) && (result.startsWith("Syntax validation failed") || result.startsWith("Error: text not found"))) {
@@ -371,12 +416,12 @@ export class Agent {
       if (tool.name === "write" && tool.args?.path) {
         const writtenPath = String(tool.args.path);
         if (writtenPath.endsWith("package.json") && !result.startsWith("Error") && !result.startsWith("Syntax validation")) {
-          const pkgDir = resolve(this._workspace, writtenPath.replace(/package\.json$/, ""));
+          const pkgDir = resolve(this._workspace, writtenPath.replace(/\/package\.json$/, "").replace(/^package\.json$/, "."));
           const nodeModulesPath = resolve(pkgDir, "node_modules");
           if (!existsSync(nodeModulesPath)) {
             yield { type: "tool-call", tool: "bash", args: { command: "npm install", workdir: pkgDir } };
             try {
-              const installResult = await execAsync("npm install", { cwd: pkgDir, timeoutMs: 60000 });
+              await execAsync("npm install", { cwd: pkgDir, timeoutMs: 60000 });
               this._depsInstalled = true;
               msgContent += "\n\n[auto] Dependencies installed automatically.";
             } catch (e) {
@@ -388,8 +433,19 @@ export class Agent {
         }
       }
 
-      if (this._depsInstalled && tool.name !== "bash") {
-        msgContent += "\n\nAll dependencies are installed. Give the final answer now. Do NOT run any more commands.";
+      if (tool.name === "write") {
+        this._consecutiveWrites++;
+        if (this._consecutiveWrites >= 3) {
+          const writtenPath = String(tool.args?.path || "the file");
+          this._messages.push({
+            role: "user",
+            content: `You have written ${writtenPath} ${this._consecutiveWrites} times in a row. STOP writing. You are overwriting your own work. Give the final answer now. Do NOT write any more files.`,
+          });
+          yield { type: "answer", content: `Files written to ${this._workspace}. To run: cd ${this._workspace} && node server.js` };
+          return;
+        }
+      } else {
+        this._consecutiveWrites = 0;
       }
       this._messages.push({ role: "user", content: msgContent });
 

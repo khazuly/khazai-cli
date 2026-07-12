@@ -18,6 +18,7 @@ function fixCommand(cmd) {
 }
 
 const SERVER_CMDS = /^node\s+(?!.*--check)(?!.*-e\s)|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
+const WRITE_VIA_BASH = /^cat\s*>|^tee\s+|^echo\s+['"]*>|^printf\s+/i;
 
 export const bashTool = {
   name: "bash",
@@ -27,8 +28,12 @@ export const bashTool = {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
     const fixed = fixCommand(command);
 
-    if (SERVER_CMDS.test(fixed)) {
-      return `BLOCKED: Cannot start a long-running server. It will hang forever.\nInstead, write all files and tell the user to run it themselves.\n\nTo run: cd ${workdir || "."} && ${fixed.split("&&")[0].trim()}`;
+    if (SERVER_CMDS.test(fixed) || /&\s*$/.test(fixed.trim())) {
+      return `BLOCKED: Cannot start a long-running server. It will hang forever.\nInstead, write all files and tell the user to run it themselves.\n\nTo run: cd ${workdir || "."} && ${fixed.replace(/\s*&\s*$/, "")}`;
+    }
+
+    if (WRITE_VIA_BASH.test(fixed)) {
+      return `BLOCKED: Use the write tool to create files, not bash commands like cat/echo/tee. The write tool validates syntax and detects dependencies automatically.`;
     }
 
     const isLongRunning = /node\s+server|python.*http\.server|python.*SimpleHTTP|npm\s+start|yarn\s+start|pm2\s+|forever\s+|nodemon\s+/i.test(fixed);

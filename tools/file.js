@@ -136,10 +136,18 @@ function detectDependencies(path, content) {
   return `\n\n[Dependencies] ${missing.length} missing (file written successfully, install separately):\n${lines.join("\n")}`;
 }
 
-function requireWorkspace(path) {
+function requireWorkspace(path, agentWorkspace) {
+  const abs = resolve(process.cwd(), String(path));
+  if (agentWorkspace) {
+    const wsAbs = resolve(process.cwd(), String(agentWorkspace));
+    const rel = relative(wsAbs, abs);
+    if (rel.startsWith("..")) {
+      throw new Error(`Access denied: ${abs} is outside workspace ${wsAbs}`);
+    }
+    return;
+  }
   const ws = getWorkspace();
   if (!ws.trusted) return;
-  const abs = resolve(process.cwd(), String(path));
   const rel = relative(ws.path, abs);
   if (rel.startsWith("..")) {
     throw new Error(`Access denied: ${abs} is outside workspace ${ws.path}`);
@@ -219,8 +227,8 @@ export const writeTool = {
   name: "write",
   description: "Write content to a file.",
   parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
-  async execute({ path, content }) {
-    requireWorkspace(path);
+  async execute({ path, content, _agentWorkspace }) {
+    requireWorkspace(path, _agentWorkspace);
     const abs = resolve(process.cwd(), String(path));
     let next = String(content);
     if (!next.includes("\n") && next.includes("\\n")) {
@@ -277,8 +285,8 @@ export const editTool = {
   name: "edit",
   description: "Edit a file by replacing text (exact, trimmed, or fuzzy).",
   parameters: { type: "object", properties: { path: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["path", "oldString", "newString"] },
-  async execute({ path, oldString, newString }) {
-    requireWorkspace(path);
+  async execute({ path, oldString, newString, _agentWorkspace }) {
+    requireWorkspace(path, _agentWorkspace);
     const abs = resolve(process.cwd(), String(path));
     if (!existsSync(abs)) return `Error: not found: ${path}`;
     const orig = readFileSync(abs, "utf-8");
