@@ -209,6 +209,7 @@ export class Agent {
 
       const streamBuf = [];
       let toolSuppressed = false;
+      let suppressStartIdx = 0;
       while (reply === undefined && chatErr === undefined) {
         let token;
         if (tokenQueue.length > 0) {
@@ -227,8 +228,10 @@ export class Agent {
           const hasFnXml = /<function_call/i.test(acc);
           if (hasToolJson || hasFnXml) {
             toolSuppressed = true;
+            suppressStartIdx = streamBuf.length - 1;
           } else if (/^\s*[{\[]/.test(acc) && streamBuf.length <= 3) {
             toolSuppressed = true;
+            suppressStartIdx = 0;
           } else {
             yield { type: "stream", token };
           }
@@ -268,7 +271,9 @@ export class Agent {
 
       if (!tool) {
         if (toolSuppressed) {
-          for (const t of streamBuf) yield { type: "stream", token: t };
+          for (let i = suppressStartIdx; i < streamBuf.length; i++) {
+            yield { type: "stream", token: streamBuf[i] };
+          }
         }
         this._messages.push({ role: "assistant", content: reply });
         const plan = extractPlan(reply);
