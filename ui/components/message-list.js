@@ -85,7 +85,7 @@ function answerBlocks(content) {
   return blocks;
 }
 
-function FormattedAnswer({ content }) {
+function FormattedAnswer({ content, compact }) {
   const children = [];
   for (const [blockIndex, block] of answerBlocks(content).entries()) {
     if (block.type === "code") {
@@ -99,6 +99,37 @@ function FormattedAnswer({ content }) {
     });
   }
   return h(Box, { flexDirection: "column", paddingRight: 2, width: "100%" }, ...children);
+}
+
+function ErrorDisplay({ content }) {
+  const lines = (content || "").split("\n");
+  const mainError = lines[0] || "Unknown error";
+  const details = lines.slice(1).join("\n");
+
+  return h(Box, {
+    flexDirection: "column",
+    borderStyle: "round",
+    borderColor: "red",
+    paddingLeft: 1,
+    paddingRight: 1,
+    marginTop: 1,
+    marginBottom: 1,
+  },
+    h(Text, { color: "red", bold: true }, "✗ ", mainError),
+    details ? h(Text, { dimColor: true }, details) : null
+  );
+}
+
+function ToolResultDisplay({ message }) {
+  const content = message.content || "";
+  const lines = content.split("\n");
+  const exitMatch = /^Exit:\s*(-?\d+)/.exec(lines[0]);
+  const exitCode = exitMatch ? parseInt(exitMatch[1]) : 0;
+  const isSuccess = exitCode === 0;
+
+  return h(Box, { marginLeft: 3 },
+    h(Text, { dimColor: true }, truncateResult(content))
+  );
 }
 
 export function MessageList({ messages, previousType = null }) {
@@ -116,13 +147,11 @@ export function MessageList({ messages, previousType = null }) {
         return h(Box, { key: m.id, marginLeft: 2 }, h(Thinking));
       case "tool":
         return h(Box, { key: m.id, marginLeft: 2, flexDirection: "column" },
-          h(ToolCall, { tool: m.tool, args: m.args, done: m.done }),
+          h(ToolCall, { tool: m.tool, args: m.args, done: m.done, duration: m.duration, resultSize: m.resultSize }),
           m.done && m.content
             ? hasCodePreview(m)
               ? h(Box, { marginLeft: 3, marginTop: 1 }, h(CodePreview, { tool: m.tool, args: m.args }))
-              : h(Box, { marginLeft: 3 },
-                  h(Text, { dimColor: true }, truncateResult(m.content))
-                )
+              : h(ToolResultDisplay, { message: m })
             : null
         );
       case "answer":
@@ -133,12 +162,20 @@ export function MessageList({ messages, previousType = null }) {
           marginTop: (index === 0 ? previousType : messages[index - 1]?.type) === "tool" ? 1 : 0,
           marginBottom: 1,
         },
-          h(FormattedAnswer, { content: m.content })
+          h(FormattedAnswer, { content: m.content, compact: m.compact })
+        );
+      case "streaming":
+        return h(Box, {
+          key: m.id,
+          marginLeft: 1,
+          marginRight: 1,
+          marginTop: previousType === "tool" ? 1 : 0,
+        },
+          h(FormattedAnswer, { content: m.content }),
+          h(Text, { color: "gray" }, "...")
         );
       case "error":
-        return h(Box, { key: m.id, marginLeft: 2, marginBottom: 1 },
-          h(Text, { color: "red" }, "✗ ", m.content)
-        );
+        return h(ErrorDisplay, { key: m.id, content: m.content });
       default:
         return null;
     }

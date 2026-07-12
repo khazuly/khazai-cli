@@ -51,6 +51,21 @@ export class Agent {
       "- Never ask 'Do you want me to...' — just do it.",
       "- Keep final answers short. Use **bold** and `code` sparingly.",
       "- If edit fails (syntax/text not found), re-read the file and retry with write.",
+      "- If a command fails, read the error carefully. Fix the issue (typo, missing package, wrong path) before retrying. Never repeat the exact same broken command.",
+      "- READ ONCE then ACT. Never read the same file twice in a row. After reading, immediately edit/write/bash.",
+      "- Do NOT use bash to read files (cat/tail/head). Use the read tool instead.",
+      "- Do NOT list files or check contents repeatedly. Read once, then do the work.",
+      "",
+      "HOW TO RUN CODE:",
+      "- When user asks to run/test code (apapun bahasanya: run, jalankan, tes, coba run, coba jalankan, coba tes, etc.), DETECT project type and run it.",
+      "- Check files first (glob/ls), then:",
+      "  1. package.json exists → read it, run scripts.dev if exists, else scripts.start, else node <main>, else node index.js",
+      "  2. Single .html → python3 -m http.server",
+      "  3. Single .js → node filename.js",
+      "  4. Single .py → python3 filename.py",
+      "  5. mix.exs → mix run",
+      "  6. Makefile → make run or make",
+      "- NEVER ask 'which file do you want to run'. Just detect and run it.",
       `- Workspace: ${this._workspace}. Stay inside.`,
       "",
     ];
@@ -129,11 +144,56 @@ export class Agent {
       this._compactMessages();
       const ctx = this._buildContext();
       let reply;
-      try { reply = await chat(ctx, { model: this._model }); }
-      catch (err) {
+      let chatErr;
+
+      const tokenQueue = [];
+      let tokenResolve = null;
+      const onToken = (token) => {
+        if (tokenResolve) { const r = tokenResolve; tokenResolve = null; r(token); }
+        else tokenQueue.push(token);
+      };
+
+      const chatDone = chat(ctx, { model: this._model, onToken }).then(r => { reply = r; }).catch(e => { chatErr = e; });
+
+      const waitForToken = () => new Promise(r => { tokenResolve = r; });
+
+      const streamBuf = [];
+      let toolSuppressed = false;
+      while (reply === undefined && chatErr === undefined) {
+        let token;
+        if (tokenQueue.length > 0) {
+          token = tokenQueue.shift();
+        } else {
+          token = await Promise.race([
+            waitForToken(),
+            chatDone.then(() => undefined),
+          ]);
+        }
+        if (token === undefined) continue;
+        streamBuf.push(token);
+        if (!toolSuppressed) {
+          const acc = streamBuf.join("");
+          const hasToolJson = /"tool"\s*:/i.test(acc) && /"args"\s*:/i.test(acc);
+          const hasFnXml = /<function_call/i.test(acc);
+          if (hasToolJson || hasFnXml) {
+            toolSuppressed = true;
+          } else if (/^\s*[{\[]/.test(acc) && streamBuf.length <= 3) {
+            toolSuppressed = true;
+          } else {
+            yield { type: "stream", token };
+          }
+        }
+      }
+      while (tokenQueue.length > 0) streamBuf.push(tokenQueue.shift());
+      await chatDone.catch(() => {});
+
+      if (chatErr) {
         try {
           await resetSession();
-          reply = await chat(ctx, { model: this._model });
+          this._streamBuffer = "";
+          tokenQueue.length = 0; tokenResolve = null;
+          streamBuf.length = 0;
+          reply = await chat(ctx, { model: this._model, onToken });
         } catch (retryErr) {
           yield { type: "error", content: `LLM error: ${retryErr.message}` };
           return;
@@ -157,6 +217,9 @@ export class Agent {
       }
 
       if (!tool) {
+        if (toolSuppressed) {
+          for (const t of streamBuf) yield { type: "stream", token: t };
+        }
         this._messages.push({ role: "assistant", content: reply });
         const plan = extractPlan(reply);
         if (plan.length > 0) {
@@ -225,6 +288,15 @@ export class Agent {
         if (cmd) verifyExtra = `\n\nVerify the fix:\n  ${cmd}`;
       }
       this._messages.push({ role: "user", content: `---TOOL RESULT: ${tool.name}---\n${result.slice(0, 1500)}${result.length > 1500 ? "\n...(truncated)" : ""}${verifyExtra}` });
+
+      const lastTwo = this._messages.slice(-2).map(m => m.content);
+      const isRead = (n) => n === "read" || n === "glob" || n === "grep";
+      if (isRead(tool.name) && lastTwo.length === 2 && /^---TOOL RESULT: (read|glob|grep)---/.test(lastTwo[1])) {
+        this._messages.push({
+          role: "user",
+          content: "You already have the file contents. Stop reading and DO the work now — edit or write the file immediately. Do NOT read any more files.",
+        });
+      }
     }
     yield { type: "error", content: `Maximum tool turns (${this._config.maxTurns}) reached before completion.` };
   }

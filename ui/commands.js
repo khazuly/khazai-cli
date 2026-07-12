@@ -7,10 +7,17 @@ const MODELS = [
   { name: "qwen", description: "qwen/qwen-2.5-72b-instruct" },
 ];
 
+const THEMES = [
+  { name: "dark", description: "Dark theme (default)" },
+  { name: "light", description: "Light theme" },
+  { name: "mono", description: "Monochrome (no colors)" },
+];
+
 export const COMMANDS = [
   { name: "/exit", description: "Exit application" },
   { name: "/model", description: "Switch AI model", sub: MODELS },
+  { name: "/theme", description: "Change color theme", sub: THEMES },
   { name: "/help", description: "Show available commands" },
 ];
 
-export { MODELS };
+export { MODELS, THEMES };

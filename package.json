@@ -1,6 +1,6 @@
 {
   "name": "khazai-ai",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI coding agent — file ops, search, shell, sub-agents",
   "type": "module",
   "bin": {

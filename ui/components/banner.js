@@ -6,18 +6,22 @@ const MODEL_ALIASES = {
   deepseek: "DeepSeek V3", grok: "Grok-3", qwen: "Qwen 2.5",
 };
 
+const MODEL_COLORS = {
+  gpt: "green", claude: "yellow", gemini: "blue",
+  deepseek: "cyan", grok: "magenta", qwen: "white",
+};
+
 export function Banner({ version, model, workspace }) {
   const modelLabel = MODEL_ALIASES[model] || model;
+  const modelColor = MODEL_COLORS[model] || "white";
 
-  return h(Box, { borderStyle: "round", borderColor: "gray", flexDirection: "column", paddingLeft: 1, paddingRight: 1 },
+  return h(Box, { flexDirection: "column", paddingLeft: 1, paddingRight: 1, marginBottom: 1 },
     h(Box, {},
-      h(Text, { bold: true }, "khazai-ai"),
-      h(Text, { dimColor: true }, "  v", version)
+      h(Text, { bold: true, color: "white" }, "khazai-ai"),
+      h(Text, { dimColor: true }, "  v" + version),
+      h(Text, { dimColor: true }, "  ·  "),
+      h(Text, { color: modelColor, bold: true }, modelLabel),
     ),
-    h(Box, {},
-      h(Text, { dimColor: true }, "AI coding agent  ·  "),
-      h(Text, { color: "yellow" }, modelLabel),
-    ),
-    h(Text, { dimColor: true }, "Workspace: ", workspace),
+    h(Text, { dimColor: true }, workspace),
   );
 }

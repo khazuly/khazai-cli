@@ -1,17 +1,36 @@
 import { resolve } from "node:path";
 import { execAsync } from "../lib/exec-async.js";
 
+const CMD_FIXES = [
+  { from: /python3?\s+-m\s+ht\b(?!\.server)/g, to: "python3 -m http.server" },
+  { from: /python3?\s+-m\s+http\s+server/g, to: "python3 -m http.server" },
+  { from: /python3?\s+-m\s+SimpleHTTPServer/g, to: "python3 -m http.server" },
+];
+
+function fixCommand(cmd) {
+  let fixed = cmd;
+  for (const { from, to } of CMD_FIXES) {
+    if (from.test(fixed)) {
+      fixed = fixed.replace(from, to);
+    }
+  }
+  return fixed;
+}
+
 export const bashTool = {
   name: "bash",
   description: "Execute a shell command (timeout in seconds). Retries up to 2 times on timeout with doubled timeout.",
   parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", description: "timeout in seconds" }, workdir: { type: "string" } }, required: ["command"] },
   async execute({ command, timeout = 60, workdir }) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
+    const fixed = fixCommand(command);
     let lastErr = null;
+    let attempts = 0;
     for (let attempt = 1; attempt <= 3; attempt++) {
+      attempts = attempt;
       const t = (attempt === 1 ? Number(timeout) : Number(timeout) * (attempt === 2 ? 2 : 4)) * 1000;
       try {
-        const { stdout: out } = await execAsync(command, { cwd, timeoutMs: t });
+        const { stdout: out } = await execAsync(fixed, { cwd, timeoutMs: t });
         const prefix = attempt > 1 ? `(retry #${attempt - 1}) ` : "";
         return `${prefix}Exit: 0\n${out.slice(0, 5000)}${out.length > 5000 ? `\n... (${out.length - 5000} more)` : ""}`;
       } catch (err) {
@@ -23,6 +42,7 @@ export const bashTool = {
     const stdout = lastErr.stdout?.trim() ?? "";
     const code = lastErr.status ?? -1;
     const details = [stdout, stderr].filter(Boolean).join("\n").slice(0, 5000);
-    return `Exit: ${code} (failed after 3 attempts)\n${details || lastErr.message}`;
+    const attemptStr = attempts > 1 ? ` (after ${attempts} attempts)` : "";
+    return `Exit: ${code}${attemptStr}\n${details || lastErr.message}`;
   },
 };

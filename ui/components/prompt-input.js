@@ -279,7 +279,6 @@ export function PromptInput({ onSubmit, disabled, commands = [], onCommand, acti
 
   return h(Box, { flexDirection: "column", width: "100%" },
     h(Box, { paddingLeft: 1, paddingRight: 1 }, content),
-    cmdDropdown,
-    h(Text, { dimColor: true }, "─".repeat(Math.min(80, process.stdout.columns || 80)))
+    cmdDropdown
   );
 }

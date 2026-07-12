@@ -17,6 +17,7 @@ import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
 import { PromptInput } from "./components/prompt-input.js";
 import { PlanList } from "./components/plan-list.js";
+import { StatusBar } from "./components/status-bar.js";
 
 function buildRegistry() {
   const r = new Registry();
@@ -34,8 +35,10 @@ export function Session({ workspace }) {
   const [running, setRunning] = useState(false);
   const [currentModel, setCurrentModel] = useState(loadConfig().model);
   const [sessionKey, setSessionKey] = useState(0);
+  const [toolsUsed, setToolsUsed] = useState(0);
   const agentRef = useRef(null);
   const activeRef = useRef(null);
+  const toolStartRef = useRef(null);
 
   if (!agentRef.current) {
     agentRef.current = new Agent(buildRegistry(), { workspace: workspace.path });
@@ -56,7 +59,11 @@ export function Session({ workspace }) {
       setCompletedMessages([]);
       setActiveMessage(null);
       setPlan([]);
+      setToolsUsed(0);
       setSessionKey(key => key + 1);
+    }
+    if (cmd === "/theme" && arg) {
+      appendCompleted({ id: nextId(), type: "system", content: `Theme changed to **${arg}**. Restart to apply.` });
     }
     if (cmd === "/help") {
       const list = COMMANDS.map(c => `\`${c.name}\` — ${c.description}`).join("\n");
@@ -100,17 +107,33 @@ export function Session({ workspace }) {
       }
 
       if (ev.type === "tool-call") {
+        toolStartRef.current = Date.now();
         activate({ id: nextId(), type: "tool", tool: ev.tool, args: ev.args, done: false });
+        continue;
+      }
+
+      if (ev.type === "stream") {
+        const current = activeRef.current;
+        if (current?.type === "streaming") {
+          current.content += ev.token;
+          setActiveMessage({ ...current });
+        } else {
+          clearActive();
+          activate({ id: nextId(), type: "streaming", content: ev.token });
+        }
         continue;
       }
 
       if (ev.type === "tool-result") {
         const current = activeRef.current;
+        const duration = toolStartRef.current ? Date.now() - toolStartRef.current : null;
+        const resultSize = ev.result?.length || 0;
         clearActive();
+        setToolsUsed(prev => prev + 1);
         appendCompleted(
           current?.type === "tool"
-            ? { ...current, content: ev.result.slice(0, 300), done: true }
-            : { id: nextId(), type: "tool", tool: ev.tool, args: {}, content: ev.result.slice(0, 300), done: true }
+            ? { ...current, content: ev.result.slice(0, 300), done: true, duration, resultSize }
+            : { id: nextId(), type: "tool", tool: ev.tool, args: {}, content: ev.result.slice(0, 300), done: true, duration, resultSize }
         );
         continue;
       }
@@ -129,7 +152,7 @@ export function Session({ workspace }) {
       if (item.type === "banner") {
         return h(Banner, {
           key: "banner",
-          version: "0.2.0",
+          version: "0.3.0",
           model: currentModel,
           workspace: workspace.path,
         });
@@ -152,6 +175,7 @@ export function Session({ workspace }) {
           })
         : null,
       h(PlanList, { plan }),
+      h(StatusBar, { model: currentModel, messages: completedMessages, toolsUsed }),
       h(PromptInput, { onSubmit: submit, onCommand: handleCommand, commands: COMMANDS, disabled: running, activeModel: currentModel })
     )
   );
