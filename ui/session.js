@@ -1,6 +1,6 @@
 import { createElement as h, Fragment } from "react";
 import { useState, useRef, useCallback } from "react";
-import { Box, Static } from "ink";
+import { Box, Static, useStdout } from "ink";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { loadConfig, saveModel } from "../config/index.js";
@@ -36,6 +36,29 @@ export function normalizeStreamText(text) {
   return normalizeVerticalWhitespace(removeEmoji(text));
 }
 
+export function streamViewportText(text, columns, maximumRows) {
+  const source = String(text || "");
+  const width = Math.max(8, Math.trunc(Number(columns) || 80) - 1);
+  const rowLimit = Math.max(1, Math.trunc(Number(maximumRows) || 1));
+  const physicalRows = [];
+  for (const line of source.split("\n")) {
+    const characters = Array.from(line);
+    if (characters.length === 0) {
+      physicalRows.push("");
+      continue;
+    }
+    for (let offset = 0; offset < characters.length; offset += width) {
+      physicalRows.push(characters.slice(offset, offset + width).join(""));
+    }
+  }
+  if (physicalRows.length <= rowLimit) return source;
+  if (rowLimit === 1) {
+    const tail = physicalRows.at(-1) || "";
+    return `… ${tail}`.slice(0, width);
+  }
+  return ["…", ...physicalRows.slice(-(rowLimit - 1))].join("\n");
+}
+
 export function toolResultFailed(result) {
   return classifyToolState(result, true) === "failed";
 }
@@ -47,6 +70,7 @@ export function formatInteractiveQuestion(question, options = []) {
 }
 
 export function Session({ workspace }) {
+  const { stdout } = useStdout();
   const [completedMessages, setCompletedMessages] = useState([]);
   const [activeMessage, setActiveMessage] = useState(null);
   const [plan, setPlan] = useState([]);
@@ -238,7 +262,10 @@ export function Session({ workspace }) {
 
       if (ev.type === "answer" || ev.type === "error") {
         completeStreaming();
-        if (ev.type === "answer") succeeded = true;
+        if (ev.type === "answer") {
+          succeeded = true;
+          setPlan([]);
+        }
         appendArchived({ id: nextId(), type: ev.type, content: removeEmoji(ev.content) });
         continue;
       }
@@ -250,6 +277,7 @@ export function Session({ workspace }) {
           clearActive();
           appendArchived({ id: nextId(), type: "answer", content: current.content });
         }
+        setPlan([]);
         succeeded = true;
         continue;
       }
@@ -299,6 +327,20 @@ export function Session({ workspace }) {
     { id: `banner-${sessionKey}`, type: "banner" },
     ...completedMessages,
   ];
+  const terminalColumns = Math.max(12, Number(stdout?.columns) || 80);
+  const terminalRows = Math.max(8, Number(stdout?.actualRows || stdout?.rows) || 24);
+  const planFinished = plan.length > 0
+    && plan.every(item => ["done", "failed", "skipped"].includes(item.status));
+  const visiblePlan = activeMessage?.type === "streaming" && planFinished ? [] : plan;
+  const reservedRows = 9 + (visiblePlan.length ? visiblePlan.length + 3 : 0);
+  const streamingRows = Math.max(1, terminalRows - reservedRows);
+  const displayedActiveMessage = activeMessage?.type === "streaming"
+    ? {
+        ...activeMessage,
+        content: streamViewportText(activeMessage.content, terminalColumns, streamingRows),
+      }
+    : activeMessage;
+  const showWorking = running && activeMessage?.type !== "streaming";
 
   return h(Fragment, null,
     h(Static, {
@@ -312,9 +354,9 @@ export function Session({ workspace }) {
         })
       : h(MessageList, { key: item.id, messages: [item] })),
     h(Box, { flexDirection: "column", width: "100%" },
-      activeMessage
+      displayedActiveMessage
         ? h(MessageList, {
-            messages: [activeMessage],
+            messages: [displayedActiveMessage],
             previousType: completedMessages.at(-1)?.type || null,
         })
         : null,
@@ -324,10 +366,10 @@ export function Session({ workspace }) {
       completedMessages.length === 0 && !activeMessage && !pendingQuestion && plan.length === 0
         ? h(EmptyState)
         : null,
-      h(PlanList, { plan }),
+      h(PlanList, { plan: visiblePlan }),
       h(SessionFooter, {
-        running,
-        plan,
+        running: showWorking,
+        plan: visiblePlan,
         waitingForAnswer: Boolean(pendingQuestion),
         promptProps: {
           onSubmit: pendingQuestion ? answerQuestion : submit,

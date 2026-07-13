@@ -5,6 +5,7 @@ import { createElement as h } from "react";
 import { Box, Static, Text, render } from "ink";
 import { MessageList } from "../ui/components/message-list.js";
 import { normalizeVerticalWhitespace } from "../ui/text-layout.js";
+import { streamViewportText } from "../ui/session.js";
 
 class NarrowTerminal extends Writable {
   constructor(columns, rows) {
@@ -83,6 +84,32 @@ test("streaming chunks normalize carriage returns and repeated blank rows", () =
 
   assert.equal(content, "First line\n\nSecond line\n\nThird line");
   assert.ok(maximumBlankRun(content) <= 1);
+});
+
+test("streaming answer never adds a viewport-overflow cursor marker", async () => {
+  const frame = await renderFrame([{
+    id: "stream-without-overflow-marker",
+    type: "streaming",
+    content: "Implementasi Baileys dengan Pairing Code",
+  }], 40, 20);
+
+  assert.match(frame, /KhazAI/);
+  assert.match(frame, /Implementasi Baileys/);
+  assert.doesNotMatch(frame, /_\s*$/m);
+  for (const line of frame.split("\n")) {
+    assert.ok(line.length <= 40, `streaming row exceeds viewport width: ${line}`);
+  }
+});
+
+test("streaming preview stays within the real viewport while retaining the full tail", () => {
+  const complete = Array.from({ length: 20 }, (_, index) => `response line ${index + 1}`).join("\n");
+  const preview = streamViewportText(complete, 40, 4);
+
+  assert.equal(preview.split("\n").length, 4);
+  assert.equal(preview.split("\n")[0], "…");
+  assert.match(preview, /response line 20$/);
+  assert.match(complete, /response line 1/);
+  assert.doesNotMatch(preview, /response line 1(?:\n|$)/);
 });
 
 test("incremental static commits stay compact when tool labels wrap", async () => {

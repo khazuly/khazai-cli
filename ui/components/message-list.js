@@ -106,12 +106,11 @@ function FormattedAnswer({ content }) {
   return h(Box, { flexDirection: "column", width: "100%" }, ...children);
 }
 
-function RoleMessage({ role, content, streaming = false }) {
+function RoleMessage({ role, content }) {
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Text, { bold: true }, role),
-    h(Box, { marginTop: 1, width: "100%" },
+    h(Box, { flexDirection: "column", marginTop: 1, width: "100%" },
       h(FormattedAnswer, { content }),
-      streaming ? h(Text, { dimColor: true }, "_") : null,
     )
   );
 }
@@ -194,7 +193,7 @@ export function MessageList({ messages }) {
       case "answer":
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "streaming":
-        return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content, streaming: true });
+        return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "error":
         return h(ErrorDisplay, { key: m.id, content: m.content });
       case "summary":
