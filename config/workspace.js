@@ -1,12 +1,20 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 
-const CONFIG_DIR = ".khazai-ai";
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+const GLOBAL_DIR = join(homedir(), ".config", "khazai-ai", "workspaces");
+
+function workspaceKey(cwd) {
+  return Buffer.from(cwd).toString("base64url");
+}
+
+function workspaceConfigPath(cwd) {
+  return join(GLOBAL_DIR, `${workspaceKey(cwd)}.json`);
+}
 
 export function getWorkspace() {
   const cwd = process.cwd();
-  const cfgPath = resolve(cwd, CONFIG_PATH);
+  const cfgPath = workspaceConfigPath(cwd);
   let trusted = false;
 
   if (existsSync(cfgPath)) {
@@ -20,7 +28,7 @@ export function getWorkspace() {
 }
 
 export function markTrusted(cfgPath) {
-  mkdirSync(resolve(process.cwd(), CONFIG_DIR), { recursive: true });
+  mkdirSync(GLOBAL_DIR, { recursive: true });
   writeFileSync(
     cfgPath,
     JSON.stringify({ trusted: true, trustedAt: new Date().toISOString() }, null, 2),

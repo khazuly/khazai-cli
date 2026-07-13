@@ -1,6 +1,7 @@
 import { createElement as h } from "react";
 import { Text, Box, useInput, useApp } from "ink";
 import { useState } from "react";
+import { PASTEL } from "../palette.js";
 
 const OPTIONS = [
   { label: "Yes", value: true },
@@ -8,32 +9,24 @@ const OPTIONS = [
 ];
 
 export function TrustPrompt({ path, onTrust }) {
-  const [sel, setSel] = useState(0);
+  const [selected, setSelected] = useState(0);
   const { exit } = useApp();
-
-  useInput((_ch, key) => {
-    if (key.leftArrow || key.rightArrow) {
-      setSel(i => (i + 1) % OPTIONS.length);
-    }
-    if (key.return) {
-      if (OPTIONS[sel].value) onTrust();
-      else exit();
-    }
+  useInput((_input, key) => {
+    if (key.leftArrow || key.rightArrow) setSelected(index => (index + 1) % OPTIONS.length);
+    if (key.return) OPTIONS[selected].value ? onTrust() : exit();
   });
 
-  return h(Box, { borderStyle: "round", borderColor: "gray", flexDirection: "column", padding: 1 },
-    h(Text, {}, "Do you trust this directory?"),
-    h(Text, { dimColor: true }, " ", path),
+  return h(Box, { flexDirection: "column" },
+    h(Text, { bold: true }, "Trust this directory?"),
+    h(Text, { dimColor: true, wrap: "wrap" }, path),
     h(Box, { marginTop: 1 },
-      OPTIONS.map((o, i) =>
-        h(Text, {
-          key: o.label,
-          ...(i === sel
-            ? { bold: true, color: "blue", inverse: true }
-            : { dimColor: true }),
-          }, ` ${o.label} `)
-      )
+      ...OPTIONS.map((option, index) => h(Text, {
+        key: option.label,
+        bold: index === selected,
+        color: index === selected ? PASTEL.violet : undefined,
+        dimColor: index !== selected,
+      }, `${index === selected ? ">" : " "} ${option.label}  `))
     ),
-    h(Text, { dimColor: true, marginTop: 1 }, "Use ← → to select, Enter to confirm")
+    h(Text, { dimColor: true }, "Arrows select · Enter confirm")
   );
 }

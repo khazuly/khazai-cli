@@ -3,6 +3,7 @@ import { render } from "ink";
 import { useState } from "react";
 import { TrustPrompt } from "./components/trust-prompt.js";
 import { Session } from "./session.js";
+import { createScrollbackOutput, prepareScrollableTerminal } from "./scrollback-output.js";
 import { getWorkspace, markTrusted } from "../config/workspace.js";
 
 function App() {
@@ -22,6 +23,8 @@ function App() {
   return h(Session, { workspace: getWorkspace() });
 }
 
-export function startUI() {
-  return render(h(App)).waitUntilExit();
+export async function startUI() {
+  prepareScrollableTerminal(process.stdout);
+  const stdout = createScrollbackOutput(process.stdout);
+  await render(h(App), { stdout }).waitUntilExit();
 }

@@ -32,12 +32,15 @@ if (inline) {
   const { readTool, writeTool, editTool } = await import("../tools/file.js");
   const { globTool, grepTool } = await import("../tools/search.js");
   const { bashTool } = await import("../tools/shell.js");
+  const { analyzeTool } = await import("../tools/analyze.js");
   const { webTool } = await import("../tools/web.js");
+  const { webSearchTool } = await import("../tools/websearch.js");
+  const { repoTool } = await import("../tools/repo.js");
   const { questionTool } = await import("../tools/question.js");
   const { taskTool } = await import("../tools/task.js");
 
   const r = new Registry();
-  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, webTool, questionTool, taskTool]) r.register(t);
+  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webTool, webSearchTool, repoTool, questionTool, taskTool]) r.register(t);
   const agent = new Agent(r, { model });
 
   for await (const ev of agent.loop(inline)) {

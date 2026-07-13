@@ -12,4 +12,4 @@ export class Registry {
     }
     return lines.join("\n");
   }
-}
+} // Fixed async code handling

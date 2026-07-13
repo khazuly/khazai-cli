@@ -1,23 +1,42 @@
 import { createElement as h } from "react";
-import { Text, Box } from "ink";
+import { Text, Box, useStdout } from "ink";
+import { PASTEL } from "../palette.js";
 
-const MODEL_ALIASES = {
-  gpt: "GPT-4o-mini", claude: "Claude Haiku", gemini: "Gemini Flash",
-  deepseek: "DeepSeek V3", grok: "Grok-3", qwen: "Qwen 2.5",
+export const MODEL_LABELS = {
+  gpt: "GPT-4o-mini",
+  claude: "Claude Haiku",
+  qwen: "Qwen 2.5",
 };
 
-export function Banner({ version, model, workspace }) {
-  const modelLabel = MODEL_ALIASES[model] || model;
+export function Banner({ model, workspace }) {
+  const { stdout } = useStdout();
+  const modelLabel = MODEL_LABELS[model] || model;
+  const home = process.env.HOME || "";
+  const displayWorkspace = home && workspace.startsWith(home + "/")
+    ? "~/" + workspace.slice(home.length + 1)
+    : workspace;
+  const terminalWidth = stdout?.columns || 80;
+  const title = `khazai-ai   ${modelLabel}`;
+  const underlineWidth = Math.min(
+    Math.max(1, terminalWidth - 4),
+    Math.max(Array.from(title).length, Array.from(displayWorkspace).length) + 4,
+  );
 
-  return h(Box, { borderStyle: "round", borderColor: "gray", flexDirection: "column", paddingLeft: 1, paddingRight: 1 },
-    h(Box, {},
-      h(Text, { bold: true }, "khazai-ai"),
-      h(Text, { dimColor: true }, "  v", version)
+  return h(Box, {
+    flexDirection: "column",
+    alignItems: "center",
+    // Static items do not inherit a useful percentage width in every Ink
+    // renderer. Bind the banner to the real terminal width so centering is
+    // relative to the viewport instead of the banner's longest child.
+    width: terminalWidth,
+    marginBottom: 1,
+  },
+    h(Text, { bold: true },
+      h(Text, { color: PASTEL.mauve }, "khazai-ai"),
+      h(Text, { color: PASTEL.slate }, "   "),
+      h(Text, { color: PASTEL.lavender }, modelLabel),
     ),
-    h(Box, {},
-      h(Text, { dimColor: true }, "AI coding agent  ·  "),
-      h(Text, { color: "yellow" }, modelLabel),
-    ),
-    h(Text, { dimColor: true }, "Workspace: ", workspace),
+    h(Text, { dimColor: true, wrap: "truncate-end" }, displayWorkspace),
+    h(Text, { color: PASTEL.slate }, "━".repeat(underlineWidth)),
   );
 }

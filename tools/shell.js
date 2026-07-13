@@ -1,22 +1,90 @@
-import { execSync } from "node:child_process";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { execAsync } from "../lib/exec-async.js";
+
+const CMD_FIXES = [
+  { from: /python3?\s+-m\s+ht\b(?!\.server)/g, to: "python3 -m http.server" },
+  { from: /python3?\s+-m\s+http\s+server/g, to: "python3 -m http.server" },
+  { from: /python3?\s+-m\s+SimpleHTTPServer/g, to: "python3 -m http.server" },
+];
+
+function fixCommand(cmd) {
+  let fixed = cmd;
+  for (const { from, to } of CMD_FIXES) {
+    if (from.test(fixed)) {
+      fixed = fixed.replace(from, to);
+    }
+  }
+  return fixed;
+}
+
+const SERVER_CMDS = /^node\s+(?!.*--check)(?!.*-e\s)|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
+const WRITE_VIA_BASH = /^cat\s*>|^tee\s+|^echo\s+['"]*>|^printf\s+/i;
+const READ_VIA_BASH = /(?:^|[;&|]\s*)\s*(?:cat|head|tail|less|more)\b/i;
+const WEB_VIA_BASH = /(?:^|[;&|]\s*)\s*(?:curl|wget)\b/i;
+const SCRIPT_EXTENSIONS = new Set([".py", ".pyw", ".js", ".mjs", ".cjs", ".sh", ".bash", ".zsh"]);
+
+function requestedScript(command) {
+  // Match interpreter invocations even after a harmless `cd ... &&` prefix.
+  // Flags such as `-m`, `-c`, and `-e` are intentionally excluded: they do
+  // not name a local script that must exist first.
+  const match = /(?:^|[;&|]\s*)\s*(?:python(?:3)?|node)\s+(?!-(?:m|c|e)\b)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/i.exec(command);
+  const script = (match?.[1] || match?.[2] || match?.[3] || "").trim();
+  if (!script) return null;
+  const lower = script.toLowerCase();
+  return [...SCRIPT_EXTENSIONS].some(ext => lower.endsWith(ext)) ? script : null;
+}
 
 export const bashTool = {
   name: "bash",
-  description: "Execute a shell command.",
-  parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" }, workdir: { type: "string" } }, required: ["command"] },
-  async execute({ command, timeout = 30000, workdir }) {
+  description: "Execute a shell command (timeout in seconds). Retries up to 2 times on timeout with doubled timeout.",
+  parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", description: "timeout in seconds" }, workdir: { type: "string" } }, required: ["command"] },
+  async execute({ command, timeout = 60, workdir }) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
-    try {
-      const out = execSync(String(command), { cwd, encoding: "utf-8", timeout: Number(timeout), maxBuffer: 50000 });
-      const d = out.trim();
-      return `Exit: 0\n${d.slice(0, 5000)}${d.length > 5000 ? `\n... (${d.length - 5000} more)` : ""}`;
-    } catch (err) {
-      const stderr = err.stderr?.trim() ?? "";
-      const stdout = err.stdout?.trim() ?? "";
-      const code = err.status ?? -1;
-      const details = [stdout, stderr].filter(Boolean).join("\n").slice(0, 5000);
-      return `${err.killed ? `Timeout ${timeout}ms\n` : ""}Exit: ${code}\n${details || err.message}`;
+    const fixed = fixCommand(command);
+
+    if (SERVER_CMDS.test(fixed) || /&\s*$/.test(fixed.trim())) {
+      return `BLOCKED: Cannot start a long-running server. It will hang forever.\nInstead, write all files and tell the user to run it themselves.\n\nTo run: cd ${workdir || "."} && ${fixed.replace(/\s*&\s*$/, "")}`;
     }
+
+    if (WRITE_VIA_BASH.test(fixed)) {
+      return `BLOCKED: Use the write tool to create files, not bash commands like cat/echo/tee. The write tool validates syntax and detects dependencies automatically.`;
+    }
+
+    if (READ_VIA_BASH.test(fixed)) {
+      return "BLOCKED: Use the read tool to inspect file contents instead of cat/head/tail/less/more.";
+    }
+
+    if (WEB_VIA_BASH.test(fixed)) {
+      return "BLOCKED: Use the web or websearch tool for HTTP requests instead of curl/wget.";
+    }
+
+    const script = requestedScript(fixed);
+    if (script && !existsSync(resolve(cwd, script))) {
+      return `BLOCKED: Script "${script}" does not exist in ${cwd}. Create it with the write tool before attempting to run it.`;
+    }
+
+    const isLongRunning = /node\s+server|python.*http\.server|python.*SimpleHTTP|npm\s+start|yarn\s+start|pm2\s+|forever\s+|nodemon\s+/i.test(fixed);
+    let lastErr = null;
+    let attempts = 0;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      attempts = attempt;
+      const t = (attempt === 1 ? Number(timeout) : Number(timeout) * (attempt === 2 ? 2 : 4)) * 1000;
+      try {
+        const { stdout: out } = await execAsync(fixed, { cwd, timeoutMs: t });
+        const prefix = attempt > 1 ? `(retry #${attempt - 1}) ` : "";
+        return `${prefix}Exit: 0\n${out.slice(0, 5000)}${out.length > 5000 ? `\n... (${out.length - 5000} more)` : ""}`;
+      } catch (err) {
+        lastErr = err;
+        if (!err.killed) break;
+        if (isLongRunning) break;
+      }
+    }
+    const stderr = lastErr.stderr?.trim() ?? "";
+    const stdout = lastErr.stdout?.trim() ?? "";
+    const code = lastErr.status ?? -1;
+    const details = [stdout, stderr].filter(Boolean).join("\n").slice(0, 5000);
+    const attemptStr = attempts > 1 ? ` (after ${attempts} attempts)` : "";
+    return `Exit: ${code}${attemptStr}\n${details || lastErr.message}`;
   },
 };

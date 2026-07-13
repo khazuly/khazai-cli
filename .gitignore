@@ -1,3 +1,9 @@
 node_modules/
 .env
 dist/
+.git-credentials
+landing-page/
+public/
+server.js
+.khazai-ai/
+*.orig

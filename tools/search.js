@@ -1,7 +1,7 @@
-import { execSync } from "node:child_process";
 import { readdirSync, statSync, readFileSync } from "node:fs";
 import { resolve, extname, join } from "node:path";
 import { buildFindExclusions } from "../lib/ignore.js";
+import { execAsync } from "../lib/exec-async.js";
 
 export const globTool = {
   name: "glob",
@@ -19,10 +19,17 @@ export const globTool = {
     const cwd = dir ? resolve(process.cwd(), String(dir)) : process.cwd();
     try {
       const exclusions = buildFindExclusions(cwd, ignore);
-      const cmd = `find "${cwd}" -type f ${exclusions} -name "${String(pattern)}" 2>/dev/null | head -300`;
-      const out = execSync(cmd, { encoding: "utf-8", timeout: 10000 });
-      const files = out.trim().split("\n").filter(Boolean).map(f => f.replace(cwd + "/", "").replace(cwd, "."));
-      if (!files.length) return `No files matching "${pattern}"`;
+      let nameArg;
+      if (pattern.includes("**")) {
+        const simplePattern = pattern.replace(/\*\*\//g, "").replace(/\*\*/g, "*");
+        nameArg = `-name "${simplePattern}"`;
+      } else {
+        nameArg = `-name "${String(pattern)}"`;
+      }
+      const cmd = `find "${cwd}" -type f ${exclusions} ${nameArg} 2>/dev/null | head -300`;
+      const { stdout } = await execAsync(cmd, { timeoutMs: 10000 });
+      const files = stdout.split("\n").filter(Boolean).map(f => f.replace(cwd + "/", "").replace(cwd, "."));
+      if (!files.length) return `No files matching "${pattern}" in ${cwd}`;
       return `Found ${files.length}:\n${files.join("\n")}`;
     } catch { return `Search failed for "${pattern}"`; }
   },
@@ -37,9 +44,10 @@ export const grepTool = {
     try {
       let cmd = `rg -n --no-heading "${String(pattern)}" "${searchDir}"`;
       if (include) cmd += ` -g "${String(include)}"`;
-      const out = execSync(cmd + " 2>/dev/null | head -200", { encoding: "utf-8", timeout: 15000 });
-      if (!out.trim()) return `No matches for "${pattern}"`;
-      return `Found ${out.trim().split("\n").length}:\n${out.trim()}`;
+      cmd += " 2>/dev/null | head -200";
+      const { stdout } = await execAsync(cmd, { timeoutMs: 15000 });
+      if (!stdout) return `No matches for "${pattern}"`;
+      return `Found ${stdout.split("\n").length}:\n${stdout}`;
     } catch {
       const results = [];
       const walk = (d) => {

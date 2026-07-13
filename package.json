@@ -1,10 +1,14 @@
 {
   "name": "khazai-ai",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI coding agent — file ops, search, shell, sub-agents",
   "type": "module",
   "bin": {
     "khazai-ai": "./bin/khazai-ai"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "find ui -name '*.js' -print0 | xargs -0 -n1 node --check"
   },
   "engines": {
     "node": ">=18"
