@@ -209,8 +209,7 @@ export class Agent {
 
       const streamBuf = [];
       let toolSuppressed = false;
-      let streamConfirmed = false;
-      const PREBUF_MAX = 30;
+
       while (reply === undefined && chatErr === undefined) {
         let token;
         if (tokenQueue.length > 0) {
@@ -225,24 +224,9 @@ export class Agent {
         streamBuf.push(token);
 
         if (toolSuppressed) continue;
-
         const acc = streamBuf.join("");
-        const hasToolJson = /"tool"\s*:/i.test(acc) || /<function_call/i.test(acc) || /^\s*\{"\w+"\s*:/i.test(acc);
-        if (hasToolJson) {
+        if (/"tool"\s*:/i.test(acc) || /<function_call/i.test(acc)) {
           toolSuppressed = true;
-          continue;
-        }
-        if (!streamConfirmed) {
-          const startsSuspicious = /^\s*[{\[<]/.test(acc);
-          if (!startsSuspicious && streamBuf.length > 3) {
-            streamConfirmed = true;
-            for (const t of streamBuf) yield { type: "stream", token: t };
-          } else if (!startsSuspicious && streamBuf.length >= PREBUF_MAX) {
-            streamConfirmed = true;
-            for (const t of streamBuf) yield { type: "stream", token: t };
-          }
-        } else {
-          yield { type: "stream", token };
         }
       }
       while (tokenQueue.length > 0) streamBuf.push(tokenQueue.shift());
@@ -255,7 +239,6 @@ export class Agent {
           tokenQueue.length = 0; tokenResolve = null;
           streamBuf.length = 0;
           toolSuppressed = false;
-          streamConfirmed = false;
           reply = await chat(ctx, { model: this._model, onToken });
         } catch (retryErr) {
           yield { type: "error", content: `LLM error: ${retryErr.message}` };
@@ -280,6 +263,9 @@ export class Agent {
       }
 
       if (!tool) {
+        if (!toolSuppressed) {
+          for (const t of streamBuf) yield { type: "stream", token: t };
+        }
         this._messages.push({ role: "assistant", content: reply });
         const plan = extractPlan(reply);
         if (plan.length > 0) {
