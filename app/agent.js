@@ -210,7 +210,7 @@ export class Agent {
       const streamBuf = [];
       let toolSuppressed = false;
       let streamConfirmed = false;
-      const PREBUF_MAX = 15;
+      const PREBUF_MAX = 30;
       while (reply === undefined && chatErr === undefined) {
         let token;
         if (tokenQueue.length > 0) {
@@ -227,14 +227,17 @@ export class Agent {
         if (toolSuppressed) continue;
 
         const acc = streamBuf.join("");
-        const hasToolJson = /"tool"\s*:/i.test(acc) && /"args"\s*:/i.test(acc);
-        const hasFnXml = /<function_call/i.test(acc);
-        if (hasToolJson || hasFnXml) {
+        const hasToolJson = /"tool"\s*:/i.test(acc) || /<function_call/i.test(acc) || /^\s*\{"\w+"\s*:/i.test(acc);
+        if (hasToolJson) {
           toolSuppressed = true;
           continue;
         }
         if (!streamConfirmed) {
-          if (streamBuf.length >= PREBUF_MAX || (streamBuf.length > 3 && !/^[{\s<]/.test(acc))) {
+          const startsSuspicious = /^\s*[{\[<]/.test(acc);
+          if (!startsSuspicious && streamBuf.length > 3) {
+            streamConfirmed = true;
+            for (const t of streamBuf) yield { type: "stream", token: t };
+          } else if (!startsSuspicious && streamBuf.length >= PREBUF_MAX) {
             streamConfirmed = true;
             for (const t of streamBuf) yield { type: "stream", token: t };
           }
