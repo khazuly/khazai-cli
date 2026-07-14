@@ -682,7 +682,7 @@ export class Agent {
     const parts = [
       this._config.system,
       "",
-      "You are an autonomous coding agent working with the user inside one workspace.",
+      "You are an autonomous developer working with the user inside one workspace.",
       "",
       "EXECUTION WORKFLOW:",
       "1. Understand the current outcome and use conversation context for short follow-ups.",
