@@ -26,6 +26,7 @@ const semanticFixtures = new Map([
   ["Buat masing-masing 1 contoh .py dan .js lalu tes hasilnya.", { intent: "change", operation: "create", requiredEvidence: ["mutation", "validation"], requestedExtensions: [".py", ".js"], requiresPlan: true, modifiesFiles: true, validationRequested: true, createNewFiles: true, domain: "obfuscation" }],
   ["Buat contoh sample.py lalu tes obfuscation.", { intent: "change", operation: "create", requiredEvidence: ["mutation", "validation"], requestedExtensions: [".py"], requiresPlan: true, modifiesFiles: true, validationRequested: true, createNewFiles: true, domain: "obfuscation" }],
   ["maksudnya?", { intent: "answer", operation: "answer" }],
+  ["git push perubahan ke repo khazuly/khazai-cli", { intent: "change", operation: "git", requiredEvidence: ["mutation"], domain: "git" }],
 ]);
 
 async function resolveTestIntent({ input }) {
@@ -802,6 +803,30 @@ test("a prior workspace listing is reused before reading file contents", async (
   assert.equal(readCalls, 1);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["read"]);
   assert.match(events.find(event => event.type === "stream")?.token || "", /obfuscate\.py contains/);
+});
+
+test("explicit Git push runs once without relying on a second model tool call", async () => {
+  const registry = new Registry();
+  const commands = [];
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      commands.push(args.command);
+      return "Exit: 0\nTo github.com:khazuly/khazai-cli.git\n   abc123..def456  master -> master";
+    },
+  });
+  const agent = new Agent(registry, {
+    workspace: "/tmp/git-push-test",
+    chat: async () => { throw new Error("Git push must not require a follow-up model response"); },
+  });
+  const events = [];
+  for await (const event of agent.loop("git push perubahan ke repo khazuly/khazai-cli")) events.push(event);
+
+  assert.deepEqual(commands, ["git push origin HEAD"]);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
+  assert.equal(events.find(event => event.type === "answer")?.content, "Git push completed successfully.");
 });
 
 test("interactive question events strip model markdown before rendering", async () => {

@@ -202,6 +202,10 @@ function clearWorkspaceRequest(contract) {
   return contract?.operation === "clear_workspace";
 }
 
+function gitPushRequest(contract) {
+  return contract?.operation === "git" && /\bpush\b/i.test(String(contract.request || ""));
+}
+
 function isDeletionCommand(command) {
   return destructiveCommand(command);
 }
@@ -895,7 +899,8 @@ export class Agent {
     const previousMessages = this._messages.slice();
     const previousRequest = this._currentRequest;
     const previousAssistant = previousMessages.findLast(message =>
-      message.role === "assistant" && streamDisposition(message.content) !== "structured")?.content || "";
+      ["assistant", "developer"].includes(message.role)
+      && streamDisposition(message.content) !== "structured")?.content || "";
     let taskContract;
     try {
       taskContract = await this._intentResolver.resolve({
@@ -980,6 +985,37 @@ export class Agent {
       } else {
         yield { type: "answer", content: result };
       }
+      return;
+    }
+
+    // Git push is an explicit, observable workspace action. Do not make it
+    // depend on the model producing a second tool call after intent resolution.
+    // The shell tool still owns execution, authentication, and error reporting.
+    if (gitPushRequest(this._taskContract)) {
+      const bash = this._registry.get("bash");
+      if (!bash) {
+        yield { type: "error", content: "The shell tool is unavailable, so the Git push could not run." };
+        return;
+      }
+      const args = { command: "git push origin HEAD", workdir: this._workspace };
+      yield { type: "tool-call", tool: "bash", args };
+      let result;
+      try {
+        result = await bash.execute(args);
+      } catch (error) {
+        result = `Error: ${error.message}`;
+      }
+      const failed = resultFailed(result);
+      yield { type: "tool-result", tool: "bash", result };
+      this._toolEvidence.push({ tool: "bash", args, result, failed });
+      this._executionPolicy.record("bash", args, result, failed);
+      const answer = failed
+        ? "Git push failed. Check the Shell result above."
+        : "Git push completed successfully.";
+      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "bash", args }) });
+      this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
+      this._messages.push({ role: "developer", content: answer });
+      yield { type: "answer", content: answer };
       return;
     }
 
