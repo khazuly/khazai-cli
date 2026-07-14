@@ -20,7 +20,12 @@ function fixCommand(cmd) {
 
 const SERVER_CMDS = /^node\s+(?!.*--check)(?!.*-e\s)|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
 const WRITE_VIA_BASH = /^cat\s*>|^tee\s+|^echo\s+['"]*>|^printf\s+/i;
-const READ_VIA_BASH = /(?:^|[;&|]\s*)\s*(?:cat|head|tail|less|more)\b/i;
+// `find ... | head -20` and `rg ... | head` only limit generated output; they
+// do not inspect file contents. Keep blocking actual file readers at the start
+// of a command (or after a command separator), but allow head/tail as a pipe
+// consumer. `cat` and pagers remain blocked anywhere in a command chain.
+const DIRECT_FILE_READER = /(?:^|[;&]\s*)\s*(?:head|tail)\b/i;
+const FILE_READER_ANYWHERE = /(?:^|[;&|]\s*)\s*(?:cat|less|more)\b/i;
 const WEB_VIA_BASH = /(?:^|[;&|]\s*)\s*(?:curl|wget)\b/i;
 const SCRIPT_EXTENSIONS = new Set([".py", ".pyw", ".js", ".mjs", ".cjs", ".sh", ".bash", ".zsh"]);
 
@@ -51,7 +56,7 @@ export const bashTool = {
       return `BLOCKED: Use the write tool to create files, not bash commands like cat/echo/tee. The write tool validates syntax and detects dependencies automatically.`;
     }
 
-    if (READ_VIA_BASH.test(fixed)) {
+    if (DIRECT_FILE_READER.test(fixed) || FILE_READER_ANYWHERE.test(fixed)) {
       return "BLOCKED: Use the read tool to inspect file contents instead of cat/head/tail/less/more.";
     }
 

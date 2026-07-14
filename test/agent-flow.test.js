@@ -1,7 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Agent } from "../app/agent.js";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Agent as RuntimeAgent } from "../app/agent.js";
+import { fallbackIntentContract, normalizeIntentContract } from "../app/intent-resolver.js";
 import { Registry } from "../app/registry.js";
+
+const semanticFixtures = new Map([
+  ["cari dokumentasi pairing code Baileys", { intent: "research", operation: "research", requiredEvidence: ["research"], domain: "web" }],
+  ["ya buatkan", { intent: "change", operation: "create", requiredEvidence: ["mutation"], continuation: "accept_offer", modifiesFiles: true, createNewFiles: true }],
+  ["ini https://www.npmjs.com/package/@whiskeysockets/baileys", { intent: "research", operation: "research", requiredEvidence: ["research"], targetUrl: "https://www.npmjs.com/package/@whiskeysockets/baileys", domain: "package" }],
+  ["ada total berapa file di folder ini", { intent: "inspect", operation: "count_files", requiredEvidence: ["inspection"] }],
+  ["buatkan kode obfuscator Python", { intent: "change", operation: "create", requiredEvidence: ["mutation"], modifiesFiles: true, createNewFiles: true, domain: "obfuscation" }],
+  ["tapi gw mau kode hasil enkripsi tetap normal dan bisa dijalankan", { intent: "change", operation: "modify", requiredEvidence: ["mutation", "validation"], continuation: "refine_existing", modifiesFiles: true, validationRequested: true, domain: "obfuscation" }],
+  ["hapus aja semua file yang ada du folder ini", { intent: "delete", operation: "clear_workspace", requiredEvidence: ["deletion"] }],
+  ["hapus file obsolete.py", { intent: "delete", operation: "delete", requiredEvidence: ["deletion"] }],
+  ["coba cek file apa aja yg ada di folder ini", { intent: "inspect", operation: "list_files", requiredEvidence: ["inspection"] }],
+  ["coba cek file yg ada di folder ini", { intent: "inspect", operation: "list_files", requiredEvidence: ["inspection"] }],
+  ["cek file yang ada", { intent: "inspect", operation: "list_files", requiredEvidence: ["inspection"] }],
+  ["baca isi filenya", { intent: "inspect", operation: "inspect_code", requiredEvidence: ["inspection"] }],
+  ["coba apakah file kode hasil obfuscate itu bisa dijalankan", { intent: "validate", operation: "validate", requiredEvidence: ["validation"], validationRequested: true, repairExistingOnFailure: true, domain: "obfuscation" }],
+  ["coba cek apakah hasil obfuscate bisa dijalankan", { intent: "validate", operation: "validate", requiredEvidence: ["validation"], validationRequested: true, repairExistingOnFailure: true, domain: "obfuscation" }],
+  ["Buatkan saya kode Python obfuscate untuk mengenkripsi file .py dan .js.", { intent: "change", operation: "create", requiredEvidence: ["mutation"], modifiesFiles: true, createNewFiles: true, domain: "obfuscation" }],
+  ["Buat masing-masing 1 contoh .py dan .js lalu tes hasilnya.", { intent: "change", operation: "create", requiredEvidence: ["mutation", "validation"], requestedExtensions: [".py", ".js"], requiresPlan: true, modifiesFiles: true, validationRequested: true, createNewFiles: true, domain: "obfuscation" }],
+  ["Buat contoh sample.py lalu tes obfuscation.", { intent: "change", operation: "create", requiredEvidence: ["mutation", "validation"], requestedExtensions: [".py"], requiresPlan: true, modifiesFiles: true, validationRequested: true, createNewFiles: true, domain: "obfuscation" }],
+  ["maksudnya?", { intent: "answer", operation: "answer" }],
+]);
+
+async function resolveTestIntent({ input }) {
+  return normalizeIntentContract(semanticFixtures.get(input) || fallbackIntentContract(input), input);
+}
+
+class Agent extends RuntimeAgent {
+  constructor(registry, options = {}) {
+    super(registry, { intentResolver: resolveTestIntent, ...options });
+  }
+}
 
 function scriptedChat(responses) {
   let index = 0;
@@ -54,7 +89,7 @@ test("accepting a researched implementation offer blocks another fetch cycle", a
     parameters: { type: "object", properties: {} },
     async execute() {
       webExecutions++;
-      return "This fetch must not execute";
+      return "Baileys documentation: pairing code uses requestPairingCode().";
     },
   });
   registry.register({
@@ -67,6 +102,7 @@ test("accepting a researched implementation offer blocks another fetch cycle", a
     },
   });
   const responses = [
+    JSON.stringify({ tool: "web", args: { url: "https://baileys.wiki/docs/intro" } }),
     "Saya sudah memeriksa dokumentasi Baileys. Apakah Anda ingin saya membuat contoh kode implementasi pairing code dengan Baileys?",
     JSON.stringify({ tool: "web", args: { url: "https://baileys.wiki/docs/intro" } }),
     JSON.stringify({ tool: "write", args: { path: "pairing.js", content: "const pairingCode = true;\n" } }),
@@ -87,11 +123,11 @@ test("accepting a researched implementation offer blocks another fetch cycle", a
   const events = [];
   for await (const event of agent.loop("ya buatkan")) events.push(event);
 
-  assert.equal(webExecutions, 0);
+  assert.equal(webExecutions, 1);
   assert.equal(writes, 1);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
-  assert.match(contexts[1], /Accepted implementation offer:.*pairing code/i);
-  assert.match(contexts[2], /research phase is already complete/i);
+  assert.match(contexts[2], /Accepted implementation offer:.*pairing code/i);
+  assert.match(contexts[3], /research phase is already complete/i);
   assert.equal(events.some(event => event.type === "error"), false);
 });
 
@@ -164,7 +200,7 @@ test("read-only tool preamble is never streamed before its tool call", async () 
   assert.equal(events.some(event => event.type === "stream"), false);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
   assert.equal(events.filter(event => event.type === "answer").length, 1);
-  assert.equal(events.find(event => event.type === "answer")?.content, "Ada 9 file di /tmp/preamble-guard-test.");
+  assert.equal(events.find(event => event.type === "answer")?.content, "There are 9 files in /tmp/preamble-guard-test.");
   assert.equal(events.some(event => JSON.stringify(event).includes("HASIL LAMA")), false);
 });
 
@@ -176,6 +212,12 @@ test("implementation refinement inherits mutation context and hides tool preambl
     parameters: { type: "object", properties: {} },
     async execute(args) { return `Written ${args.path}`; },
   });
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute() { return "Exit: 0\nrunnable output verified"; },
+  });
   const responses = [
     JSON.stringify({ tool: "write", args: { path: "obfuscator.py", content: "print('v1')\n" } }),
     "Created the first implementation.",
@@ -183,6 +225,7 @@ test("implementation refinement inherits mutation context and hides tool preambl
       tool: "write",
       args: { path: "obfuscator.py", content: "print('runnable obfuscated output')\n" },
     }),
+    JSON.stringify({ tool: "bash", args: { command: "python3 obfuscator.py" } }),
     "Updated the implementation.",
   ];
   const agent = new Agent(registry, {
@@ -193,10 +236,315 @@ test("implementation refinement inherits mutation context and hides tool preambl
   const events = [];
   for await (const event of agent.loop("tapi gw mau kode hasil enkripsi tetap normal dan bisa dijalankan")) events.push(event);
 
-  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write", "bash"]);
   assert.equal(events.some(event => event.type === "stream" && /Implementasi lama/.test(event.token)), false);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Updated the implementation/);
+  assert.equal(events.some(event => event.type === "error"), false);
+});
+
+test("explicit clear-folder request executes once and cannot finish from unsupported prose", async () => {
+  const registry = new Registry();
+  const executions = [];
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      executions.push(args);
+      return "Exit: 0\n";
+    },
+  });
+  const agent = new Agent(registry, {
+    model: "claude",
+    workspace: "/tmp/test-khazai",
+    chat: async () => {
+      throw new Error("An explicit clear request must not depend on an LLM response");
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("hapus aja semua file yang ada du folder ini")) events.push(event);
+
+  assert.equal(executions.length, 1);
+  assert.equal(executions[0].workdir, "/tmp/test-khazai");
+  assert.match(executions[0].command, /-mindepth 1 -maxdepth 1/);
+  assert.match(executions[0].command, /-exec rm -rf/);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /verified empty/);
+  assert.equal(events.some(event => event.type === "thinking"), false);
+});
+
+test("simple file listing uses one deterministic glob without redundant shell inspection", async () => {
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    name: "glob",
+    description: "glob",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      executions++;
+      assert.equal(args.path, "/tmp/test-khazai");
+      return "Found 3:\nREADME.md\nobfuscator.py\nsample.js";
+    },
+  });
+  const agent = new Agent(registry, {
+    workspace: "/tmp/test-khazai",
+    chat: async () => {
+      throw new Error("A simple file listing must not depend on the model selecting a tool");
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("coba cek file apa aja yg ada di folder ini")) events.push(event);
+
+  assert.equal(executions, 1);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["glob"]);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /Found 3 files/);
+  assert.equal(events.some(event => event.type === "thinking"), false);
+});
+
+test("empty file listing returns a deterministic English answer", async () => {
+  const registry = new Registry();
+  registry.register({
+    name: "glob",
+    description: "glob",
+    parameters: { type: "object", properties: {} },
+    async execute() { return 'No files matching "*" in /tmp/test-khazai'; },
+  });
+  const agent = new Agent(registry, {
+    workspace: "/tmp/test-khazai",
+    chat: async () => { throw new Error("Empty file listing must be formatted locally"); },
+  });
+  const events = [];
+  for await (const event of agent.loop("coba cek file yg ada di folder ini")) events.push(event);
+
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["glob"]);
+  assert.equal(
+    events.find(event => event.type === "answer")?.content,
+    "The folder /tmp/test-khazai is empty. There are no files inside it.",
+  );
+  assert.equal(events.some(event => /No files matching/.test(event.content || "")), false);
+});
+
+test("specific deletion cannot be reported complete before a destructive tool succeeds", async () => {
+  const registry = new Registry();
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute() { return "Exit: 0\n"; },
+  });
+  const responses = [
+    "Selesai.",
+    JSON.stringify({ tool: "bash", args: { command: "rm -f obsolete.py" } }),
+    "Selesai.",
+  ];
+  const contexts = [];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/specific-delete-test",
+    chat: async (messages, options) => {
+      contexts.push(messages.map(message => message.content).join("\n"));
+      const response = responses.shift();
+      options.onToken?.(response);
+      return response;
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("hapus file obsolete.py")) events.push(event);
+
+  assert.match(contexts[1], /successful deletion command/);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Selesai/);
   assert.equal(events.some(event => event.type === "error"), false);
+});
+
+test("workspace diagnosis cannot finish before inspection evidence exists", async () => {
+  const registry = new Registry();
+  registry.register({
+    name: "analyze",
+    description: "analyze",
+    parameters: { type: "object", properties: {} },
+    async execute() { return "Analysis target: app.js\nSyntax: line 4 is invalid"; },
+  });
+  const responses = [
+    "The syntax error is on line 4.",
+    JSON.stringify({ tool: "analyze", args: { path: "app.js" } }),
+    "The syntax error is on line 4.",
+  ];
+  const contexts = [];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/diagnosis-evidence-test",
+    chat: async (messages, options) => {
+      contexts.push(messages.map(message => message.content).join("\n"));
+      const response = responses.shift();
+      options.onToken?.(response);
+      return response;
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("analyze the bug in app.js")) events.push(event);
+
+  assert.match(contexts[1], /Missing evidence: a successful workspace inspection/);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["analyze"]);
+  assert.equal(events.filter(event => event.type === "stream-end").length, 1);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /line 4/);
+});
+
+test("failed action evidence triggers a changed recovery action before completion", async () => {
+  const registry = new Registry();
+  const commands = [];
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      commands.push(args.command);
+      return commands.length === 1 ? "Exit: 1\ndependency conflict" : "Exit: 0\ninstalled";
+    },
+  });
+  const responses = [
+    JSON.stringify({ tool: "bash", args: { command: "npm install example" } }),
+    "Installed successfully.",
+    JSON.stringify({ tool: "bash", args: { command: "npm install example --legacy-peer-deps" } }),
+    "Installed successfully.",
+  ];
+  const contexts = [];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/recovery-evidence-test",
+    chat: async (messages, options) => {
+      contexts.push(messages.map(message => message.content).join("\n"));
+      const response = responses.shift();
+      options.onToken?.(response);
+      return response;
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("install package example in this project")) events.push(event);
+
+  assert.deepEqual(commands, ["npm install --prefix . example", "npm install --prefix . example --legacy-peer-deps"]);
+  assert.match(contexts[2], /Missing evidence: a successful workspace change/);
+  assert.equal(events.filter(event => event.type === "tool-call").length, 2);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Installed successfully/);
+});
+
+test("validation follow-up runs the existing artifact before allowing file changes", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-validate-first-"));
+  writeFileSync(join(workspace, "obfuscate.py"), "def obfuscate(code):\n    return code\n");
+  writeFileSync(join(workspace, "example_obfuscated.py"), "print('works')\n");
+  let writes = 0;
+  let runs = 0;
+  const registry = new Registry();
+  registry.register({
+    name: "write",
+    description: "write",
+    parameters: { type: "object", properties: {} },
+    async execute() { writes++; return "Written"; },
+  });
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute() { runs++; return "Exit: 0\nworks"; },
+  });
+  const responses = [
+    JSON.stringify({ tool: "write", args: { path: "obfuscate.py", content: "print('replacement')\n" } }),
+    JSON.stringify({ tool: "bash", args: { command: "python3 example_obfuscated.py" } }),
+    "The existing obfuscated file runs successfully.",
+  ];
+  const contexts = [];
+  const agent = new Agent(registry, {
+    workspace,
+    chat: async (messages, options) => {
+      contexts.push(messages.map(message => message.content).join("\n"));
+      const response = responses.shift();
+      options.onToken?.(response);
+      return response;
+    },
+  });
+
+  try {
+    const events = [];
+    for await (const event of agent.loop("coba apakah file kode hasil obfuscate itu bisa dijalankan")) events.push(event);
+
+    assert.equal(writes, 0);
+    assert.equal(runs, 1);
+    assert.match(contexts[1], /Run the existing artifact first/);
+    assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
+    assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /runs successfully/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("failed validation repairs an inspected existing implementation without replacing it", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-repair-existing-"));
+  const sourcePath = join(workspace, "obfuscate.py");
+  writeFileSync(sourcePath, "class PythonObfuscator:\n    def obfuscate(self):\n        return \"bad\"\n");
+  writeFileSync(join(workspace, "example_obfuscated.py"), "this is invalid python\n");
+  let runCount = 0;
+  let mutationCount = 0;
+  const registry = new Registry();
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute() {
+      runCount++;
+      return runCount === 1 ? "Exit: 1\nSyntaxError: invalid syntax" : "Exit: 0\nworks";
+    },
+  });
+  registry.register({
+    name: "read",
+    description: "read",
+    parameters: { type: "object", properties: {} },
+    async execute(args) { return readFileSync(args.path, "utf-8"); },
+  });
+  registry.register({
+    name: "write",
+    description: "write",
+    parameters: { type: "object", properties: {} },
+    async execute(args) { mutationCount++; writeFileSync(args.path, args.content); return "Written"; },
+  });
+  registry.register({
+    name: "edit",
+    description: "edit",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      mutationCount++;
+      const current = readFileSync(args.path, "utf-8");
+      writeFileSync(args.path, current.replace(args.oldString, args.newString));
+      return "Updated";
+    },
+  });
+  const responses = [
+    JSON.stringify({ tool: "bash", args: { command: "python3 example_obfuscated.py" } }),
+    JSON.stringify({ tool: "write", args: { path: "obfuscate.py", content: "print('new unrelated implementation')\n" } }),
+    JSON.stringify({ tool: "read", args: { path: "obfuscate.py" } }),
+    JSON.stringify({ tool: "write", args: { path: "obfuscate.py", content: "print('new unrelated implementation')\n" } }),
+    JSON.stringify({ tool: "edit", args: { path: "obfuscate.py", oldString: "return \"bad\"", newString: "return \"fixed\"" } }),
+    JSON.stringify({ tool: "bash", args: { command: "python3 example_obfuscated.py" } }),
+    "The existing implementation was repaired and its output now runs.",
+  ];
+  const agent = new Agent(registry, {
+    workspace,
+    chat: scriptedChat(responses),
+  });
+
+  try {
+    const events = [];
+    for await (const event of agent.loop("coba cek apakah hasil obfuscate bisa dijalankan")) events.push(event);
+
+    assert.equal(runCount, 2);
+    assert.equal(mutationCount, 1);
+    assert.match(readFileSync(sourcePath, "utf-8"), /class PythonObfuscator/);
+    assert.match(readFileSync(sourcePath, "utf-8"), /def obfuscate/);
+    assert.match(readFileSync(sourcePath, "utf-8"), /return "fixed"/);
+    assert.deepEqual(
+      events.filter(event => event.type === "tool-call").map(event => event.tool),
+      ["bash", "read", "edit", "bash"],
+    );
+    assert.equal(events.some(event => event.type === "error"), false);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 test("complex Claude flow streams one final answer only after validation", async () => {
@@ -409,9 +757,51 @@ test("repeated successful glob uses cached evidence without exposing a hard-stop
   assert.equal(events.filter(event => event.type === "tool-call").length, 1);
   assert.equal(events.some(event => event.type === "error"), false);
   const answer = events.find(event => event.type === "answer")?.content || "";
-  assert.match(answer, /Ditemukan 3 file/);
-  assert.match(answer, /obfuscator\.py[\s\S]*test\.py[\s\S]*sample\.js/);
+  assert.match(answer, /Found 3 files/);
+  assert.equal(events.find(event => event.type === "tool-result")?.result.includes("obfuscator.py"), true);
   assert.doesNotMatch(answer, /requested three times|identical arguments|Stopped:/i);
+});
+
+test("a prior workspace listing is reused before reading file contents", async () => {
+  const registry = new Registry();
+  let globCalls = 0;
+  let readCalls = 0;
+  registry.register({
+    name: "glob",
+    description: "glob",
+    parameters: { type: "object", properties: {} },
+    async execute() {
+      globCalls++;
+      return "Found 2:\nobfuscate.py\nexample.py";
+    },
+  });
+  registry.register({
+    name: "read",
+    description: "read",
+    parameters: { type: "object", properties: {} },
+    async execute(args) {
+      readCalls++;
+      assert.equal(args.path, "/tmp/reuse-listing/obfuscate.py");
+      return "File: obfuscate.py\nLines: 1\ndef obfuscate(value): return value";
+    },
+  });
+  const agent = new Agent(registry, {
+    workspace: "/tmp/reuse-listing",
+    chat: scriptedChat([
+      JSON.stringify({ tool: "glob", args: { pattern: "*.py", path: "/tmp/reuse-listing" } }),
+      JSON.stringify({ tool: "read", args: { path: "obfuscate.py" } }),
+      "obfuscate.py contains the implementation; example.py is a sample input.",
+    ]),
+  });
+
+  for await (const _event of agent.loop("cek file yang ada")) {}
+  const events = [];
+  for await (const event of agent.loop("baca isi filenya")) events.push(event);
+
+  assert.equal(globCalls, 1, "the second request must reuse the existing listing");
+  assert.equal(readCalls, 1);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["read"]);
+  assert.match(events.find(event => event.type === "stream")?.token || "", /obfuscate\.py contains/);
 });
 
 test("interactive question events strip model markdown before rendering", async () => {
@@ -517,7 +907,7 @@ test("live-style flat read of a directory is normalized to glob", async () => {
     },
   });
   const events = [];
-  for await (const event of agent.loop("cek file yang ada di folder ini")) events.push(event);
+  for await (const event of agent.loop("inspect the directory structure before explaining this repository")) events.push(event);
 
   assert.deepEqual(models, ["claude", "claude", "claude"]);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["glob"]);
@@ -547,8 +937,8 @@ test("actionable Indonesian mutation hides option menus and performs the write",
   const visible = events.filter(event => event.type === "stream").map(event => event.token).join("");
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
   assert.doesNotMatch(visible, /pilihan mana|AES-256-CBC|hardcoded/i);
-  assert.match(visible, /Selesai/);
-  assert.match(visible, /Base64.*bukan enkripsi/i);
+  assert.match(visible, /Completed successfully/);
+  assert.match(visible, /Base64.*not cryptographic encryption/i);
 });
 
 test("sample-and-test request cannot finish before every sample and validation", async () => {
@@ -588,7 +978,7 @@ test("sample-and-test request cannot finish before every sample and validation",
   assert.doesNotMatch(visible, /Both samples|Testing completed|AES encryption/i);
   assert.match(visible, /sample\.py/);
   assert.match(visible, /sample\.js/);
-  assert.match(visible, /Pengujian berhasil/);
+  assert.match(visible, /Validation passed/);
   assert.equal(events.some(event => event.type === "plan-update" && event.index === 0 && event.status === "skipped"), true);
 });
 
@@ -624,7 +1014,7 @@ test("dependency installation is not accepted as execution validation", async ()
     events.filter(event => event.type === "tool-call").map(event => event.tool),
     ["write", "bash", "bash"],
   );
-  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Pengujian berhasil/);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Encryption test passed/);
   assert.equal(events.filter(event => event.type === "plan-update" && event.status === "done").length, 2);
 });
 

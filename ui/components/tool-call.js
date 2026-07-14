@@ -6,7 +6,7 @@ import { PASTEL } from "../palette.js";
 function resultColor(state) {
   if (state === "failed") return TOOL_STATE_COLORS.failed;
   if (state === "warning") return TOOL_STATE_COLORS.warning;
-  return undefined;
+  return PASTEL.toolResult;
 }
 
 function ResultPreview({ presentation }) {
@@ -16,15 +16,15 @@ function ResultPreview({ presentation }) {
       rows.push(h(Box, { key: `result-${item.index}`, width: "100%", alignItems: "flex-start" },
         h(Text, { color: presentation.accent, dimColor: true }, `${item.index}. `),
         h(Box, { flexDirection: "column", flexGrow: 1 },
-          h(Text, { wrap: "wrap" }, item.title),
+          h(Text, { color: PASTEL.toolResult, wrap: "wrap" }, item.title),
           item.description
-            ? h(Text, { dimColor: true, wrap: "wrap" }, item.description)
+            ? h(Text, { color: PASTEL.metadata, wrap: "wrap" }, item.description)
             : null,
         )
       ));
     }
     if (presentation.searchResults.hidden) {
-      rows.push(h(Text, { key: "hidden-results", dimColor: true }, `show ${presentation.searchResults.hidden} more...`));
+      rows.push(h(Text, { key: "hidden-results", color: PASTEL.metadata }, `show ${presentation.searchResults.hidden} more...`));
     }
   } else {
     for (const [index, line] of presentation.preview.lines.entries()) {
@@ -35,10 +35,10 @@ function ResultPreview({ presentation }) {
       }, line));
     }
     if (presentation.preview.hiddenLines) {
-      rows.push(h(Text, { key: "hidden-lines", dimColor: true }, `show ${presentation.preview.hiddenLines} more lines...`));
+      rows.push(h(Text, { key: "hidden-lines", color: PASTEL.metadata }, `show ${presentation.preview.hiddenLines} more lines...`));
     }
     if (presentation.preview.hiddenChars) {
-      rows.push(h(Text, { key: "hidden-chars", dimColor: true }, `show ${presentation.preview.hiddenChars} more chars...`));
+      rows.push(h(Text, { key: "hidden-chars", color: PASTEL.metadata }, `show ${presentation.preview.hiddenChars} more chars...`));
     }
   }
   return rows.length ? h(Box, { flexDirection: "column" }, ...rows) : null;
@@ -73,10 +73,10 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
         : null,
     ),
     presentation.target
-      ? h(Text, { color: PASTEL.text, wrap: "wrap" }, presentation.target)
+      ? h(Text, { color: PASTEL.toolTarget, wrap: "wrap" }, presentation.target)
       : null,
     presentation.metadata.length
-      ? h(Text, { dimColor: true, wrap: "wrap" }, presentation.metadata.join(" · "))
+      ? h(Text, { color: PASTEL.metadata, wrap: "wrap" }, presentation.metadata.join(" · "))
       : null,
     presentation.state === "running"
       ? h(Text, { color: TOOL_STATE_COLORS.running, dimColor: true }, stateLabel)

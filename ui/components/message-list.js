@@ -48,7 +48,7 @@ function renderListLine(marker, content, key, marginLeft = 0) {
       h(Text, { dimColor: true }, marker),
     ),
     h(Box, { flexGrow: 1, flexShrink: 1 },
-      h(Text, { wrap: "wrap" }, ...renderInline(content, key)),
+      h(Text, { color: PASTEL.assistant, wrap: "wrap" }, ...renderInline(content, key)),
     ),
   );
 }
@@ -57,10 +57,10 @@ function renderTextLine(line, key) {
   const heading = /^(#{1,6})\s+(.+)$/.exec(line);
   const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
   const bullet = /^(\s*)[-*]\s+(.+)$/.exec(line);
-  if (heading) return h(Text, { key, bold: true, wrap: "wrap" }, ...renderInline(heading[2], key));
+  if (heading) return h(Text, { key, bold: true, color: PASTEL.assistant, wrap: "wrap" }, ...renderInline(heading[2], key));
   if (numbered) return renderListLine(`${numbered[1]}. `, numbered[2], key);
   if (bullet) return renderListLine("- ", bullet[2], key, bullet[1].length > 0 ? 3 : 0);
-  return h(Text, { key, wrap: "wrap" }, ...(line ? renderInline(line, key) : [" "]));
+  return h(Text, { key, color: PASTEL.assistant, wrap: "wrap" }, ...(line ? renderInline(line, key) : [" "]));
 }
 
 function answerBlocks(content) {
@@ -108,7 +108,7 @@ function FormattedAnswer({ content }) {
 
 function RoleMessage({ role, content }) {
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, { bold: true }, role),
+    h(Text, { bold: true, color: PASTEL.lavender }, role),
     h(Box, { flexDirection: "column", marginTop: 1, width: "100%" },
       h(FormattedAnswer, { content }),
     )
@@ -168,8 +168,8 @@ function SummaryDisplay({ message }) {
   details.push(`${message.tools} ${message.tools === 1 ? "tool" : "tools"}`);
   details.push(message.duration < 1000 ? `${message.duration} ms` : `${(message.duration / 1000).toFixed(1)} s`);
   return h(Box, { marginBottom: 1 },
-    h(Text, { bold: true }, "Completed"),
-    h(Text, { dimColor: true }, "  ", details.join(" · "))
+    h(Text, { bold: true, color: PASTEL.slate }, "Completed"),
+    h(Text, { color: PASTEL.metadata }, "  ", details.join(" · "))
   );
 }
 

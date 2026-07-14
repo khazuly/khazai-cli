@@ -6,6 +6,7 @@ import {
   TOOL_ACCENTS,
   TOOL_STATE_COLORS,
 } from "../ui/tool-presentation.js";
+import { PASTEL } from "../ui/palette.js";
 
 test("tool palette is varied, muted, and avoids bright semantic colors", () => {
   assert.ok(new Set(Object.values(TOOL_ACCENTS)).size >= 8);
@@ -15,6 +16,14 @@ test("tool palette is varied, muted, and avoids bright semantic colors", () => {
     assert.match(color, /^#[0-9a-f]{6}$/i);
     assert.doesNotMatch(color, /^(?:#00ffff|#00ff00|#ffff00|#00bfff)$/i);
   }
+});
+
+test("tool evidence uses a lower-contrast tier than assistant answers", () => {
+  assert.notEqual(PASTEL.assistant, PASTEL.toolResult);
+  assert.notEqual(PASTEL.toolResult, PASTEL.metadata);
+  assert.equal(PASTEL.assistant, "#c9d1d9");
+  assert.equal(PASTEL.toolResult, "#929ba6");
+  assert.equal(PASTEL.metadata, "#707985");
 });
 
 test("tool presentation exposes text labels and states without decorative icons", () => {

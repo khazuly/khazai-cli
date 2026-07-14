@@ -4,6 +4,8 @@ import { chat, resetSession } from "../lib/llm.js";
 
 import { execAsync } from "../lib/exec-async.js";
 import { cleanInteractiveText } from "../lib/interactive-text.js";
+import { ExecutionPolicy, destructiveCommand, inspectionCommand } from "./execution-policy.js";
+import { IntentResolver, fallbackIntentContract, normalizeIntentContract } from "./intent-resolver.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -35,16 +37,13 @@ function normalizePlan(items) {
   return observable.length ? observable : items;
 }
 
-function requiresPlan(input) {
-  const text = String(input).trim();
-  if (text.length >= 180) return true;
-  const actions = text.match(/\b(create|build|implement|write|edit|fix|add|remove|analy[sz]e|test|buat(?:kan)?|tulis(?:kan)?|ubah|perbaiki|tambahkan|hapus|analisis|tes)\b/gi) || [];
-  return actions.length >= 2 || /\b(full|complete|complex|multi[- ]step|step by step|landing page|application|aplikasi|kompleks)\b/i.test(text);
+function requiresPlan(contract) {
+  return Boolean(contract?.requiresPlan);
 }
 
-function fallbackPlan(mode = "neutral", input = "") {
-  if (mode === "read-only") {
-    if (/https?:\/\/|\b(?:web|website|url|endpoint|domain)\b/i.test(String(input))) {
+function fallbackPlan(contract) {
+  if (["inspect", "research"].includes(contract?.intent)) {
+    if (["research", "discover_endpoints"].includes(contract?.operation)) {
       return [
         { status: "pending", description: "Fetch the requested website home page" },
         { status: "pending", description: "Search the web for indexed pages on the requested domain" },
@@ -56,13 +55,13 @@ function fallbackPlan(mode = "neutral", input = "") {
       { status: "pending", description: "Validate the relevant findings" },
     ];
   }
-  const sampleExtensions = requestedSampleExtensions(input);
+  const sampleExtensions = requestedSampleExtensions(contract);
   if (sampleExtensions.length > 0) {
     const plan = [
       { status: "pending", description: "Inspect the relevant workspace files and requirements" },
       ...sampleExtensions.map(extension => ({ status: "pending", description: `Create the requested ${extension} sample file` })),
     ];
-    if (needsExecutionValidation(input)) {
+    if (needsExecutionValidation(contract)) {
       plan.push({ status: "pending", description: "Run the requested samples and validate the result" });
     }
     return plan;
@@ -89,8 +88,13 @@ function extractInteractiveQuestion(text) {
   return { question, options };
 }
 
-function toolSignature(tool) {
+function toolSignature(tool, workspace = "") {
   const args = { ...tool.args };
+  delete args._agentWorkspace;
+  if (args.path && !String(args.path).startsWith("/") && workspace) {
+    args.path = resolve(workspace, String(args.path));
+  }
+  if (["glob", "grep"].includes(tool.name) && !args.path && workspace) args.path = workspace;
   if (tool.name === "bash" && typeof args.command === "string") {
     // Whitespace changes must not bypass the repeated-command guard.
     args.command = args.command.trim().replace(/\s+/g, " ");
@@ -98,78 +102,67 @@ function toolSignature(tool) {
   return JSON.stringify({ tool: tool.name, args });
 }
 
-function cachedToolAnswer(tool, result, request) {
+function cachedToolAnswer(tool, result) {
   const text = String(result || "").trim();
   const found = /^Found\s+(\d+)(?:\s*\([^)]*\))?:\n([\s\S]+)$/i.exec(text);
   if (tool.name === "glob" && found) {
-    return looksIndonesian(request)
-      ? `Ditemukan ${found[1]} file:\n${found[2]}`
-      : `Found ${found[1]} files:\n${found[2]}`;
+    return `Found ${found[1]} files.`;
   }
   if (tool.name === "grep" && found) {
-    return looksIndonesian(request)
-      ? `Ditemukan ${found[1]} hasil:\n${found[2]}`
-      : `Found ${found[1]} matches:\n${found[2]}`;
+    return `Found ${found[1]} matches.`;
   }
-  if (/^No (?:files|matches)/i.test(text)) return text;
+  const noFiles = /^No files matching\s+"([^"]*)"\s+in\s+(.+)$/i.exec(text);
+  if (tool.name === "glob" && noFiles) {
+    const [, pattern, path] = noFiles;
+    return pattern === "*"
+      ? `The folder ${path} is empty. There are no files inside it.`
+      : `No files match "${pattern}" in ${path}.`;
+  }
+  if (tool.name === "grep" && /^No matches/i.test(text)) {
+    return "No matching results were found.";
+  }
   const preview = text.slice(0, 3000);
-  return looksIndonesian(request)
-    ? `Pemeriksaan selesai.\n${preview}`
-    : `Inspection completed.\n${preview}`;
+  return `Inspection completed.\n${preview}`;
 }
 
-function requestMode(input) {
-  const text = String(input).toLowerCase();
-  const withoutNegatedMutations = text.replace(
-    /\b(?:do\s+not|don't|never|without|jangan|tidak)\b(?:\s+\w+){0,3}\s+\b(?:create|write|build|implement|edit|fix|add|remove|buat(?:kan)?|tulis(?:kan)?|ubah|perbaiki|tambahkan|hapus)\b/gi,
-    " ",
-  );
-  const mutation = /\b(create|write|build|implement|edit|fix|add|remove|buat(?:kan)?|tulis(?:kan)?|ubah|perbaiki|tambahkan|hapus)\b/i;
-  if (mutation.test(withoutNegatedMutations)) return "mutate";
-  const readOnly = /\b(explain|describe|description|how does|how to|what is|analy[sz](?:e|is)|check|list|read|review|inspect|audit|fetch|search|collect|enumerate|report|passive|discover|endpoint|bundle|route|jelaskan|bagaimana|apa itu|maksud(?:nya)?|cek|lihat|analisis|daftar|cari|ambil|laporkan|bongkar|bedah|urai)\b/i;
-  return readOnly.test(text) ? "read-only" : "neutral";
+function requestMode(contract) {
+  if (["change", "delete"].includes(contract?.intent)) return "mutate";
+  if (["answer", "inspect", "research", "unknown"].includes(contract?.intent)) return "read-only";
+  return "neutral";
 }
 
-function acceptedCreationOffer(input, history = []) {
-  const acceptance = String(input || "").trim();
-  if (!/^(?:ya|iya|yes|y|ok(?:e)?|boleh|silakan|sure)(?:[\s,]+(?:buat(?:kan)?|lanjut(?:kan)?|kerjakan|lakukan|please|itu))*[.!]*$/i.test(acceptance)) {
-    return null;
-  }
-
-  for (let index = history.length - 1; index >= 0; index--) {
-    const message = history[index];
-    if (message?.role !== "assistant") continue;
-    const content = String(message.content || "").trim();
-    if (!content || streamDisposition(content) === "structured") continue;
-    const sentences = content.match(/[^.!?\n]+[.!?]?/g) || [];
-    for (let sentenceIndex = sentences.length - 1; sentenceIndex >= 0; sentenceIndex--) {
-      const sentence = cleanInteractiveText(sentences[sentenceIndex]).trim();
-      const offersCreation = /\b(?:membuat(?:kan)?|buat(?:kan)?|create|build|generate|implement)\b/i.test(sentence);
-      if (offersCreation && /\b(?:contoh|kode|code|implementasi|implementation|file|app|aplikasi|script|project|proyek)\b/i.test(sentence)) {
-        return sentence.replace(/^(?:apakah|would|do|shall|can)\s+/i, "");
-      }
-    }
-  }
-  return null;
+function declaredSymbols(source) {
+  const symbols = new Set();
+  const text = String(source || "");
+  for (const match of text.matchAll(/\b(?:class|def|function)\s+([A-Za-z_$][\w$]*)/g)) symbols.add(match[1]);
+  return [...symbols];
 }
 
-function continuedImplementationRequest(input, previousRequest, previousMode) {
-  if (previousMode !== "mutate" || !previousRequest) return null;
-  const text = String(input || "").trim();
-  const startsAsContinuation = /^(?:tapi|tetapi|terus|nah|dan|lalu|but|also|and)\b/i.test(text);
-  const refinesArtifact = /\b(?:kode|code|file|hasil|output|implementasi|script|program)\b/i.test(text)
-    && /\b(?:mau|ingin|harus|tetap|jangan|ubah|tambahkan|bisa|want|should|must|keep|without)\b/i.test(text);
-  if (!startsAsContinuation && !refinesArtifact) return null;
-  return `${text}\n\nContinuation of the previous implementation request:\n${String(previousRequest).slice(0, 2000)}`;
+function preservesImplementationStructure(existing, candidate) {
+  const symbols = declaredSymbols(existing);
+  if (symbols.length === 0) return true;
+  const retained = symbols.filter(symbol => new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(candidate));
+  return retained.length >= Math.ceil(symbols.length * 0.6);
 }
 
-function shouldDeferToolCandidateProse(request, mode, hasPendingPlan) {
-  if (mode !== "neutral" || hasPendingPlan) return true;
-  return /https?:\/\/|(?:^|\s)[./~][\w/-]|\b(?:file|folder|kode|code|repository|repo|project|proyek|package|npm|workspace)\b/i.test(String(request));
+function prospectiveFileContent(tool, existing) {
+  if (tool.name === "write") return String(tool.args?.content || "");
+  if (tool.name !== "edit") return null;
+  const oldString = String(tool.args?.oldString ?? "");
+  if (!oldString || !existing.includes(oldString)) return null;
+  return existing.replace(oldString, String(tool.args?.newString ?? ""));
 }
 
-function wantsFileCount(request) {
-  return /\b(?:how many|total|count|berapa)\b[\s\S]{0,40}\bfiles?\b|\bfiles?\b[\s\S]{0,40}\b(?:how many|total|count|berapa)\b/i.test(String(request));
+function shouldDeferToolCandidateProse(contract, hasPendingPlan) {
+  return Boolean(hasPendingPlan || contract?.intent !== "answer" || contract?.targetUrl);
+}
+
+function wantsFileCount(contract) {
+  return contract?.operation === "count_files";
+}
+
+function simpleFileListRequest(contract) {
+  return contract?.operation === "list_files";
 }
 
 function fileCountFromToolResult(tool, result) {
@@ -193,28 +186,36 @@ function resultFailed(result) {
     || /^Exit:\s*(?!0\b)-?\d+/m.test(text);
 }
 
-function requestedSampleExtensions(input) {
-  const text = String(input);
-  if (!/\b(?:examples?|samples?|contoh)\b/i.test(text)) return [];
-  return [...new Set((text.match(/\.(?:py|js|mjs|cjs|ts|tsx|html|css|json)\b/gi) || []).map(ext => ext.toLowerCase()))];
+function requestedSampleExtensions(contract) {
+  return contract?.requestedExtensions || [];
 }
 
-function needsFileMutation(input) {
-  const text = String(input);
-  if (/\b(?:delete|remove|clear|hapus|bersihkan)\b/i.test(text)) return false;
-  return /\b(?:create|build|implement|write|edit|fix|add|buat(?:kan)?|tulis(?:kan)?|ubah|perbaiki|tambahkan)\b/i.test(text);
+function needsFileMutation(contract) {
+  return Boolean(contract?.modifiesFiles);
 }
 
-function needsExecutionValidation(input) {
-  return /\b(?:test|tests|tested|run|execute|verify|tes|uji|jalankan|validasi)\b/i.test(String(input));
+function needsDeletionMutation(contract) {
+  return contract?.intent === "delete";
 }
 
-function isValidationCommand(command, input = "") {
+function clearWorkspaceRequest(contract) {
+  return contract?.operation === "clear_workspace";
+}
+
+function isDeletionCommand(command) {
+  return destructiveCommand(command);
+}
+
+function needsExecutionValidation(contract) {
+  return Boolean(contract?.validationRequested || contract?.requiredEvidence?.includes("validation"));
+}
+
+function isValidationCommand(command, domain = "general") {
   const normalized = String(command || "").trim();
   if (!normalized || /^(?:npm|pnpm|yarn|pip|pip3)\s+(?:i|install|add)\b/i.test(normalized)) return false;
   const executesCode = /\b(?:python(?:3)?|node|npm\s+test|pnpm\s+test|yarn\s+test|pytest|unittest|cargo\s+test|go\s+test)\b/i.test(normalized);
   if (!executesCode) return false;
-  if (/\b(?:encrypt|encryption|enkripsi|obfuscat|obfuscate)\b/i.test(String(input))) {
+  if (domain === "obfuscation") {
     const syntaxCheck = /ast\.parse|py_compile|node\s+--check/i.test(normalized);
     const chainedExecution = /(?:&&|;|\|\|)\s*(?:python(?:3)?|node|npm\s+test|pytest)\b/i.test(normalized);
     if (syntaxCheck && !chainedExecution) return false;
@@ -223,15 +224,10 @@ function isValidationCommand(command, input = "") {
   return true;
 }
 
-function looksIndonesian(input) {
-  return /\b(?:saya|gw|gue|mau|buat(?:kan)?|kode|file|yang|dan|lalu|coba|bisa|tolong|hapus|perbaiki|tambahkan|maksudnya|folder|ini)\b/i.test(String(input));
-}
-
-function endpointDiscoveryTarget(input, history = []) {
-  const intent = /\b(endpoint|endpoints|bundle|bundles|source\s*map|routes?|discover|bongkar|bedah|urai)\b/i.test(String(input));
-  if (!intent) return null;
+function endpointDiscoveryTarget(contract, history = []) {
+  if (contract?.operation !== "discover_endpoints") return null;
   const findUrl = value => /https?:\/\/[^\s<>"'`)\]]+/i.exec(String(value || ""))?.[0]?.replace(/[.,;:!?]+$/, "") || null;
-  const direct = findUrl(input);
+  const direct = contract.targetUrl || findUrl(contract.request);
   if (direct) return direct;
   for (let index = history.length - 1; index >= 0; index--) {
     if (history[index]?.role !== "user" || String(history[index].content).startsWith("---")) continue;
@@ -289,12 +285,7 @@ function toolMatchesPlanItem(tool, description) {
 }
 
 function isInspectionCommand(command) {
-  const normalized = String(command)
-    .replace(/^\s*cd\s+[^;&|]+\s*&&\s*/i, "")
-    .trim();
-  return /^(?:ls|find|rg|grep|pwd)\b/i.test(normalized)
-    || /^git\s+status\b/i.test(normalized)
-    || /^(?:node\s+--check|python(?:3)?\s+-c\b)/i.test(normalized);
+  return inspectionCommand(command);
 }
 
 function mutatesWorkspace(tool) {
@@ -572,16 +563,45 @@ export class Agent {
     this._invalidToolResponses = 0;
     this._emptyResponses = 0;
     this._toolEvidence = [];
+    this._inspectionCache = new Map();
+    this._workspaceListing = null;
+    this._cachedInspectionRedirects = 0;
     this._completionRedirects = 0;
     this._acceptedCreationOffer = null;
     this._resolvedArtifactDocumentation = false;
+    this._executionPolicy = null;
+    this._taskContract = fallbackIntentContract("");
     this._chat = opts.chat || chat;
     this._resetSession = opts.resetSession || resetSession;
+    const configuredResolver = opts.intentResolver;
+    this._intentResolver = typeof configuredResolver === "function"
+      ? { resolve: configuredResolver }
+      : configuredResolver?.resolve
+        ? configuredResolver
+        : new IntentResolver({ classify: opts.intentChat || this._chat });
   }
 
   abort() { this._aborted = true; }
   setModel(model) { this._model = model; }
   setQuestionHandler(handler) { this._questionHandler = handler; }
+
+  _rememberInspection(tool, result) {
+    if (resultFailed(result) || !["read", "glob", "grep", "analyze"].includes(tool.name)) return;
+    const signature = toolSignature(tool, this._workspace);
+    this._inspectionCache.set(signature, String(result));
+    if (tool.name === "glob") {
+      const target = String(tool.args?.path || this._workspace);
+      const absoluteTarget = target.startsWith("/") ? target : resolve(this._workspace, target);
+      if (resolve(absoluteTarget) === resolve(this._workspace)) {
+        this._workspaceListing = { result: String(result), signature };
+      }
+    }
+  }
+
+  _invalidateInspectionCache() {
+    this._inspectionCache.clear();
+    this._workspaceListing = null;
+  }
 
   _cleanAnswer(text) {
     let clean = text
@@ -596,15 +616,22 @@ export class Agent {
   }
 
   _missingCompletionEvidence() {
+    const policyDirective = this._executionPolicy?.completionDirective();
+    if (policyDirective) return policyDirective;
     if (this._requestMode !== "mutate") return null;
     const successful = this._toolEvidence.filter(entry => !entry.failed);
     const mutations = successful.filter(entry => ["write", "edit"].includes(entry.tool));
 
-    if (needsFileMutation(this._currentRequest) && mutations.length === 0) {
+    if (needsDeletionMutation(this._taskContract)) {
+      const deleted = successful.some(entry => entry.tool === "bash" && isDeletionCommand(entry.args?.command));
+      if (!deleted) return "No requested deletion has completed successfully.";
+    }
+
+    if (needsFileMutation(this._taskContract) && mutations.length === 0) {
       return "No requested file mutation has completed successfully.";
     }
 
-    const extensions = requestedSampleExtensions(this._currentRequest);
+    const extensions = requestedSampleExtensions(this._taskContract);
     if (extensions.length > 0) {
       const paths = mutations.map(entry => String(entry.args?.path || "").toLowerCase());
       const missing = extensions.filter(extension => !paths.some(path => path.endsWith(extension)));
@@ -618,8 +645,8 @@ export class Agent {
       }
     }
 
-    if (needsExecutionValidation(this._currentRequest)) {
-      const validated = successful.some(entry => entry.tool === "bash" && isValidationCommand(entry.args?.command, this._currentRequest));
+    if (needsExecutionValidation(this._taskContract)) {
+      const validated = successful.some(entry => entry.tool === "bash" && isValidationCommand(entry.args?.command, this._taskContract.domain));
       if (!validated) return "The requested execution test has not run successfully.";
     }
     return null;
@@ -631,28 +658,22 @@ export class Agent {
       .filter(entry => ["write", "edit"].includes(entry.tool))
       .map(entry => String(entry.args?.path || ""))
       .filter(Boolean))];
-    const validation = successful.findLast(entry => entry.tool === "bash" && isValidationCommand(entry.args?.command, this._currentRequest));
+    const validation = successful.findLast(entry => entry.tool === "bash" && isValidationCommand(entry.args?.command, this._taskContract.domain));
     const sources = successful
       .filter(entry => ["write", "edit"].includes(entry.tool))
       .map(entry => String(entry.args?.content ?? entry.args?.newString ?? ""))
       .join("\n");
     const base64Only = /\bbase64\b/i.test(sources) && !/\bAES\b|cryptography|Crypto\.Cipher/i.test(sources);
 
-    if (!looksIndonesian(this._currentRequest)) {
-      const clean = this._cleanAnswer(fallback);
-      const unsupportedAes = /\bAES(?:-\d+)?(?:-(?:CBC|GCM))?\b/i.test(clean) && !/\bAES\b|Crypto\.Cipher/i.test(sources);
-      if (clean && !unsupportedAes) return clean;
-      const lines = ["Completed successfully."];
-      if (paths.length) lines.push(`Files: ${paths.join(", ")}`);
-      if (validation) lines.push(`Validation passed: ${validation.args.command}`);
-      return lines.join("\n");
-    }
+    const clean = this._cleanAnswer(fallback);
+    const unsupportedAes = /\bAES(?:-\d+)?(?:-(?:CBC|GCM))?\b/i.test(clean) && !/\bAES\b|Crypto\.Cipher/i.test(sources);
+    if (clean && !unsupportedAes) return clean;
 
-    const lines = ["Selesai."];
-    if (paths.length) lines.push("File yang dibuat atau diperbarui:", ...paths.map(path => `- ${path}`));
-    if (validation) lines.push(`Pengujian berhasil: ${validation.args.command}`);
-    if (base64Only && /\b(?:encrypt|encryption|enkripsi|mengenkripsi)\b/i.test(this._currentRequest)) {
-      lines.push("Catatan: implementasi memakai Base64 untuk encoding/obfuscation, bukan enkripsi kriptografis.");
+    const lines = ["Completed successfully."];
+    if (paths.length) lines.push("Files created or updated:", ...paths.map(path => `- ${path}`));
+    if (validation) lines.push(`Validation passed: ${validation.args.command}`);
+    if (base64Only && this._taskContract.domain === "obfuscation") {
+      lines.push("Note: the implementation uses Base64 encoding/obfuscation, not cryptographic encryption.");
     }
     return lines.join("\n");
   }
@@ -661,38 +682,37 @@ export class Agent {
     const parts = [
       this._config.system,
       "",
-      "You are a coding agent with file/search/shell/web tools.",
+      "You are an autonomous coding agent working with the user inside one workspace.",
       "",
-      "TOOL CALL FORMAT:",
+      "EXECUTION WORKFLOW:",
+      "1. Understand the current outcome and use conversation context for short follow-ups.",
+      "2. Inspect only the evidence needed to choose a safe action.",
+      "3. For a complex task, form a concrete plan; otherwise act directly.",
+      "4. Execute one tool at a time and use its actual result to choose the next step.",
+      "5. Recover from failures by changing the action based on the error, not by repeating it.",
+      "6. Verify requested outcomes with tests or observable state when applicable.",
+      "7. Give a final answer only when the task state shows the requested outcome is complete.",
+      "",
+      "DECISION CONTRACT:",
+      "- If an observable action is required, call a tool instead of describing the action.",
+      "- Never claim that a file was created, changed, deleted, tested, fetched, or executed without a successful tool result.",
+      "- Do not restart completed research or repeat an equivalent inspection when existing evidence answers the question.",
+      "- Preserve unrelated workspace changes and stay within the user's requested scope.",
+      "- Ask a question only when a missing choice materially changes the implementation; otherwise make a safe assumption and proceed.",
+      "- On failure, inspect the error and select a different recovery action. Do not retry an identical failed call.",
+      "- Do not start long-lived foreground servers. Prepare the project and report the command the user can run.",
+      "",
+      "TOOL PROTOCOL:",
       "- Respond with EXACTLY one JSON object: {\"tool\":\"name\",\"args\":{...}}",
       "- No text before or after the JSON. No markdown. No explanation.",
+      "- Use normal concise prose only when no further tool action is needed.",
       "",
-      "RULES:",
-      "- Create/write files immediately when asked. No confirmation needed.",
-      "- Never ask 'Do you want me to...' — just do it.",
-      "- Keep answers concise.",
-      "- If edit fails, re-read the file and retry with write.",
-      "- If a bash command times out (result contains 'Timeout'), do NOT retry it. Tell the user to run it manually.",
-      "- Never repeat the exact same broken command.",
-      "- READ ONCE then ACT. After reading a file, immediately edit/write/bash.",
-      "- Do NOT use bash to read files (cat/tail/head). Use the read tool.",
-      "- To check if a directory exists (like node_modules), use: {\"tool\":\"bash\",\"args\":{\"command\":\"ls -d node_modules 2>/dev/null && echo EXISTS || echo MISSING\"}}. Do NOT use glob for directories.",
-      "- When all files are written and deps installed, respond concisely.",
-      "- Keep answers SHORT. Just say what was done and how to run it. No extra formatting.",
-      "",
-      "WHEN USER ASKS TO RUN CODE:",
-      "- NEVER start long-lived servers (node server.js, npm start, python3 -m http.server). They block forever.",
-      "- Instead, write all files and tell the user how to run it themselves.",
-      "",
-      "DEPENDENCY MANAGEMENT:",
-      "- Before npm install, check if node_modules/ exists using bash: ls -d node_modules.",
-      "- If node_modules exists and package.json has not changed, skip npm install.",
-      "- Only run npm install when package.json is new or changed.",
-      "",
-      "- If command times out: run 'ps aux | grep <process>' to find background processes, kill them with 'kill -9 PID', then retry.",
-      `- Workspace: ${this._workspace}. Stay inside.`,
+      `WORKSPACE: ${this._workspace}`,
       "",
     ];
+    if (this._executionPolicy) {
+      parts.push("CURRENT TASK STATE:", this._executionPolicy.contextBlock(), "");
+    }
     if (this._lastAnalysis) {
       parts.push("LATEST ANALYSIS:", this._lastAnalysis, "");
     }
@@ -874,19 +894,36 @@ export class Agent {
     this._compactMessages();
     const previousMessages = this._messages.slice();
     const previousRequest = this._currentRequest;
-    const previousMode = this._requestMode;
-    const creationOffer = acceptedCreationOffer(input, previousMessages);
-    const implementationContinuation = creationOffer
-      ? null
-      : continuedImplementationRequest(input, previousRequest, previousMode);
+    const previousAssistant = previousMessages.findLast(message =>
+      message.role === "assistant" && streamDisposition(message.content) !== "structured")?.content || "";
+    let taskContract;
+    try {
+      taskContract = await this._intentResolver.resolve({
+        input,
+        previousRequest,
+        previousAssistant,
+        history: previousMessages,
+        model: this._model,
+        signal,
+      });
+    } catch {
+      taskContract = fallbackIntentContract(input);
+    }
+    this._taskContract = normalizeIntentContract(taskContract, input);
+    const creationOffer = this._taskContract.continuation === "accept_offer"
+      ? String(previousAssistant).slice(0, 1200)
+      : null;
+    const implementationContinuation = this._taskContract.continuation === "refine_existing" && previousRequest
+      ? `${input}\n\nContinuation of previous implementation:\n${String(previousRequest).slice(0, 1200)}`
+      : null;
     this._messages.push({ role: "user", content: input });
     this._requestStartIndex = this._messages.length - 1;
     this._currentRequest = creationOffer
       ? `${input}\n\nAccepted implementation offer: ${creationOffer}`
       : implementationContinuation || input;
     this._acceptedCreationOffer = creationOffer;
-    this._requestMode = requestMode(this._currentRequest);
-    this._requiresPlan = implementationContinuation ? false : requiresPlan(this._currentRequest);
+    this._requestMode = requestMode(this._taskContract);
+    this._requiresPlan = implementationContinuation ? false : requiresPlan(this._taskContract);
     this._planningPhase = this._requiresPlan;
     this._turn = 0;
     this._aborted = false;
@@ -905,12 +942,14 @@ export class Agent {
     this._invalidToolResponses = 0;
     this._emptyResponses = 0;
     this._toolEvidence = [];
+    this._cachedInspectionRedirects = 0;
     this._completionRedirects = 0;
     this._resolvedArtifactDocumentation = false;
+    this._executionPolicy = new ExecutionPolicy(this._taskContract, { planning: this._planningPhase });
     let pendingProse = "";
     let proseContinuations = 0;
 
-    const discoveryTarget = endpointDiscoveryTarget(input, previousMessages);
+    const discoveryTarget = endpointDiscoveryTarget(this._taskContract, previousMessages);
     if (discoveryTarget) {
       this._requestMode = "read-only";
       this._planningPhase = false;
@@ -930,6 +969,7 @@ export class Agent {
       }
       yield { type: "tool-result", tool: "web", result };
       const failed = result.startsWith("Error:");
+      this._executionPolicy.record("web", args, result, failed);
       this._plan[0].status = failed ? "failed" : "done";
       yield { type: "plan-update", index: 0, status: this._plan[0].status };
       this._planIndex = 1;
@@ -941,6 +981,78 @@ export class Agent {
         yield { type: "answer", content: result };
       }
       return;
+    }
+
+    // Clearing a workspace is unambiguous when the user explicitly asks to
+    // remove every file. Execute it locally instead of trusting a model to call
+    // a destructive tool or accepting an unsupported "done" claim. `find`
+    // handles hidden entries as well, and the final `test` verifies the exact
+    // workspace root is empty before completion is reported.
+    if (clearWorkspaceRequest(this._taskContract)) {
+      const bash = this._registry.get("bash");
+      if (!bash) {
+        yield { type: "error", content: "The shell tool is unavailable, so the workspace was not cleared." };
+        return;
+      }
+      const args = {
+        command: "find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && test -z \"$(find . -mindepth 1 -maxdepth 1 -print -quit)\"",
+        workdir: this._workspace,
+      };
+      yield { type: "tool-call", tool: "bash", args };
+      let result;
+      try {
+        result = await bash.execute(args);
+      } catch (error) {
+        result = `Error: ${error.message}`;
+      }
+      yield { type: "tool-result", tool: "bash", result };
+      const failed = resultFailed(result);
+      this._toolEvidence.push({ tool: "bash", args: { ...args }, result, failed });
+      this._executionPolicy.record("bash", args, result, failed);
+      if (failed) {
+        const answer = "The workspace was not cleared. Check the Shell result above.";
+        this._messages.push({ role: "assistant", content: answer });
+        yield { type: "answer", content: answer };
+        return;
+      }
+      const answer = `Done. All files in ${this._workspace} were deleted and the folder was verified empty.`;
+      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
+      this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
+      this._messages.push({ role: "assistant", content: answer });
+      yield { type: "answer", content: answer };
+      return;
+    }
+
+    // A plain directory-listing request has one deterministic implementation.
+    // Running it here avoids semantically duplicate `find`, `ls`, and `glob`
+    // calls that differ in syntax but return the same information.
+    if (simpleFileListRequest(this._taskContract)) {
+      const glob = this._registry.get("glob");
+      if (glob) {
+        const args = { pattern: "*", path: this._workspace, _agentWorkspace: this._workspace };
+        yield { type: "tool-call", tool: "glob", args };
+        let result;
+        try {
+          result = await glob.execute(args);
+        } catch (error) {
+          result = `Error: ${error.message}`;
+        }
+        yield { type: "tool-result", tool: "glob", result };
+        const failed = resultFailed(result);
+        this._toolEvidence.push({ tool: "glob", args: { ...args }, result, failed });
+        this._executionPolicy.record("glob", args, result, failed);
+        this._rememberInspection({ name: "glob", args }, result);
+        if (failed) {
+          yield { type: "error", content: result };
+          return;
+        }
+        const answer = cachedToolAnswer({ name: "glob", args }, result);
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "glob", args }) });
+        this._messages.push({ role: "user", content: `---TOOL RESULT: glob---\n${result}` });
+        this._messages.push({ role: "assistant", content: answer });
+        yield { type: "answer", content: answer };
+        return;
+      }
     }
 
     while (this._turn < this._config.maxTurns) {
@@ -959,8 +1071,7 @@ export class Agent {
       let streamVisibleLength = 0;
       let finalError = null;
       const deferProse = shouldDeferToolCandidateProse(
-        this._currentRequest,
-        this._requestMode,
+        this._taskContract,
         Boolean(this._plan && this._planIndex < this._plan.length),
       )
         || Boolean(pendingProse);
@@ -1101,6 +1212,7 @@ export class Agent {
           this._plan = plan;
           this._planIndex = 0;
           this._planningPhase = false;
+          this._executionPolicy.setPhase("executing");
           yield { type: "plan", items: plan };
           this._messages.push({ role: "assistant", content: visibleReply });
           this._messages.push({ role: "user", content: "Begin the first pending plan item now. Use exactly one tool call when a tool is needed." });
@@ -1111,7 +1223,9 @@ export class Agent {
           this._completionRedirects++;
           this._messages.push({ role: "assistant", content: reply });
           if (this._completionRedirects >= 3) {
-            yield { type: "error", content: `Stopped: ${missingEvidence}` };
+            const answer = `The task is not complete because required execution evidence is still missing. ${missingEvidence}`;
+            this._messages.push({ role: "assistant", content: answer });
+            yield { type: "answer", content: answer };
             return;
           }
           this._messages.push({
@@ -1176,7 +1290,7 @@ export class Agent {
         return;
       }
 
-      // A short confirmation such as "ya buatkan" accepts an implementation
+      // A short affirmative follow-up can accept an implementation
       // that the assistant already offered after completing its research.
       // Do not execute another web-research cycle; redirect the selected model
       // to the requested workspace mutation while preserving model identity.
@@ -1209,7 +1323,7 @@ export class Agent {
         // Planning is a UI contract for complex requests. If a model skips the
         // planning response and calls a tool immediately, provide a safe
         // fallback checklist before executing that first tool.
-        this._plan = fallbackPlan(this._requestMode, this._currentRequest);
+        this._plan = fallbackPlan(this._taskContract);
         this._planIndex = 0;
         this._planningPhase = false;
         yield { type: "plan", items: this._plan };
@@ -1240,6 +1354,50 @@ export class Agent {
         continue;
       }
 
+      if (this._executionPolicy.contract.intent === "validate" && ["write", "edit"].includes(tool.name)) {
+        const failedExecution = this._executionPolicy.evidence.some(entry => entry.tool === "bash" && entry.failed);
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        if (!failedExecution) {
+          this._messages.push({
+            role: "user",
+            content: "No execution failure has been observed. Run the existing artifact first. Do not create or rewrite files before validation produces an actual error.",
+          });
+          continue;
+        }
+
+        const rawPath = String(tool.args?.path || "");
+        const targetPath = rawPath.startsWith("/") ? rawPath : resolve(this._workspace, rawPath);
+        if (!rawPath || !existsSync(targetPath)) {
+          this._messages.push({
+            role: "user",
+            content: "Validation failed, but this proposed target is not an existing file. Inspect and repair the existing implementation that produced the failure; do not create a replacement artifact.",
+          });
+          continue;
+        }
+        const inspected = this._toolEvidence.some(entry => !entry.failed
+          && entry.tool === "read"
+          && resolve(String(entry.args?.path || "")) === resolve(targetPath));
+        if (!inspected) {
+          this._messages.push({
+            role: "user",
+            content: `Read the existing file ${targetPath} before repairing it. Preserve its current implementation and public structure.`,
+          });
+          continue;
+        }
+        const existing = readFileSync(targetPath, "utf-8");
+        const candidate = prospectiveFileContent(tool, existing);
+        if (candidate !== null && !preservesImplementationStructure(existing, candidate)) {
+          this._messages.push({
+            role: "user",
+            content: `The proposed change replaces the existing implementation in ${targetPath}. Repair the observed error in place while preserving its existing classes and functions.`,
+          });
+          continue;
+        }
+        // The tool call was recorded above while it was being validated. Avoid
+        // adding a duplicate assistant message before normal execution.
+        this._messages.pop();
+      }
+
       if (this._requestMode === "read-only" && this._plan && this._planIndex >= this._plan.length) {
         this._postPlanToolRedirects++;
         this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
@@ -1262,7 +1420,7 @@ export class Agent {
       const validationTodo = activePlanItem
         && (expectedPlanTools(activePlanItem.description) || []).includes("bash");
       const auxiliarySetup = validationTodo
-        && (tool.name !== "bash" || !isValidationCommand(tool.args?.command, this._currentRequest));
+        && (tool.name !== "bash" || !isValidationCommand(tool.args?.command, this._taskContract.domain));
       const auxiliaryDependencyFile = mismatchesPlan
         && tool.name === "write"
         && /(?:^|\/)(?:requirements(?:-[^/]*)?\.txt|package\.json|pyproject\.toml)$/i.test(String(tool.args?.path || ""));
@@ -1284,7 +1442,7 @@ export class Agent {
       }
       this._planMismatches = 0;
       if (tool.name === "question" && t) {
-        if (this._requestMode === "mutate" && needsFileMutation(this._currentRequest) && this._toolEvidence.length === 0) {
+        if (this._requestMode === "mutate" && needsFileMutation(this._taskContract) && this._toolEvidence.length === 0) {
           this._completionRedirects++;
           if (this._completionRedirects >= 3) {
             yield { type: "error", content: "Stopped: the model repeatedly asked questions instead of performing the requested file change." };
@@ -1318,11 +1476,41 @@ export class Agent {
         role: "assistant",
         content: JSON.stringify({ tool: tool.name, args: tool.args }),
       });
-      const signature = toolSignature(tool);
+      const signature = toolSignature(tool, this._workspace);
       this._repeatedToolCalls = signature === this._lastToolSignature
         ? this._repeatedToolCalls + 1
         : 1;
       this._lastToolSignature = signature;
+      const cachedInspection = this._inspectionCache.get(signature);
+      const asksToInspectFiles = this._taskContract.operation === "inspect_code";
+      if (tool.name === "glob" && asksToInspectFiles && this._workspaceListing) {
+        this._cachedInspectionRedirects++;
+        if (this._cachedInspectionRedirects >= 3) {
+          const answer = "The workspace listing is already available. Read a listed file to inspect its contents.";
+          this._messages.push({ role: "assistant", content: answer });
+          yield { type: "answer", content: answer };
+          return;
+        }
+        this._messages.push({
+          role: "user",
+          content: `---KNOWN WORKSPACE LISTING---\n${this._workspaceListing.result.slice(0, 1500)}\n\nThe workspace has already been listed. Do not call glob again. Read the relevant listed file or files now.`,
+        });
+        continue;
+      }
+      if (cachedInspection !== undefined) {
+        this._cachedInspectionRedirects++;
+        if (this._cachedInspectionRedirects >= 3) {
+          const answer = cachedToolAnswer(tool, cachedInspection);
+          this._messages.push({ role: "assistant", content: answer });
+          yield { type: "answer", content: answer };
+          return;
+        }
+        this._messages.push({
+          role: "user",
+          content: `---CACHED TOOL RESULT: ${tool.name}---\n${cachedInspection.slice(0, 1500)}\n\nThis inspection already succeeded earlier. Use its evidence and take the next required action without calling the same tool again.`,
+        });
+        continue;
+      }
       const repeatedSuccessfulCall = this._repeatedToolCalls > 1
         && this._lastToolResult !== null
         && !resultFailed(this._lastToolResult);
@@ -1330,7 +1518,7 @@ export class Agent {
         if (this._repeatedToolCalls >= 3) {
           const answer = mutatesWorkspace(tool)
             ? this._evidenceAnswer("")
-            : cachedToolAnswer(tool, this._lastToolResult, this._currentRequest);
+            : cachedToolAnswer(tool, this._lastToolResult);
           this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
@@ -1343,9 +1531,7 @@ export class Agent {
       }
       if (this._repeatedToolCalls >= 3) {
         const detail = String(this._lastToolResult || "The operation did not complete.").slice(0, 1000);
-        const answer = looksIndonesian(this._currentRequest)
-          ? `Operasi belum berhasil.\n${detail}`
-          : `The operation did not complete.\n${detail}`;
+        const answer = `The operation did not complete.\n${detail}`;
         this._messages.push({ role: "assistant", content: answer });
         yield { type: "answer", content: answer };
         return;
@@ -1410,6 +1596,12 @@ export class Agent {
         result,
         failed: resultFailed(result),
       });
+      this._rememberInspection(tool, result);
+      if (!resultFailed(result) && mutatesWorkspace(tool)) this._invalidateInspectionCache();
+      const contextualEvidence = tool.name === "bash" && isValidationCommand(tool.args?.command, this._taskContract.domain)
+        ? ["validation"]
+        : [];
+      this._executionPolicy.record(tool.name, tool.args, result, resultFailed(result), contextualEvidence);
       this._lastToolResult = result;
       if (
         tool.name === "web"
@@ -1422,12 +1614,10 @@ export class Agent {
       this._lastToolWasExecuted = true;
       if (tool.name === "write") this._totalWrites++;
 
-      if (wantsFileCount(this._currentRequest)) {
+      if (wantsFileCount(this._taskContract)) {
         const count = fileCountFromToolResult(tool, result);
         if (count !== null) {
-          const answer = looksIndonesian(this._currentRequest)
-            ? `Ada ${count} file di ${this._workspace}.`
-            : `There are ${count} files in ${this._workspace}.`;
+          const answer = `There are ${count} files in ${this._workspace}.`;
           this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
