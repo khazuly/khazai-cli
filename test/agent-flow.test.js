@@ -142,6 +142,63 @@ test("resolved package README prevents another web research cycle", async () => 
   assert.equal(events.some(event => event.type === "error"), false);
 });
 
+test("read-only tool preamble is never streamed before its tool call", async () => {
+  const registry = new Registry();
+  registry.register({
+    name: "bash",
+    description: "shell",
+    parameters: { type: "object", properties: {} },
+    async execute() { return "Exit: 0\n9"; },
+  });
+  const preamble = "HASIL LAMA YANG TIDAK BOLEH TAMPIL\n\n```plain\nstale content\n```\n";
+  const responses = [
+    preamble + JSON.stringify({ tool: "bash", args: { command: "find . -type f | wc -l" } }),
+  ];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/preamble-guard-test",
+    chat: scriptedChat(responses),
+  });
+  const events = [];
+  for await (const event of agent.loop("ada total berapa file di folder ini")) events.push(event);
+
+  assert.equal(events.some(event => event.type === "stream"), false);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
+  assert.equal(events.filter(event => event.type === "answer").length, 1);
+  assert.equal(events.find(event => event.type === "answer")?.content, "Ada 9 file di /tmp/preamble-guard-test.");
+  assert.equal(events.some(event => JSON.stringify(event).includes("HASIL LAMA")), false);
+});
+
+test("implementation refinement inherits mutation context and hides tool preamble", async () => {
+  const registry = new Registry();
+  registry.register({
+    name: "write",
+    description: "write",
+    parameters: { type: "object", properties: {} },
+    async execute(args) { return `Written ${args.path}`; },
+  });
+  const responses = [
+    JSON.stringify({ tool: "write", args: { path: "obfuscator.py", content: "print('v1')\n" } }),
+    "Created the first implementation.",
+    "Implementasi lama yang tidak boleh tampil\n" + JSON.stringify({
+      tool: "write",
+      args: { path: "obfuscator.py", content: "print('runnable obfuscated output')\n" },
+    }),
+    "Updated the implementation.",
+  ];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/mutation-continuation-test",
+    chat: scriptedChat(responses),
+  });
+  for await (const _event of agent.loop("buatkan kode obfuscator Python")) {}
+  const events = [];
+  for await (const event of agent.loop("tapi gw mau kode hasil enkripsi tetap normal dan bisa dijalankan")) events.push(event);
+
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
+  assert.equal(events.some(event => event.type === "stream" && /Implementasi lama/.test(event.token)), false);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Selesai/);
+  assert.equal(events.some(event => event.type === "error"), false);
+});
+
 test("complex Claude flow streams one final answer only after validation", async () => {
   const plan = [
     "[ ] Create obfuscate.py with argparse",

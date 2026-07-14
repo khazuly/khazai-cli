@@ -153,6 +153,38 @@ function acceptedCreationOffer(input, history = []) {
   return null;
 }
 
+function continuedImplementationRequest(input, previousRequest, previousMode) {
+  if (previousMode !== "mutate" || !previousRequest) return null;
+  const text = String(input || "").trim();
+  const startsAsContinuation = /^(?:tapi|tetapi|terus|nah|dan|lalu|but|also|and)\b/i.test(text);
+  const refinesArtifact = /\b(?:kode|code|file|hasil|output|implementasi|script|program)\b/i.test(text)
+    && /\b(?:mau|ingin|harus|tetap|jangan|ubah|tambahkan|bisa|want|should|must|keep|without)\b/i.test(text);
+  if (!startsAsContinuation && !refinesArtifact) return null;
+  return `${text}\n\nContinuation of the previous implementation request:\n${String(previousRequest).slice(0, 2000)}`;
+}
+
+function shouldDeferToolCandidateProse(request, mode, hasPendingPlan) {
+  if (mode !== "neutral" || hasPendingPlan) return true;
+  return /https?:\/\/|(?:^|\s)[./~][\w/-]|\b(?:file|folder|kode|code|repository|repo|project|proyek|package|npm|workspace)\b/i.test(String(request));
+}
+
+function wantsFileCount(request) {
+  return /\b(?:how many|total|count|berapa)\b[\s\S]{0,40}\bfiles?\b|\bfiles?\b[\s\S]{0,40}\b(?:how many|total|count|berapa)\b/i.test(String(request));
+}
+
+function fileCountFromToolResult(tool, result) {
+  const text = String(result || "");
+  if (resultFailed(text)) return null;
+  if (tool.name === "glob") {
+    const found = /^Found\s+(\d+)/im.exec(text);
+    return found ? Number(found[1]) : null;
+  }
+  if (tool.name !== "bash" || !/\bwc\s+-l\b/i.test(String(tool.args?.command || ""))) return null;
+  const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+  const numeric = lines.findLast(line => /^\d+$/.test(line));
+  return numeric === undefined ? null : Number(numeric);
+}
+
 function resultFailed(result) {
   const text = String(result || "");
   return text.startsWith("Error")
@@ -841,15 +873,20 @@ export class Agent {
   async *loop(input, signal) {
     this._compactMessages();
     const previousMessages = this._messages.slice();
+    const previousRequest = this._currentRequest;
+    const previousMode = this._requestMode;
     const creationOffer = acceptedCreationOffer(input, previousMessages);
+    const implementationContinuation = creationOffer
+      ? null
+      : continuedImplementationRequest(input, previousRequest, previousMode);
     this._messages.push({ role: "user", content: input });
     this._requestStartIndex = this._messages.length - 1;
     this._currentRequest = creationOffer
       ? `${input}\n\nAccepted implementation offer: ${creationOffer}`
-      : input;
+      : implementationContinuation || input;
     this._acceptedCreationOffer = creationOffer;
     this._requestMode = requestMode(this._currentRequest);
-    this._requiresPlan = requiresPlan(this._currentRequest);
+    this._requiresPlan = implementationContinuation ? false : requiresPlan(this._currentRequest);
     this._planningPhase = this._requiresPlan;
     this._turn = 0;
     this._aborted = false;
@@ -921,8 +958,11 @@ export class Agent {
       let streamStarted = false;
       let streamVisibleLength = 0;
       let finalError = null;
-      const deferProse = this._requestMode === "mutate"
-        || Boolean(this._plan && this._planIndex < this._plan.length)
+      const deferProse = shouldDeferToolCandidateProse(
+        this._currentRequest,
+        this._requestMode,
+        Boolean(this._plan && this._planIndex < this._plan.length),
+      )
         || Boolean(pendingProse);
       // A request must keep the model selected by the user for its complete
       // lifetime, including transport retries and malformed-tool recovery.
@@ -1381,6 +1421,18 @@ export class Agent {
       this._lastToolIsRead = ["read", "glob", "grep"].includes(tool.name);
       this._lastToolWasExecuted = true;
       if (tool.name === "write") this._totalWrites++;
+
+      if (wantsFileCount(this._currentRequest)) {
+        const count = fileCountFromToolResult(tool, result);
+        if (count !== null) {
+          const answer = looksIndonesian(this._currentRequest)
+            ? `Ada ${count} file di ${this._workspace}.`
+            : `There are ${count} files in ${this._workspace}.`;
+          this._messages.push({ role: "assistant", content: answer });
+          yield { type: "answer", content: answer };
+          return;
+        }
+      }
 
       // A no-op file mutation means the requested end state is already on
       // disk. Do not hand it back to the model, which can otherwise alternate
