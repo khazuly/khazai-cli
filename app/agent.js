@@ -973,7 +973,7 @@ export class Agent {
       this._plan[0].status = failed ? "failed" : "done";
       yield { type: "plan-update", index: 0, status: this._plan[0].status };
       this._planIndex = 1;
-      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "web", args }) });
+      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "web", args }) });
       this._messages.push({ role: "user", content: `---ENDPOINT DISCOVERY RESULT---\n${result}` });
       if (failed) {
         yield { type: "error", content: result };
@@ -1011,14 +1011,14 @@ export class Agent {
       this._executionPolicy.record("bash", args, result, failed);
       if (failed) {
         const answer = "The workspace was not cleared. Check the Shell result above.";
-        this._messages.push({ role: "assistant", content: answer });
+        this._messages.push({ role: "developer", content: answer });
         yield { type: "answer", content: answer };
         return;
       }
       const answer = `Done. All files in ${this._workspace} were deleted and the folder was verified empty.`;
-      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
+      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "bash", args }) });
       this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
-      this._messages.push({ role: "assistant", content: answer });
+      this._messages.push({ role: "developer", content: answer });
       yield { type: "answer", content: answer };
       return;
     }
@@ -1047,9 +1047,9 @@ export class Agent {
           return;
         }
         const answer = cachedToolAnswer({ name: "glob", args }, result);
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "glob", args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: "glob", args }) });
         this._messages.push({ role: "user", content: `---TOOL RESULT: glob---\n${result}` });
-        this._messages.push({ role: "assistant", content: answer });
+        this._messages.push({ role: "developer", content: answer });
         yield { type: "answer", content: answer };
         return;
       }
@@ -1199,7 +1199,7 @@ export class Agent {
             ? visibleReply
             : (streamTail || reply.slice(streamVisibleLength));
           streamTail = "";
-          this._messages.push({ role: "assistant", content: reply });
+          this._messages.push({ role: "developer", content: reply });
           this._messages.push({
             role: "user",
             content: "The previous response ended mid-content. Continue from the exact cutoff and finish the response.",
@@ -1214,17 +1214,17 @@ export class Agent {
           this._planningPhase = false;
           this._executionPolicy.setPhase("executing");
           yield { type: "plan", items: plan };
-          this._messages.push({ role: "assistant", content: visibleReply });
+          this._messages.push({ role: "developer", content: visibleReply });
           this._messages.push({ role: "user", content: "Begin the first pending plan item now. Use exactly one tool call when a tool is needed." });
           continue;
         }
         const missingEvidence = this._missingCompletionEvidence();
         if (missingEvidence) {
           this._completionRedirects++;
-          this._messages.push({ role: "assistant", content: reply });
+          this._messages.push({ role: "developer", content: reply });
           if (this._completionRedirects >= 3) {
             const answer = `The task is not complete because required execution evidence is still missing. ${missingEvidence}`;
-            this._messages.push({ role: "assistant", content: answer });
+            this._messages.push({ role: "developer", content: answer });
             yield { type: "answer", content: answer };
             return;
           }
@@ -1246,7 +1246,7 @@ export class Agent {
           } catch {
             answer = "No answer provided";
           }
-          this._messages.push({ role: "assistant", content: visibleReply });
+          this._messages.push({ role: "developer", content: visibleReply });
           this._messages.push({ role: "user", content: `---USER ANSWER---\n${String(answer)}` });
           continue;
         }
@@ -1255,7 +1255,7 @@ export class Agent {
           // the remaining todos pending until their corresponding tool work has
           // actually finished, then continue the execution loop.
           this._planNarrations++;
-          this._messages.push({ role: "assistant", content: reply });
+          this._messages.push({ role: "developer", content: reply });
           if (this._planNarrations >= 3) {
             yield { type: "error", content: "Stopped: the plan still has pending items, but the model kept narrating instead of executing them." };
             return;
@@ -1268,7 +1268,7 @@ export class Agent {
         }
         if (this._requestMode === "mutate") {
           const answer = this._evidenceAnswer(visibleReply);
-          this._messages.push({ role: "assistant", content: answer });
+          this._messages.push({ role: "developer", content: answer });
           yield { type: "stream", token: answer };
           yield { type: "stream-end" };
           return;
@@ -1285,7 +1285,7 @@ export class Agent {
           const remaining = reply.slice(streamVisibleLength);
           if (remaining) yield { type: "stream", token: remaining };
         }
-        this._messages.push({ role: "assistant", content: visibleReply });
+        this._messages.push({ role: "developer", content: visibleReply });
         yield { type: "stream-end" };
         return;
       }
@@ -1296,7 +1296,7 @@ export class Agent {
       // to the requested workspace mutation while preserving model identity.
       if (this._acceptedCreationOffer && ["web", "websearch"].includes(tool.name)) {
         this._messages.push({
-          role: "assistant",
+          role: "developer",
           content: JSON.stringify({ tool: tool.name, args: tool.args }),
         });
         this._messages.push({
@@ -1308,7 +1308,7 @@ export class Agent {
 
       if (this._resolvedArtifactDocumentation && ["web", "websearch"].includes(tool.name)) {
         this._messages.push({
-          role: "assistant",
+          role: "developer",
           content: JSON.stringify({ tool: tool.name, args: tool.args }),
         });
         this._messages.push({
@@ -1338,7 +1338,7 @@ export class Agent {
       }
       if (this._requestMode === "read-only" && mutatesWorkspace(tool)) {
         this._readOnlyRedirects++;
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (this._readOnlyRedirects > 1) {
           yield { type: "error", content: "Stopped: this request is read-only, but the model kept requesting workspace changes." };
           return;
@@ -1356,7 +1356,7 @@ export class Agent {
 
       if (this._executionPolicy.contract.intent === "validate" && ["write", "edit"].includes(tool.name)) {
         const failedExecution = this._executionPolicy.evidence.some(entry => entry.tool === "bash" && entry.failed);
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (!failedExecution) {
           this._messages.push({
             role: "user",
@@ -1400,7 +1400,7 @@ export class Agent {
 
       if (this._requestMode === "read-only" && this._plan && this._planIndex >= this._plan.length) {
         this._postPlanToolRedirects++;
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (this._postPlanToolRedirects >= 3) {
           yield { type: "error", content: "Stopped: the research todo is complete, but the model kept requesting more tools." };
           return;
@@ -1429,7 +1429,7 @@ export class Agent {
       if (mismatchesPlan && !auxiliaryTool) {
         this._planMismatches++;
         const expected = expectedPlanTools(this._plan[this._planIndex].description) || [];
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (this._planMismatches >= 3) {
           yield { type: "error", content: `Stopped: the model repeatedly selected the wrong tool for todo ${this._planIndex + 1}.` };
           return;
@@ -1448,7 +1448,7 @@ export class Agent {
             yield { type: "error", content: "Stopped: the model repeatedly asked questions instead of performing the requested file change." };
             return;
           }
-          this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+          this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
           this._messages.push({ role: "user", content: "The request already contains enough information for a first implementation. Perform the file change now." });
           continue;
         }
@@ -1467,13 +1467,13 @@ export class Agent {
         } catch {
           answer = "No answer provided";
         }
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         this._messages.push({ role: "user", content: `---USER ANSWER---\n${String(answer)}` });
         continue;
       }
 
       this._messages.push({
-        role: "assistant",
+        role: "developer",
         content: JSON.stringify({ tool: tool.name, args: tool.args }),
       });
       const signature = toolSignature(tool, this._workspace);
@@ -1487,7 +1487,7 @@ export class Agent {
         this._cachedInspectionRedirects++;
         if (this._cachedInspectionRedirects >= 3) {
           const answer = "The workspace listing is already available. Read a listed file to inspect its contents.";
-          this._messages.push({ role: "assistant", content: answer });
+          this._messages.push({ role: "developer", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -1501,7 +1501,7 @@ export class Agent {
         this._cachedInspectionRedirects++;
         if (this._cachedInspectionRedirects >= 3) {
           const answer = cachedToolAnswer(tool, cachedInspection);
-          this._messages.push({ role: "assistant", content: answer });
+          this._messages.push({ role: "developer", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -1519,7 +1519,7 @@ export class Agent {
           const answer = mutatesWorkspace(tool)
             ? this._evidenceAnswer("")
             : cachedToolAnswer(tool, this._lastToolResult);
-          this._messages.push({ role: "assistant", content: answer });
+          this._messages.push({ role: "developer", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -1532,7 +1532,7 @@ export class Agent {
       if (this._repeatedToolCalls >= 3) {
         const detail = String(this._lastToolResult || "The operation did not complete.").slice(0, 1000);
         const answer = `The operation did not complete.\n${detail}`;
-        this._messages.push({ role: "assistant", content: answer });
+        this._messages.push({ role: "developer", content: answer });
         yield { type: "answer", content: answer };
         return;
       }
@@ -1618,7 +1618,7 @@ export class Agent {
         const count = fileCountFromToolResult(tool, result);
         if (count !== null) {
           const answer = `There are ${count} files in ${this._workspace}.`;
-          this._messages.push({ role: "assistant", content: answer });
+          this._messages.push({ role: "developer", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -1629,7 +1629,7 @@ export class Agent {
       // read/write/edit forever while trying to "finish" the same task.
       if (["write", "edit"].includes(tool.name) && result.startsWith("No changes to ")) {
         const answer = `Done — ${tool.args.path} already matches the requested change.`;
-        this._messages.push({ role: "assistant", content: answer });
+        this._messages.push({ role: "developer", content: answer });
         yield { type: "answer", content: answer };
         return;
       }
