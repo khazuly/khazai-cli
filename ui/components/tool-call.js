@@ -47,7 +47,7 @@ function ResultPreview({ presentation }) {
 export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false }) {
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
   const stateLabel = presentation.state === "running"
-    ? "running..."
+    ? null
     : presentation.state === "failed"
       ? "failed"
       : presentation.state === "warning"

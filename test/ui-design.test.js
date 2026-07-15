@@ -153,8 +153,8 @@ test("conversation hierarchy and tool metadata remain compact at mobile width", 
   ] }), 40, 24);
 
   assert.ok(frame.indexOf("You") < frame.indexOf("KhazAI"));
-  assert.ok(frame.indexOf("KhazAI") < frame.indexOf("Fetch"));
-  assert.match(frame, /Fetch\s+618 ms/);
+  assert.ok(frame.indexOf("KhazAI") < frame.indexOf("Shell"));
+  assert.match(frame, /Shell\s+618 ms/);
   assert.match(frame, /text\/html · 187 B · 103 chars/);
   assert.doesNotMatch(frame, /URL:|Content-Type:|Total chars:|[✓✗◌]/);
   assert.ok(maximumBlankRun(frame.trimEnd()) <= 2);
@@ -210,7 +210,7 @@ test("tool states use words and long output is collapsed", async () => {
     h(ToolCall, { tool: "bash", args: { command: "npm start" }, done: true, content: "Warning: redirected" }),
   ), 50, 30);
 
-  assert.match(frame, /running\.\.\./);
+  assert.doesNotMatch(frame, /running\.\.\./);
   assert.match(frame, /failed/);
   assert.match(frame, /warning/);
   assert.match(frame, /show 4 more lines\.\.\./);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeUrl, npmPackageFromUrl, webTool } from "../tools/web.js";
+import { bashTool } from "../tools/shell.js";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { fallbackIntentContract } from "../app/intent-resolver.js";
@@ -38,18 +39,19 @@ test("invalid fetch input returns one clean error", async () => {
   assert.equal((result.match(/Error:/g) || []).length, 1);
 });
 
-test("a raw-domain fetch completes its plan after tool-level normalization", async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async value => new Response("<main>reachable</main>", {
-    status: 200,
-    headers: { "content-type": "text/html" },
-  });
+test("a raw-domain URL inspection completes with shell instead of a fetch tool", async () => {
   const registry = new Registry();
-  registry.register(webTool);
+  registry.register({
+    ...bashTool,
+    async execute(args) {
+      assert.match(args.command, /aichat\.org/);
+      return "Exit: 0\nURL: https://aichat.org/\n<main>reachable</main>";
+    },
+  });
   const responses = [
-    "[ ] Fetch aichat.org",
-    JSON.stringify({ tool: "web", args: { url: "aichat.org" } }),
-    "Fetch selesai.",
+    "[ ] Inspect aichat.org with Shell",
+    JSON.stringify({ tool: "bash", args: { command: "curl -Ls https://aichat.org | head -80" } }),
+    "Inspection complete.",
   ];
   const agent = new Agent(registry, {
     workspace: "/tmp/fetch-normalize-plan",
@@ -60,40 +62,38 @@ test("a raw-domain fetch completes its plan after tool-level normalization", asy
       return response;
     },
   });
-  try {
-    const events = [];
-    for await (const event of agent.loop("fetch aichat.org")) events.push(event);
-    assert.equal(events.some(event => event.type === "plan-update" && event.status === "failed"), false);
-    assert.equal(events.some(event => /Invalid URL/i.test(event.result || event.content || "")), false);
-    assert.match(events.filter(event => event.type === "tool-result").at(0)?.result || "", /URL: https:\/\/aichat\.org\//);
-  } finally {
-    global.fetch = originalFetch;
-  }
+  const events = [];
+  for await (const event of agent.loop("fetch aichat.org")) events.push(event);
+  assert.equal(events.some(event => event.type === "plan-update" && event.status === "failed"), false);
+  assert.equal(events.some(event => /Invalid URL/i.test(event.result || event.content || "")), false);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
+  assert.match(events.filter(event => event.type === "tool-result").at(0)?.result || "", /URL: https:\/\/aichat\.org\//);
 });
 
-test("bare-domain endpoint discovery bypasses the model and fetches deterministically", async () => {
-  const originalFetch = global.fetch;
-  const requests = [];
-  global.fetch = async value => {
-    requests.push(String(value));
-    return new Response("<title>AIChat</title><main>chat</main>", { status: 200, headers: { "content-type": "text/html" } });
-  };
+test("bare-domain endpoint discovery uses shell-visible inspection", async () => {
   const registry = new Registry();
-  registry.register(webTool);
+  const commands = [];
+  registry.register({
+    ...bashTool,
+    async execute(args) {
+      commands.push(args.command);
+      return "Exit: 0\nJS chars 1200 from https://aichat.org/assets/app.js\nfetch('/api/chat', { method: 'POST' })\n[POST] /api/chat";
+    },
+  });
   const agent = new Agent(registry, {
     workspace: "/tmp/endpoint-discovery",
     intentResolver: async ({ input }) => fallbackIntentContract(input),
-    chat: async () => { throw new Error("endpoint discovery should not require a model turn"); },
+    chat: async (_messages, options) => {
+      const response = JSON.stringify({ tool: "bash", args: { command: "tmp=$(mktemp -d /tmp/khazai-endpoints-XXXXXX); curl -Ls https://aichat.org/assets/app.js > \"$tmp/app.js\"; rg \"fetch|/api|chat\" \"$tmp\"" } });
+      options.onToken?.(response);
+      return response;
+    },
   });
-  try {
-    const events = [];
-    for await (const event of agent.loop("discover endpoints at aichat.org")) events.push(event);
-    assert.match(requests[0], /^https:\/\/aichat\.org/);
-    assert.equal(events.some(event => /Unable to continue|Invalid URL/i.test(event.content || event.result || "")), false);
-    assert.match(events.find(event => event.type === "answer")?.content || "", /Passive endpoint discovery/);
-  } finally {
-    global.fetch = originalFetch;
-  }
+  const events = [];
+  for await (const event of agent.loop("discover endpoints at aichat.org")) events.push(event);
+  assert.match(commands[0], /aichat\.org/);
+  assert.equal(events.some(event => /Unable to continue|Invalid URL/i.test(event.content || event.result || "")), false);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
 });
 
 test("npm package URLs resolve scoped and unscoped names", () => {

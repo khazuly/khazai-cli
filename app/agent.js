@@ -47,9 +47,9 @@ function fallbackPlan(contract) {
   if (["inspect", "research"].includes(contract?.intent)) {
     if (["research", "discover_endpoints"].includes(contract?.operation)) {
       return [
-        { status: "pending", description: "Fetch the requested website home page" },
+        { status: "pending", description: "Inspect the requested website with shell or search tools" },
         { status: "pending", description: "Search the web for indexed pages on the requested domain" },
-        { status: "pending", description: "Fetch a discovered public page from the requested domain" },
+        { status: "pending", description: "Inspect discovered public assets with shell commands" },
       ];
     }
     return [
@@ -288,9 +288,6 @@ function isValidationCommand(command, domain = "general") {
 
 function endpointDiscoveryTarget(contract, history = []) {
   if (contract?.operation !== "discover_endpoints") return null;
-  // Fetch owns protocol normalization. Keep a bare hostname here so requests
-  // such as "discover endpoints aichat.org" use the deterministic discovery
-  // path instead of asking the model to repair an Invalid URL response.
   const findUrl = value => /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>"'`)\]]*)?/i.exec(String(value || ""))?.[0]?.replace(/[.,;:!?]+$/, "") || null;
   const direct = contract.targetUrl || findUrl(contract.request);
   if (direct) return direct;
@@ -302,11 +299,45 @@ function endpointDiscoveryTarget(contract, history = []) {
   return null;
 }
 
+function endpointTargetHost(targetUrl) {
+  try {
+    return new URL(/^https?:\/\//i.test(String(targetUrl)) ? targetUrl : `https://${targetUrl}`).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function commandMentionsEndpointTarget(command, targetUrl) {
+  const text = String(command || "").toLowerCase();
+  const host = endpointTargetHost(targetUrl);
+  return Boolean(host && text.includes(host));
+}
+
+function endpointAssetDownloadWritesOutsideTmp(command) {
+  const text = String(command || "");
+  const writesToTmp = /(?:^|[\s"'`=:(])\/tmp(?:\/|\b)|\bos\.tmpdir\s*\(|\btmpdir\s*\(|\bmktemp\b/i.test(text);
+  if (writesToTmp) return false;
+  return /\b(?:curl|wget)\b[\s\S]*(?:\s(?:-o|--output|-c|--cookie-jar)\s+\S+|\s--output-document=\S+|\s-O\b|>\s*[^&|;\s]+)/i.test(text)
+    || /\b(?:fs\.)?(?:writeFileSync|writeFile|createWriteStream|appendFileSync|appendFile|mkdirSync)\s*\(/i.test(text)
+    || /\b(?:Deno\.writeFile|Bun\.write)\s*\(/i.test(text)
+    || /\b(?:download|save|persist)\b[\s\S]*\b(?:chunk|bundle|script|asset|source\s*map|\.js|\.map)\b/i.test(text);
+}
+
+function endpointInspectionGuidance(targetUrl, proposedTool) {
+  return [
+    `The user asked to discover endpoints from ${targetUrl}.`,
+    proposedTool === "bash"
+      ? "The shell command must inspect that target domain directly."
+      : "Before repository or search tools, inspect the target site directly with bash.",
+    "Run a normal shell inspection: curl/wget the page, extract linked scripts/modules/chunks/source maps, inspect those assets, and scan for fetch/axios/XMLHttpRequest/WebSocket/EventSource/API/chat endpoint strings. If any fetched asset is written to disk, write only under /tmp.",
+  ].join("\n");
+}
+
 export function expectedPlanTools(description) {
   const text = String(description).toLowerCase();
-  if (/\b(?:github|git repository|repository|repo)\b/.test(text)) return ["repo", "web"];
+  if (/\b(?:github|git repository|repository|repo)\b/.test(text)) return ["repo", "bash", "websearch"];
   if (/\b(?:web\s*search|search (?:the )?web|search engine)\b/.test(text)) return ["websearch"];
-  if (/\b(?:fetch|open).*(?:url|page|site|website)|\b(?:url|page|site|website).*(?:fetch|open)\b/.test(text)) return ["web"];
+  if (/\b(?:fetch|open|inspect).*(?:url|page|site|website)|\b(?:url|page|site|website).*(?:fetch|open|inspect)\b/.test(text)) return ["bash", "websearch"];
   if (/\b(?:create|write|implement|build|add)\b/.test(text)) return ["write", "edit"];
   if (/\b(?:edit|modify|update|fix)\b/.test(text)) return ["edit", "write"];
   if (/\b(?:run|test|validate)\b/.test(text)) return ["bash", "analyze"];
@@ -1391,47 +1422,6 @@ export class Agent {
     let pendingProse = "";
     let proseContinuations = 0;
 
-    const discoveryTarget = endpointDiscoveryTarget(this._taskContract, previousMessages);
-    if (discoveryTarget) {
-      this._requestMode = "read-only";
-      this._planningPhase = false;
-      this._plan = [{ status: "pending", description: "Inspect HTML, JavaScript bundles, chunks, source maps, and endpoint candidates" }];
-      this._planIndex = 0;
-      yield { type: "plan", items: this._plan };
-      this._plan[0].status = "running";
-      yield { type: "plan-update", index: 0, status: "running" };
-      const args = { url: discoveryTarget, discover: true, maxAssets: 500 };
-      yield { type: "tool-call", tool: "web", args };
-      const web = this._registry.get("web");
-      let result;
-      try {
-        result = web ? await web.execute(args) : "Error: web tool is unavailable";
-      } catch (error) {
-        result = `Error: ${error.message}`;
-      }
-      yield { type: "tool-result", tool: "web", result };
-      const failed = result.startsWith("Error:");
-      this._executionPolicy.record("web", args, result, failed);
-      this._plan[0].status = failed ? "pending" : "done";
-      yield { type: "plan-update", index: 0, status: this._plan[0].status };
-      this._planIndex = failed ? 0 : 1;
-      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "web", args }) });
-      this._messages.push({ role: "user", content: `---ENDPOINT DISCOVERY RESULT---\n${result}` });
-      if (failed) {
-        this._activeTask.pendingProblem = String(result).slice(0, 500);
-        this._activeTask.nextExpectedAction = "retry the relevant fetch or use a safe endpoint-discovery fallback";
-        yield this._steer({
-          detectedIntent: "RESEARCH",
-          proposedAction: "failed endpoint discovery fetch",
-          recommendedAction: this._activeTask.nextExpectedAction,
-          guidance: "Keep the endpoint discovery task active. Use the failed fetch result to choose a relevant retry or safe fallback; do not report completion.",
-        });
-      } else {
-        yield { type: "answer", content: result };
-        return;
-      }
-    }
-
     // Git push is an explicit, observable workspace action. Do not make it
     // depend on the model producing a second tool call after intent resolution.
     // The shell tool still owns execution, authentication, and error reporting.
@@ -1865,6 +1855,58 @@ export class Agent {
         this._messages.push({
           role: "user",
           content: "Package metadata and its repository README were already resolved successfully. Use the collected documentation to answer or implement the request without another web tool.",
+        });
+        continue;
+      }
+
+      const endpointTarget = endpointDiscoveryTarget(this._taskContract, previousMessages);
+      const endpointInspectionPending = endpointTarget
+        && this._executionPolicy
+        && !this._executionPolicy.successfulKinds().has("endpoint_inspection");
+      const endpointInspectionComplete = endpointTarget
+        && this._executionPolicy
+        && this._executionPolicy.canComplete();
+      if (endpointInspectionComplete && ["bash", "repo", "web", "websearch"].includes(tool.name)) {
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        yield this._steer({
+          detectedIntent: "ENDPOINT_DISCOVERY",
+          proposedAction: tool.name,
+          recommendedAction: "final answer from collected endpoint evidence",
+          guidance: "The Shell inspection already collected the required endpoint evidence. Do not run another inspection tool; answer from the existing Shell result.",
+        });
+        continue;
+      }
+      if (endpointInspectionPending && tool.name !== "bash") {
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        yield this._steer({
+          detectedIntent: "ENDPOINT_DISCOVERY",
+          proposedAction: tool.name,
+          recommendedAction: "bash direct target inspection",
+          guidance: endpointInspectionGuidance(endpointTarget, tool.name),
+        });
+        continue;
+      }
+      if (
+        endpointInspectionPending
+        && tool.name === "bash"
+        && !commandMentionsEndpointTarget(tool.args?.command, endpointTarget)
+      ) {
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        yield this._steer({
+          detectedIntent: "ENDPOINT_DISCOVERY",
+          proposedAction: "bash command for a different target",
+          recommendedAction: "bash direct target inspection",
+          guidance: endpointInspectionGuidance(endpointTarget, "bash"),
+        });
+        continue;
+      }
+      if (endpointTarget && tool.name === "bash" && endpointAssetDownloadWritesOutsideTmp(tool.args?.command)) {
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        yield this._steer({
+          detectedIntent: "ENDPOINT_DISCOVERY",
+          proposedAction: "download endpoint assets outside /tmp",
+          recommendedAction: "bash endpoint asset inspection using /tmp",
+          guidance: "Endpoint discovery may download scripts, chunks, bundles, and source maps, but any files written during that inspection must be under /tmp. Retry with /tmp, os.tmpdir(), mktemp -d /tmp/..., or keep assets in memory.",
         });
         continue;
       }

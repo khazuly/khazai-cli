@@ -47,7 +47,6 @@ khazai-cli/
 │   ├── shell.js      — bash tool
 │   ├── search.js     — glob, grep tools
 │   ├── analyze.js    — code analysis
-│   ├── web.js        — URL fetching
 │   ├── websearch.js  — web search
 │   ├── question.js   — ask user
 │   └── task.js       — sub-agent
@@ -69,6 +68,22 @@ khazai-cli/
 | Auto workdir | `app/agent.js` | Auto-set `workdir` to workspace for bash commands |
 | Answer cleaning | `app/agent.js` | Remove code block formatting from LLM answers |
 | Tool JSON suppress | `app/agent.js` | Hide JSON tool calls during streaming |
+
+## Tool Surface Contract
+
+KhazAI should expose and steer the model toward practical CLI tools:
+
+- `Shell` for command-line inspection/execution, including URL inspection with `curl`, `wget`, `rg`, `sed`, or short inline scripts when the model chooses that approach.
+- `Search` for workspace glob/grep and web search engine queries.
+- `Read`, `Write`, and `Edit` for file operations.
+- `Think` for analysis/subtasks.
+
+Do not add a special user-facing `Fetch`, `Inspect Web`, endpoint runner, or vendor-specific web flow for endpoint discovery. If the user asks to inspect a URL, discover endpoints, download bundles/chunks/source maps, or request an endpoint, route the model to normal `Shell` actions and enforce correctness in guards:
+
+- The command must inspect the requested target directly before unrelated repo/search fallbacks.
+- Shallow HTML-only inspection is not enough for endpoint discovery when linked scripts/bundles/chunks can contain the real endpoint.
+- Any downloaded web assets used for inspection must be written under `/tmp`, or kept in memory.
+- Guard/tool correction remains internal and hidden; the UI should show only the real executed tool calls/results.
 
 ---
 
@@ -127,13 +142,12 @@ import { readTool, writeTool, editTool } from './tools/file.js';
 import { globTool, grepTool } from './tools/search.js';
 import { bashTool } from './tools/shell.js';
 import { analyzeTool } from './tools/analyze.js';
-import { webTool } from './tools/web.js';
 import { webSearchTool } from './tools/websearch.js';
 import { questionTool } from './tools/question.js';
 import { taskTool } from './tools/task.js';
 
 const r = new Registry();
-for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webTool, webSearchTool, questionTool, taskTool]) r.register(t);
+for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webSearchTool, questionTool, taskTool]) r.register(t);
 const agent = new Agent(r, { model: 'gpt', workspace: '/public/landing-page' });
 
 let toolCalls = 0;

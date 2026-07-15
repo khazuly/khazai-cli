@@ -32,7 +32,7 @@ test("tool presentation exposes text labels and states without decorative icons"
   const warning = presentTool({ tool: "bash", args: { command: "npm start" }, content: "Warning: redirected", done: true });
   const failed = presentTool({ tool: "bash", args: { command: "node missing.js" }, content: "Exit: 2\nError: module not found", done: true });
 
-  assert.deepEqual([running.label, running.state], ["Fetch", "running"]);
+  assert.deepEqual([running.label, running.state], ["Shell", "running"]);
   assert.deepEqual([success.label, success.state, success.duration], ["Read", "success", "618 ms"]);
   assert.deepEqual([warning.label, warning.state], ["Shell", "warning"]);
   assert.deepEqual([failed.label, failed.state], ["Shell", "failed"]);

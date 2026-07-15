@@ -12,22 +12,42 @@ test("shell guard allows head to limit generated find output", async () => {
   assert.doesNotMatch(result, /^BLOCKED:/);
 });
 
-test("shell guard returns internal steering for head used to inspect a file", async () => {
+test("shell guard allows head used to inspect a file", async () => {
   const result = await bashTool.execute({
     command: "head -20 package.json",
     workdir: process.cwd(),
   });
 
-  assert.equal(result.needsSteering, true);
-  assert.equal(result.recommendedAction, "read tool");
+  assert.match(result, /^Exit: 0/m);
+  assert.match(result, /"name"/);
 });
 
-test("shell guard returns internal steering for cat inside a pipeline", async () => {
+test("shell guard allows cat inside a pipeline", async () => {
   const result = await bashTool.execute({
     command: "echo x | cat",
     workdir: process.cwd(),
   });
 
+  assert.match(result, /^Exit: 0/m);
+  assert.match(result, /x/);
+});
+
+test("shell guard allows inline node stdin scripts", async () => {
+  const result = await bashTool.execute({
+    command: "node - <<'NODE'\nconsole.log('inline ok')\nNODE",
+    workdir: process.cwd(),
+  });
+
+  assert.match(result, /^Exit: 0/m);
+  assert.match(result, /inline ok/);
+});
+
+test("shell guard still blocks interactive pagers", async () => {
+  const result = await bashTool.execute({
+    command: "less package.json",
+    workdir: process.cwd(),
+  });
+
   assert.equal(result.needsSteering, true);
-  assert.equal(result.recommendedAction, "read tool");
+  assert.equal(result.recommendedAction, "cat, head, tail, rg, or sed");
 });

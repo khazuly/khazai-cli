@@ -62,6 +62,60 @@ test("execution policy accepts contextual evidence supplied by the orchestrator"
   assert.equal(policy.canComplete(), true);
 });
 
+test("endpoint discovery requires JavaScript asset inspection evidence", () => {
+  const policy = new ExecutionPolicy({
+    intent: "research",
+    operation: "discover_endpoints",
+    requiredEvidence: ["research"],
+    domain: "web",
+    targetUrl: "https://fixture-chat.example",
+  });
+
+  assert.deepEqual(policy.completionGaps(), ["research", "endpoint_inspection", "endpoint_asset_inspection"]);
+  policy.record(
+    "bash",
+    { command: "curl -Ls https://fixture-chat.example | head -80" },
+    "Exit: 0\n<!doctype html>\n<a href=\"/chat\">chat</a>",
+    false,
+  );
+  assert.deepEqual(policy.completionGaps(), ["endpoint_asset_inspection"]);
+  assert.equal(policy.canComplete(), false);
+
+  policy.record(
+    "bash",
+    { command: "tmp=$(mktemp -d /tmp/khazai-endpoints-XXXXXX); curl -Ls https://fixture-chat.example/assets/app.js > \"$tmp/app.js\"; rg \"fetch|/api|chat\" \"$tmp\"" },
+    "Exit: 0\nJS chars 42000 from https://fixture-chat.example/assets/app.js\nfetch('/api/chat', { method: 'POST' })\n[POST] /api/chat",
+    false,
+  );
+  assert.equal(policy.canComplete(), true);
+});
+
+test("endpoint asset evidence accepts natural shell bundle scans with quoted API paths", () => {
+  const policy = new ExecutionPolicy({
+    intent: "research",
+    operation: "discover_endpoints",
+    requiredEvidence: ["research"],
+    domain: "web",
+    targetUrl: "https://login-fixture.example",
+  });
+
+  policy.record(
+    "bash",
+    {
+      command: "cd /tmp && curl -s 'https://cdn.login-fixture.example/assets/bundle.123.js' | grep -oE '\"(/api/v4/[a-z0-9_/]+)\"' | grep -E '(login|auth)'",
+    },
+    [
+      "Exit: 0",
+      "\"/api/v4/account/login_by_password\"",
+      "\"/api/v4/account/login_by_otp\"",
+      "\"/api/v4/authentication/login_by_google\"",
+    ].join("\n"),
+    false,
+  );
+
+  assert.equal(policy.canComplete(), true);
+});
+
 test("command semantics separate inspection, deletion, and validation", () => {
   assert.equal(inspectionCommand("find . -type f | head -20"), true);
   assert.equal(destructiveCommand("find . -type f -delete"), true);

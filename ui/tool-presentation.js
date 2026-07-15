@@ -2,7 +2,7 @@ import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { PASTEL } from "./palette.js";
 
 export const TOOL_LABELS = {
-  web: "Fetch",
+  web: "Shell",
   websearch: "Search",
   repo: "Repo",
   read: "Read",

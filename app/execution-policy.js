@@ -12,7 +12,14 @@ export function inspectionCommand(command) {
   const text = String(command || "")
     .replace(/^\s*cd\s+[^;&|]+\s*&&\s*/i, "")
     .trim();
-  return /^(?:ls|find|rg|grep|pwd|git\s+(?:status|diff|log|show)|node\s+--check|python(?:3)?\s+-c)\b/i.test(text);
+  if (
+    /(?:^|[\s"'`=:(])\/tmp(?:\/|\b)|\bmktemp\b|\bos\.tmpdir\s*\(|\btmpdir\s*\(/i.test(text)
+    && /\b(?:curl|wget|rg|grep|sed|awk|cat|head|tail|find)\b/i.test(text)
+    && !/\b(?:rm|unlink|rmdir|mv|cp|install|npm|pnpm|yarn|pip|python(?:3)?\s+[^-]|node\s+[^-])\b/i.test(text.replace(/\b(?:mkdir\s+-p|tee)\b/gi, ""))
+  ) {
+    return true;
+  }
+  return /^(?:ls|find|rg|grep|cat|head|tail|sed|pwd|curl|wget|git\s+(?:status|diff|log|show)\b|node\s+(?:--check\b|-e\b|-(?:\s|$|<))|python(?:3)?\s+(?:-c\b|-(?:\s|$|<)))/i.test(text);
 }
 
 export function validationCommand(command) {
@@ -26,6 +33,45 @@ export function validationCommand(command) {
 
 export function inferTaskContract(request) {
   return fallbackIntentContract(request);
+}
+
+function directEndpointInspectionRequired(contract) {
+  return contract?.operation === "discover_endpoints"
+    && contract?.domain === "web"
+    && Boolean(contract?.targetUrl);
+}
+
+function endpointTargetHost(targetUrl) {
+  try {
+    return new URL(targetUrl).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function commandMentionsEndpointTarget(command, targetUrl) {
+  const text = String(command || "").toLowerCase();
+  const host = endpointTargetHost(targetUrl);
+  return Boolean(host && text.includes(host));
+}
+
+function endpointAssetInspectionEvidence(args = {}, result = "", targetUrl = "") {
+  const command = String(args.command || "");
+  if (!inspectionCommand(command) || !commandMentionsEndpointTarget(command, targetUrl)) return false;
+  const output = String(result || "");
+  const evidence = `${command}\n${output}`;
+  const inspectedScriptOutput = /\b(?:js|javascript)\s+(?:chars|bytes|assets?|files?)\b/i.test(evidence)
+    || /\b(?:bundle|chunk|source\s*map|linked scripts?|script assets?|assets inspected|route scripts?)\b/i.test(evidence)
+    || /https?:\/\/[^\s"'<>]+\.js(?:\?[^\s"'<>]*)?/i.test(evidence)
+    || /(?:^|[\s"'=])\/[^\s"'<>]+\.js(?:\?[^\s"'<>]*)?/i.test(evidence)
+    || /\.(?:js|mjs|map)\b[\s\S]{0,240}\b(?:fetch|axios|XMLHttpRequest|WebSocket|EventSource|\/api\/)/i.test(evidence);
+  const endpointEvidenceFromScript = /\b(?:fetch|axios|xmlhttprequest|websocket|eventsource)\s*\(/i.test(output)
+    || /\b(?:api|endpoint|route)\s+(?:candidates?|strings?|matches?)\b/i.test(output)
+    || /\[(?:GET|POST|PUT|PATCH|DELETE|OPTIONS)(?:\|(?:GET|POST|PUT|PATCH|DELETE|OPTIONS))*\]\s+[/"']/i.test(output)
+    || /\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS)\s+\/[a-z0-9_./:-]+/i.test(output)
+    || /["']\/api\/v?\d*\/[a-z0-9_./:-]+["']/i.test(output)
+    || /(?:^|\s)\/api\/v?\d*\/[a-z0-9_./:-]+/i.test(output);
+  return inspectedScriptOutput && endpointEvidenceFromScript;
 }
 
 function evidenceKinds(tool, args = {}) {
@@ -69,7 +115,23 @@ export class ExecutionPolicy {
   }
 
   record(tool, args, result, failed = false, extraKinds = []) {
-    const kinds = failed ? [] : [...new Set([...evidenceKinds(tool, args), ...extraKinds])];
+    const baseKinds = evidenceKinds(tool, args);
+    if (this.contract.intent === "research" && baseKinds.includes("inspection")) {
+      baseKinds.push("research");
+    }
+    if (
+      directEndpointInspectionRequired(this.contract)
+      && tool === "bash"
+      && inspectionCommand(args?.command)
+      && commandMentionsEndpointTarget(args?.command, this.contract.targetUrl)
+    ) {
+      baseKinds.push("endpoint_inspection");
+      baseKinds.push("research");
+      if (endpointAssetInspectionEvidence(args, result, this.contract.targetUrl)) {
+        baseKinds.push("endpoint_asset_inspection");
+      }
+    }
+    const kinds = failed ? [] : [...new Set([...baseKinds, ...extraKinds])];
     const entry = {
       tool,
       args: { ...(args || {}) },
@@ -96,7 +158,11 @@ export class ExecutionPolicy {
 
   completionGaps() {
     const actual = this.successfulKinds();
-    return this.contract.requiredEvidence.filter(requirement => !actual.has(requirement));
+    const required = [...this.contract.requiredEvidence];
+    if (directEndpointInspectionRequired(this.contract)) {
+      required.push("endpoint_inspection", "endpoint_asset_inspection");
+    }
+    return [...new Set(required)].filter(requirement => !actual.has(requirement));
   }
 
   canComplete() {
@@ -115,6 +181,15 @@ export class ExecutionPolicy {
   completionSteering() {
     const gaps = this.completionGaps();
     if (gaps.length === 0) return null;
+    if (gaps.includes("endpoint_asset_inspection")) {
+      return {
+        needsSteering: true,
+        detectedIntent: this.contract.category || this.contract.intent,
+        proposedAction: "final response before endpoint asset inspection is complete",
+        recommendedAction: "run endpoint asset inspection with Shell",
+        guidance: "Inspect the target URL with Shell, download or stream linked scripts/bundles/chunks/source maps, and scan them for fetch(), axios, XMLHttpRequest, WebSocket, EventSource, API route strings, and endpoint candidates. A shallow HTML-only result is not enough.",
+      };
+    }
 
     const category = this.contract.category;
     const byCategory = {

@@ -18,15 +18,11 @@ function fixCommand(cmd) {
   return fixed;
 }
 
-const SERVER_CMDS = /^node\s+(?!.*--check)(?!.*-e\s)|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
+const SERVER_CMDS = /^node\s+(?!(?:--check\b|-e\b|-(?:\s|$|<)))|^python[3]?\s+.*http\.server|^python[3]?\s+.*SimpleHTTP|^npm\s+start|^yarn\s+start|^pm2\s+|^forever\s+|^nodemon\s+/i;
 const WRITE_VIA_BASH = /^cat\s*>|^tee\s+|^echo\s+['"]*>|^printf\s+/i;
-// `find ... | head -20` and `rg ... | head` only limit generated output; they
-// do not inspect file contents. Keep blocking actual file readers at the start
-// of a command (or after a command separator), but allow head/tail as a pipe
-// consumer. `cat` and pagers remain blocked anywhere in a command chain.
-const DIRECT_FILE_READER = /(?:^|[;&]\s*)\s*(?:head|tail)\b/i;
-const FILE_READER_ANYWHERE = /(?:^|[;&|]\s*)\s*(?:cat|less|more)\b/i;
-const WEB_VIA_BASH = /(?:^|[;&|]\s*)\s*(?:curl|wget)\b/i;
+// Non-interactive shell inspection is allowed so the agent can behave like a
+// normal CLI. Keep blocking pagers because they can wait for terminal input.
+const INTERACTIVE_PAGER = /(?:^|[;&|]\s*)\s*(?:less|more)\b/i;
 const SCRIPT_EXTENSIONS = new Set([".py", ".pyw", ".js", ".mjs", ".cjs", ".sh", ".bash", ".zsh"]);
 
 function requestedScript(command) {
@@ -60,12 +56,8 @@ export const bashTool = {
       return redirect("write through shell redirection", "write or edit tool", "Use the file tool so the change is validated and tracked.");
     }
 
-    if (DIRECT_FILE_READER.test(fixed) || FILE_READER_ANYWHERE.test(fixed)) {
-      return redirect("read file through shell", "read tool", "Use the read tool for file contents, then continue the current task.");
-    }
-
-    if (WEB_VIA_BASH.test(fixed)) {
-      return redirect("network request through shell", "web or websearch tool", "Use the web tool for network access and preserve the current task state.");
+    if (INTERACTIVE_PAGER.test(fixed)) {
+      return redirect("open an interactive pager", "cat, head, tail, rg, or sed", "Use a non-interactive command that prints bounded output and returns control to the agent.");
     }
 
     const script = requestedScript(fixed);
