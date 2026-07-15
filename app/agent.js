@@ -288,7 +288,10 @@ function isValidationCommand(command, domain = "general") {
 
 function endpointDiscoveryTarget(contract, history = []) {
   if (contract?.operation !== "discover_endpoints") return null;
-  const findUrl = value => /https?:\/\/[^\s<>"'`)\]]+/i.exec(String(value || ""))?.[0]?.replace(/[.,;:!?]+$/, "") || null;
+  // Fetch owns protocol normalization. Keep a bare hostname here so requests
+  // such as "discover endpoints aichat.org" use the deterministic discovery
+  // path instead of asking the model to repair an Invalid URL response.
+  const findUrl = value => /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>"'`)\]]*)?/i.exec(String(value || ""))?.[0]?.replace(/[.,;:!?]+$/, "") || null;
   const direct = contract.targetUrl || findUrl(contract.request);
   if (direct) return direct;
   for (let index = history.length - 1; index >= 0; index--) {
@@ -399,11 +402,11 @@ function isProviderParseFailure(text) {
 }
 
 function isShortContinuation(input) {
-  return /^(?:iya|ya|yes|lanjut|gas|fix|oke|ok|pakai\s+(?:ini|itu)|continue|go ahead)$/i.test(String(input || "").trim());
+  return /^(?:yes|continue|go ahead|fix|ok|use this)$/i.test(String(input || "").trim());
 }
 
 function isNegativeContinuation(input) {
-  return /^(?:tidak|nggak|gak|no|jangan|batal|cancel)$/i.test(String(input || "").trim());
+  return /^(?:no|cancel)$/i.test(String(input || "").trim());
 }
 
 function pendingActionState(contract, activeTask, {
@@ -444,7 +447,7 @@ function offeredModificationContract(task, reply) {
 }
 
 function offersFollowUpAction(reply) {
-  return /(?:mau|ingin|boleh|perlu|should|would you like|can i)\s+(?:saya|i)?\s*(?:fix|perbaiki|patch|edit|ubah|lanjutkan|continue)|(?:mau saya|should i|would you like me to)\b/i.test(String(reply || ""));
+  return /(?:should|would you like|can i)\s+(?:i\s+)?(?:fix|patch|edit|continue)|(?:should i|would you like me to)\b/i.test(String(reply || ""));
 }
 
 function taskState(contract, goal) {
@@ -1192,7 +1195,7 @@ export class Agent {
     } catch (error) {
       const detail = redactSecrets([error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n"));
       const auth = /auth|credential|password|token|permission denied|401|403/i.test(detail);
-      return { ok: false, result: auth ? "Push gagal karena autentikasi ditolak." : "Push gagal. Periksa remote, branch, dan koneksi lalu coba lagi." };
+      return { ok: false, result: auth ? "Push failed because authentication was rejected." : "Push failed. Check the remote, branch, and connection, then try again." };
     } finally {
       try { rmSync(directory, { recursive: true, force: true }); } catch {}
     }
@@ -1264,7 +1267,7 @@ export class Agent {
         nextStep: "provide a valid credential for the pending Git push",
         gitPush: pending,
       });
-      const answer = pushed.ok ? "Push berhasil." : pushed.result;
+      const answer = pushed.ok ? "Push succeeded." : pushed.result;
       this._messages.push({ role: "assistant", content: answer });
       yield { type: "answer", content: answer };
       return;
@@ -1284,13 +1287,13 @@ export class Agent {
       this._clearPendingAction();
       this._pendingGitPush = null;
       this._messages.push({ role: "user", content: safeInput });
-      this._messages.push({ role: "assistant", content: "Baik, aksi lanjutan dibatalkan." });
-      yield { type: "answer", content: "Baik, aksi lanjutan dibatalkan." };
+      this._messages.push({ role: "assistant", content: "The pending action was cancelled." });
+      yield { type: "answer", content: "The pending action was cancelled." };
       return;
     }
     if (continuationReply && !pending) {
       this._messages.push({ role: "user", content: safeInput });
-      const answer = "Saya belum memiliki aksi tertunda untuk dilanjutkan. Sebutkan target file atau tindakan yang ingin dijalankan.";
+      const answer = "There is no pending action to continue. Specify the target file or action to run.";
       this._messages.push({ role: "assistant", content: answer });
       yield { type: "answer", content: answer };
       return;
@@ -1705,7 +1708,7 @@ export class Agent {
           this._messages.push({ role: "developer", content: reply });
           this._debugToolRecovery("completion_evidence", missingEvidence);
           if (this._taskContract.category === "GIT_OPERATION" && /auth|credential|password|token|permission denied|401|403/i.test(this._activeTask.lastToolResult || "")) {
-            const answer = "Commit sudah tersimpan lokal, tetapi push butuh autentikasi GitHub. Kirim token atau setup credential untuk melanjutkan.";
+            const answer = "The commit is stored locally, but push requires GitHub authentication. Provide a token or configure credentials to continue.";
             this._messages.push({ role: "developer", content: answer });
             yield { type: "answer", content: answer };
             return;

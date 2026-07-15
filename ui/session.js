@@ -69,7 +69,7 @@ export function isInternalAgentFailure(value) {
 }
 
 export function isCompletionClaim(value) {
-  return !/(?:task is not complete|not complete|unable to complete|failed|error|missing evidence|belum bisa|belum selesai)/i.test(String(value || ""));
+  return !/(?:task is not complete|not complete|unable to complete|failed|error|missing evidence)/i.test(String(value || ""));
 }
 
 export function formatInteractiveQuestion(question, options = []) {
@@ -316,7 +316,7 @@ export function Session({ workspace }) {
     }
     } catch (error) {
       clearActive();
-      appendArchived({ id: nextId(), type: "error", content: "Agent belum bisa melanjutkan langkah ini secara otomatis. Coba ulangi instruksi dengan target file atau aksi yang lebih spesifik." });
+      appendArchived({ id: nextId(), type: "error", content: "The agent could not continue this step automatically. Try again with a more specific target file or action." });
     } finally {
       agentSessionRef.current = agent.exportSessionState?.() || null;
       flushStream();

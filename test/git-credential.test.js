@@ -28,7 +28,7 @@ test("credential follow-up uses temporary push path and never retains or emits t
     return { ok: true, result: "Exit: 0\nTo github.com:owner/repo.git" };
   };
   const events = [];
-  for await (const event of agent.loop(`pakai token ini ${token}`)) events.push(event);
+  for await (const event of agent.loop(`use this token ${token}`)) events.push(event);
 
   assert.equal(receivedToken, token);
   assert.equal(agent._pendingGitPush, null);
@@ -41,10 +41,10 @@ test("credential follow-up uses temporary push path and never retains or emits t
 test("authentication failure is clean and keeps no credential", async () => {
   const agent = new Agent(new Registry(), { workspace: "/tmp/git-credential-test" });
   agent._pendingGitPush = { command: "git push origin main" };
-  agent._pushWithTemporaryCredential = async () => ({ ok: false, result: "Push gagal karena autentikasi ditolak." });
+  agent._pushWithTemporaryCredential = async () => ({ ok: false, result: "Push failed because authentication was rejected." });
   const events = [];
   for await (const event of agent.loop(`token: ${token}`)) events.push(event);
-  assert.equal(events.find(event => event.type === "answer")?.content, "Push gagal karena autentikasi ditolak.");
+  assert.equal(events.find(event => event.type === "answer")?.content, "Push failed because authentication was rejected.");
   assert.equal(events.some(event => JSON.stringify(event).includes(token)), false);
 });
 

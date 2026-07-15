@@ -57,9 +57,9 @@ test("equivalent requests in different languages produce the same executable int
   assert.deepEqual(english.requiredEvidence, indonesian.requiredEvidence);
 });
 
-test("malformed classifier output falls back to a safe destructive contract for an explicit non-English deletion", async () => {
+test("malformed classifier output falls back to a safe destructive contract for an explicit deletion", async () => {
   const resolver = new IntentResolver({ classify: async () => "not json" });
-  const contract = await resolver.resolve({ input: "buat dan hapus sesuatu" });
+  const contract = await resolver.resolve({ input: "create and delete something" });
 
   assert.equal(contract.intent, "delete");
   assert.equal(contract.category, "DESTRUCTIVE_OPERATION");
@@ -68,13 +68,13 @@ test("malformed classifier output falls back to a safe destructive contract for 
   assert.deepEqual(contract.requiredEvidence, ["deletion"]);
 });
 
-test("classifier instructions stay language-neutral while fallback recognizes explicit localized modifications", async () => {
+test("classifier instructions are language-neutral while fallback stays English-only", async () => {
   const captured = [];
   const resolver = new IntentResolver({ classify: classifierReturning({ intent: "answer", operation: "answer" }, captured) });
   await resolver.resolve({ input: "anything" });
   assert.match(captured[0], /regardless of its language/i);
 
-  const contract = fallbackIntentContract("perbaiki app.js dengan patch, jangan rewrite");
+  const contract = fallbackIntentContract("fix app.js with a patch; do not rewrite it");
   assert.equal(contract.intent, "change");
   assert.equal(contract.category, "MODIFICATION");
 });
@@ -84,4 +84,11 @@ test("English-only fallback remains conservative and deterministic", () => {
   const change = fallbackIntentContract("fix app.js and run tests");
   assert.equal(inspect.operation, "list_files");
   assert.deepEqual(change.requiredEvidence, ["mutation", "validation"]);
+});
+
+test("endpoint discovery with a bare domain uses a research contract", () => {
+  const contract = fallbackIntentContract("discover endpoints at aichat.org");
+  assert.equal(contract.intent, "research");
+  assert.equal(contract.operation, "discover_endpoints");
+  assert.equal(contract.targetUrl, "aichat.org");
 });

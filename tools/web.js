@@ -110,18 +110,18 @@ function primaryContent(html) {
 
 export function normalizeUrl(value) {
   let input = String(value || "").trim();
-  if (!input || /\s/.test(input)) throw new Error("URL tidak valid");
+  if (!input || /\s/.test(input)) throw new Error("Invalid URL");
   if (input.startsWith("//")) input = `https:${input}`;
   if (!/^[a-z][a-z0-9+.-]*:/i.test(input)) input = `https://${input}`;
   let url;
   try {
     url = new URL(input);
   } catch {
-    throw new Error("URL tidak valid");
+    throw new Error("Invalid URL");
   }
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only http:// and https:// URLs are supported");
   if (!url.hostname || (!url.hostname.includes(".") && url.hostname.toLowerCase() !== "localhost" && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))) {
-    throw new Error("URL tidak valid");
+    throw new Error("Invalid URL");
   }
   if (url.username || url.password) throw new Error("Unsafe URL rejected");
   if (["169.254.169.254", "metadata.google.internal"].includes(url.hostname.toLowerCase())) {

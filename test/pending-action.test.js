@@ -33,7 +33,7 @@ async function offeredFixAgent() {
       : fallbackIntentContract(input),
     chat: scripted([
       JSON.stringify({ tool: "read", args: { path: "paste.js" } }),
-      "Masalah ada di paste compression. Mau saya fix dengan patch kecil?",
+      "The issue is in paste compression. Should I fix it with a small patch?",
       JSON.stringify({ tool: "edit", args: { path: "paste.js", oldString: "return input", newString: "return compress(input)" } }),
       "Paste compression sudah diperbaiki.",
     ]),
@@ -43,12 +43,12 @@ async function offeredFixAgent() {
 
 test("an offered fix is retained and an affirmative reply resumes the targeted modification", async () => {
   const { agent, edits } = await offeredFixAgent();
-  await collect(agent, "cek bug paste compression di paste.js");
+  await collect(agent, "inspect the paste compression bug in paste.js");
 
   assert.equal(agent._pendingAction?.status, "awaiting_confirmation");
   assert.equal(agent._pendingAction?.contract.category, "MODIFICATION");
   assert.deepEqual(agent._pendingAction?.targetFiles, ["paste.js"]);
-  const events = await collect(agent, "iya");
+  const events = await collect(agent, "yes");
 
   assert.equal(agent._taskContract.category, "MODIFICATION");
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["edit"]);
@@ -57,10 +57,10 @@ test("an offered fix is retained and an affirmative reply resumes the targeted m
   assert.equal(agent._pendingAction, null);
 });
 
-for (const reply of ["lanjut", "oke", "gas", "fix"]) {
+for (const reply of ["continue", "ok", "go ahead", "fix"]) {
   test(`short reply ${reply} resumes the same pending action`, async () => {
     const { agent, edits } = await offeredFixAgent();
-    await collect(agent, "cek bug paste compression di paste.js");
+    await collect(agent, "inspect the paste compression bug in paste.js");
     await collect(agent, reply);
     assert.equal(edits.length, 1);
     assert.equal(agent._taskContract.category, "MODIFICATION");
@@ -87,8 +87,8 @@ test("a substantive new request replaces an awaiting pending action", async () =
 
 test("an affirmative response without a pending action asks for a specific target", async () => {
   const agent = new Agent(new Registry(), { workspace: "/tmp/no-pending-action" });
-  const events = await collect(agent, "iya");
-  assert.match(events.find(event => event.type === "answer")?.content || "", /belum memiliki aksi tertunda/i);
+  const events = await collect(agent, "yes");
+  assert.match(events.find(event => event.type === "answer")?.content || "", /no pending action/i);
 });
 
 test("pending action survives a session-state round trip without retaining credentials", () => {
@@ -119,7 +119,7 @@ test("a token continues a Git operation stored only in pending action state", as
     return { ok: true, result: "Exit: 0\nPush completed." };
   };
 
-  const events = await collect(agent, `pakai token ini ${token}`);
+  const events = await collect(agent, `use this token ${token}`);
   assert.equal(used, token);
   assert.equal(agent._pendingAction, null);
   assert.equal(events.some(event => JSON.stringify(event).includes(token)), false);

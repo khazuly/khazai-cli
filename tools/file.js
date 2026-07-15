@@ -245,7 +245,7 @@ export const writeTool = {
         detectedIntent: "MODIFICATION",
         proposedAction: `overwrite existing file ${path}`,
         recommendedAction: "edit targeted code block",
-        guidance: "Jangan rewrite file. Edit hanya bagian yang perlu diperbaiki. Read the file, locate the affected function or block, then use edit with an exact oldString and minimal newString.",
+        guidance: "Do not rewrite the file. Edit only the affected section. Read the file, locate the affected function or block, then use edit with an exact oldString and minimal newString.",
       };
     }
     if (existing === next) return `No changes to ${path}`;
@@ -313,7 +313,7 @@ export const editTool = {
         detectedIntent: "MODIFICATION",
         proposedAction: `replace most of ${path}`,
         recommendedAction: "split into targeted patches",
-        guidance: "Jangan rewrite file. Pecah perubahan menjadi edit kecil pada fungsi atau blok yang relevan saja, lalu pertahankan kode lain.",
+        guidance: "Do not rewrite the file. Split the change into small edits to relevant functions or blocks and preserve all other code.",
       };
     }
     for (const e of EDITORS) {

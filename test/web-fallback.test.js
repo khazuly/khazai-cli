@@ -3,6 +3,7 @@ import test from "node:test";
 import { normalizeUrl, npmPackageFromUrl, webTool } from "../tools/web.js";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
+import { fallbackIntentContract } from "../app/intent-resolver.js";
 
 test("fetch URL resolver adds https only when a protocol is absent", () => {
   assert.equal(normalizeUrl("aichat.org"), "https://aichat.org/");
@@ -33,7 +34,7 @@ test("fetch retries normalized https URL with http after a transport failure", a
 
 test("invalid fetch input returns one clean error", async () => {
   const result = await webTool.execute({ url: "not a url" });
-  assert.equal(result, "Error: URL tidak valid");
+  assert.equal(result, "Error: Invalid URL");
   assert.equal((result.match(/Error:/g) || []).length, 1);
 });
 
@@ -65,6 +66,31 @@ test("a raw-domain fetch completes its plan after tool-level normalization", asy
     assert.equal(events.some(event => event.type === "plan-update" && event.status === "failed"), false);
     assert.equal(events.some(event => /Invalid URL/i.test(event.result || event.content || "")), false);
     assert.match(events.filter(event => event.type === "tool-result").at(0)?.result || "", /URL: https:\/\/aichat\.org\//);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("bare-domain endpoint discovery bypasses the model and fetches deterministically", async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async value => {
+    requests.push(String(value));
+    return new Response("<title>AIChat</title><main>chat</main>", { status: 200, headers: { "content-type": "text/html" } });
+  };
+  const registry = new Registry();
+  registry.register(webTool);
+  const agent = new Agent(registry, {
+    workspace: "/tmp/endpoint-discovery",
+    intentResolver: async ({ input }) => fallbackIntentContract(input),
+    chat: async () => { throw new Error("endpoint discovery should not require a model turn"); },
+  });
+  try {
+    const events = [];
+    for await (const event of agent.loop("discover endpoints at aichat.org")) events.push(event);
+    assert.match(requests[0], /^https:\/\/aichat\.org/);
+    assert.equal(events.some(event => /Unable to continue|Invalid URL/i.test(event.content || event.result || "")), false);
+    assert.match(events.find(event => event.type === "answer")?.content || "", /Passive endpoint discovery/);
   } finally {
     global.fetch = originalFetch;
   }
