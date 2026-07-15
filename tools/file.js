@@ -144,7 +144,7 @@ function requireWorkspace(path, agentWorkspace) {
     const wsAbs = resolve(process.cwd(), String(agentWorkspace));
     const rel = relative(wsAbs, abs);
     if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-      throw new Error(`Access denied: ${abs} is outside workspace ${wsAbs}`);
+      throw new Error("Workspace boundary violation");
     }
     return;
   }
@@ -152,7 +152,7 @@ function requireWorkspace(path, agentWorkspace) {
   if (!ws.trusted) return;
   const rel = relative(ws.path, abs);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error(`Access denied: ${abs} is outside workspace ${ws.path}`);
+    throw new Error("Workspace boundary violation");
   }
 }
 
@@ -239,6 +239,15 @@ export const writeTool = {
       next = next.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
     }
     const existing = existsSync(abs) ? readFileSync(abs, "utf-8") : null;
+    if (existing !== null) {
+      return {
+        needsSteering: true,
+        detectedIntent: "MODIFICATION",
+        proposedAction: `overwrite existing file ${path}`,
+        recommendedAction: "edit targeted code block",
+        guidance: "Jangan rewrite file. Edit hanya bagian yang perlu diperbaiki. Read the file, locate the affected function or block, then use edit with an exact oldString and minimal newString.",
+      };
+    }
     if (existing === next) return `No changes to ${path}`;
     const validationError = validateSource(path, next);
     if (validationError) return validationError;
@@ -296,6 +305,17 @@ export const editTool = {
     if (!existsSync(abs)) return `Error: not found: ${path}`;
     if (String(oldString) === String(newString)) return `No changes to ${path}`;
     const orig = readFileSync(abs, "utf-8");
+    const target = String(oldString).trim();
+    const source = orig.trim();
+    if (!target || target === source || (source.length > 500 && target.length > source.length * 0.7)) {
+      return {
+        needsSteering: true,
+        detectedIntent: "MODIFICATION",
+        proposedAction: `replace most of ${path}`,
+        recommendedAction: "split into targeted patches",
+        guidance: "Jangan rewrite file. Pecah perubahan menjadi edit kecil pada fungsi atau blok yang relevan saja, lalu pertahankan kode lain.",
+      };
+    }
     for (const e of EDITORS) {
       const r = e.apply(orig, String(oldString), String(newString));
       if (r !== null) {

@@ -40,6 +40,10 @@ function requestedScript(command) {
   return [...SCRIPT_EXTENSIONS].some(ext => lower.endsWith(ext)) ? script : null;
 }
 
+function redirect(proposedAction, recommendedAction, guidance) {
+  return { needsSteering: true, detectedIntent: "EXECUTION", proposedAction, recommendedAction, guidance };
+}
+
 export const bashTool = {
   name: "bash",
   description: "Execute a shell command (timeout in seconds). Retries up to 2 times on timeout with doubled timeout.",
@@ -49,24 +53,24 @@ export const bashTool = {
     const fixed = fixCommand(command);
 
     if (SERVER_CMDS.test(fixed) || /&\s*$/.test(fixed.trim())) {
-      return `BLOCKED: Cannot start a long-running server. It will hang forever.\nInstead, write all files and tell the user to run it themselves.\n\nTo run: cd ${workdir || "."} && ${fixed.replace(/\s*&\s*$/, "")}`;
+      return redirect("start a long-running server", "prepare files and report the command", "Do not start a foreground server. Complete the requested implementation and let the user run it locally.");
     }
 
     if (WRITE_VIA_BASH.test(fixed)) {
-      return `BLOCKED: Use the write tool to create files, not bash commands like cat/echo/tee. The write tool validates syntax and detects dependencies automatically.`;
+      return redirect("write through shell redirection", "write or edit tool", "Use the file tool so the change is validated and tracked.");
     }
 
     if (DIRECT_FILE_READER.test(fixed) || FILE_READER_ANYWHERE.test(fixed)) {
-      return "BLOCKED: Use the read tool to inspect file contents instead of cat/head/tail/less/more.";
+      return redirect("read file through shell", "read tool", "Use the read tool for file contents, then continue the current task.");
     }
 
     if (WEB_VIA_BASH.test(fixed)) {
-      return "BLOCKED: Use the web or websearch tool for HTTP requests instead of curl/wget.";
+      return redirect("network request through shell", "web or websearch tool", "Use the web tool for network access and preserve the current task state.");
     }
 
     const script = requestedScript(fixed);
     if (script && !existsSync(resolve(cwd, script))) {
-      return `BLOCKED: Script "${script}" does not exist in ${cwd}. Create it with the write tool before attempting to run it.`;
+      return redirect("run a missing script", "write the requested script", "Create the missing script with the file tool before running validation.");
     }
 
     const isLongRunning = /node\s+server|python.*http\.server|python.*SimpleHTTP|npm\s+start|yarn\s+start|pm2\s+|forever\s+|nodemon\s+/i.test(fixed);
@@ -88,6 +92,11 @@ export const bashTool = {
     const stderr = lastErr.stderr?.trim() ?? "";
     const stdout = lastErr.stdout?.trim() ?? "";
     const code = lastErr.status ?? -1;
+    // grep/rg reserve status 1 for a successful search with no matches. Do
+    // not let that normal inspection outcome derail the agent's plan.
+    if (code === 1 && /^(?:rg|grep)\b/i.test(fixed.trim()) && !stderr) {
+      return `No matches found${stdout ? `\n${stdout.slice(0, 5000)}` : ""}`;
+    }
     const details = [stdout, stderr].filter(Boolean).join("\n").slice(0, 5000);
     const attemptStr = attempts > 1 ? ` (after ${attempts} attempts)` : "";
     return `Exit: ${code}${attemptStr}\n${details || lastErr.message}`;

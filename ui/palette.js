@@ -7,6 +7,7 @@ export const PASTEL = {
   mauve: "#b18496",
   violet: "#968ac0",
   sage: "#88a295",
+  green: "#a6d989",
   // Off-white is reserved for the assistant's final answer. Tool evidence is
   // deliberately quieter so a long activity log does not read as one solid
   // wall of bright terminal text.

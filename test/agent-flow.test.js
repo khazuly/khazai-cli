@@ -79,6 +79,51 @@ test("incomplete streamed Markdown is continued before the final response", asyn
   assert.match(visible, /- Shell commands$/);
 });
 
+test("broken streamed tool calls recover with a smaller valid action without exposing internals", async () => {
+  const contexts = [];
+  const writes = [];
+  const registry = new Registry();
+  registry.register({
+    name: "write",
+    description: "write a file",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, content: { type: "string" } },
+      required: ["path", "content"],
+    },
+    async execute(args) { writes.push(args); return `Written ${args.path}`; },
+  });
+  const responses = [
+    '{"tool":"write","args":{"path":"large.py","content":"' + "x".repeat(7000),
+    '{"tool":"write","args":{"path":}}',
+    '{"tool":"does-not-exist","args":{}}',
+    '{"tool":"write","args":{"path":"large.py"}}',
+    JSON.stringify({ tool: "write", args: { path: "small.py", content: "print('ok')\n" } }),
+    "Selesai: file kecil sudah dibuat.",
+  ];
+  const agent = new Agent(registry, {
+    workspace: "/tmp/tool-recovery-test",
+    chat: async (messages, options) => {
+      contexts.push(messages.map(message => message.content).join("\n"));
+      const response = responses.shift();
+      options.onToken?.(response);
+      return response;
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("buatkan kode obfuscator Python")) events.push(event);
+
+  assert.deepEqual(writes, [{ path: "/tmp/tool-recovery-test/small.py", content: "print('ok')\n", _agentWorkspace: "/tmp/tool-recovery-test" }]);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.equal(events.some(event => /unparseable|truncated before its JSON/i.test(event.content || "")), false);
+  assert.match(contexts[1], /cut off|one operation only/i);
+  assert.match(contexts[2], /malformed/i);
+  assert.match(contexts[3], /does not exist/i);
+  assert.match(contexts[4], /required argument/i);
+  assert.equal(contexts.some(context => context.includes("x".repeat(100))), false, "invalid payload must not enter history");
+});
+
 test("accepting a researched implementation offer blocks another fetch cycle", async () => {
   let webExecutions = 0;
   let writes = 0;
@@ -351,7 +396,8 @@ test("specific deletion cannot be reported complete before a destructive tool su
   const events = [];
   for await (const event of agent.loop("hapus file obsolete.py")) events.push(event);
 
-  assert.match(contexts[1], /successful deletion command/);
+  assert.match(contexts[1], /Recommended action: perform the requested deletion command safely/);
+  assert.doesNotMatch(contexts[1], /Missing evidence|required execution evidence|successful workspace change/i);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Selesai/);
   assert.equal(events.some(event => event.type === "error"), false);
@@ -383,7 +429,8 @@ test("workspace diagnosis cannot finish before inspection evidence exists", asyn
   const events = [];
   for await (const event of agent.loop("analyze the bug in app.js")) events.push(event);
 
-  assert.match(contexts[1], /Missing evidence: a successful workspace inspection/);
+  assert.match(contexts[1], /Recommended action: perform the relevant read, search, or inspection/);
+  assert.doesNotMatch(contexts[1], /Missing evidence|required execution evidence|successful workspace change/i);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["analyze"]);
   assert.equal(events.filter(event => event.type === "stream-end").length, 1);
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /line 4/);
@@ -421,7 +468,8 @@ test("failed action evidence triggers a changed recovery action before completio
   for await (const event of agent.loop("install package example in this project")) events.push(event);
 
   assert.deepEqual(commands, ["npm install --prefix . example", "npm install --prefix . example --legacy-peer-deps"]);
-  assert.match(contexts[2], /Missing evidence: a successful workspace change/);
+  assert.match(contexts[2], /Recommended action: inspect the target and apply a minimal targeted edit/);
+  assert.doesNotMatch(contexts[2], /Missing evidence|required execution evidence|successful workspace change/i);
   assert.equal(events.filter(event => event.type === "tool-call").length, 2);
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Installed successfully/);
 });
@@ -642,7 +690,8 @@ test("partial Claude tool generation is not retried for another timeout", async 
   assert.equal(calls, 1);
   assert.equal(resets, 0);
   assert.equal(events.some(event => event.type === "stream"), false);
-  assert.match(events.find(event => event.type === "error")?.content || "", /SSE chunk timeout/);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
 });
 
 test("Claude timeout without tokens is not doubled by session retry", async () => {
@@ -662,7 +711,8 @@ test("Claude timeout without tokens is not doubled by session retry", async () =
 
   assert.equal(calls, 1);
   assert.equal(resets, 0);
-  assert.match(events.find(event => event.type === "error")?.content || "", /Request timed out/);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
 });
 
 test("context includes current request once and prunes stale tool payloads", () => {
@@ -686,7 +736,7 @@ test("context includes current request once and prunes stale tool payloads", () 
   assert.match(combined, /Written new\.py/);
 });
 
-test("malformed tool recovery stays on the selected model before stopping", async () => {
+test("malformed tool recovery stays on the selected model and fails cleanly only after recovery", async () => {
   let calls = 0;
   const models = [];
   const registry = new Registry();
@@ -710,13 +760,15 @@ test("malformed tool recovery stays on the selected model before stopping", asyn
   const events = [];
   for await (const event of agent.loop("Create broken.py")) events.push(event);
 
-  assert.equal(calls, 3);
-  assert.deepEqual(models, ["claude", "claude", "claude"]);
+  assert.equal(calls, 6);
+  assert.deepEqual(models, ["claude", "claude", "claude", "claude", "claude", "claude"]);
   assert.equal(events.some(event => event.type === "tool-call"), false);
-  assert.match(events.find(event => event.type === "error")?.content || "", /selected model returned three consecutive/i);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
+  assert.equal(events.some(event => /unparseable|truncated before/i.test(event.content || "")), false);
 });
 
-test("two empty responses stop instead of looping silently", async () => {
+test("empty model responses receive steering then end with a clean recovery message", async () => {
   let calls = 0;
   const agent = new Agent(new Registry(), {
     model: "claude",
@@ -729,8 +781,10 @@ test("two empty responses stop instead of looping silently", async () => {
   const events = [];
   for await (const event of agent.loop("Create a file")) events.push(event);
 
-  assert.equal(calls, 2);
-  assert.match(events.find(event => event.type === "error")?.content || "", /two empty responses/i);
+  assert.equal(calls, 4);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.equal(events.some(event => event.type === "steering"), true);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
 });
 
 test("repeated successful glob uses cached evidence without exposing a hard-stop error", async () => {
@@ -891,8 +945,8 @@ test("truncated write retries with the selected model and a bounded recovery req
   const events = [];
   for await (const event of agent.loop("Create app.py")) events.push(event);
 
-  assert.match(contexts[1], /recovery attempt 1/i);
-  assert.match(contexts[1], /under 6000 source characters/);
+  assert.match(contexts[1], /internal tool-call recovery/i);
+  assert.match(contexts[1], /one operation only/i);
   assert.deepEqual(models, ["claude", "claude", "claude"]);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
   assert.equal(events.some(event => event.type === "error"), false);

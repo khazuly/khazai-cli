@@ -23,7 +23,7 @@ const STOP_WORDS = new Set([
 function workspacePath(path = ".", workspace = process.cwd()) {
   const absolute = resolve(workspace, String(path));
   if (!isInsideWorkspace(absolute, workspace)) {
-    throw new Error(`Access denied: ${absolute} is outside workspace ${workspace}`);
+    throw new Error("Workspace boundary violation");
   }
   return absolute;
 }

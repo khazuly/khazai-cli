@@ -12,20 +12,22 @@ test("shell guard allows head to limit generated find output", async () => {
   assert.doesNotMatch(result, /^BLOCKED:/);
 });
 
-test("shell guard still blocks head used to inspect a file", async () => {
+test("shell guard returns internal steering for head used to inspect a file", async () => {
   const result = await bashTool.execute({
     command: "head -20 package.json",
     workdir: process.cwd(),
   });
 
-  assert.match(result, /^BLOCKED: Use the read tool/);
+  assert.equal(result.needsSteering, true);
+  assert.equal(result.recommendedAction, "read tool");
 });
 
-test("shell guard still blocks cat inside a pipeline", async () => {
+test("shell guard returns internal steering for cat inside a pipeline", async () => {
   const result = await bashTool.execute({
     command: "echo x | cat",
     workdir: process.cwd(),
   });
 
-  assert.match(result, /^BLOCKED: Use the read tool/);
+  assert.equal(result.needsSteering, true);
+  assert.equal(result.recommendedAction, "read tool");
 });

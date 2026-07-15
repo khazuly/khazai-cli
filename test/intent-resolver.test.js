@@ -57,28 +57,26 @@ test("equivalent requests in different languages produce the same executable int
   assert.deepEqual(english.requiredEvidence, indonesian.requiredEvidence);
 });
 
-test("malformed classifier output falls back without authorizing non-English mutation", async () => {
+test("malformed classifier output falls back to a safe destructive contract for an explicit non-English deletion", async () => {
   const resolver = new IntentResolver({ classify: async () => "not json" });
   const contract = await resolver.resolve({ input: "buat dan hapus sesuatu" });
 
-  assert.equal(contract.intent, "unknown");
-  assert.equal(contract.uncertain, true);
+  assert.equal(contract.intent, "delete");
+  assert.equal(contract.category, "DESTRUCTIVE_OPERATION");
+  assert.equal(contract.uncertain, false);
   assert.equal(contract.modifiesFiles, false);
-  assert.deepEqual(contract.requiredEvidence, []);
+  assert.deepEqual(contract.requiredEvidence, ["deletion"]);
 });
 
-test("classifier instructions stay language-neutral and core files contain no Indonesian intent vocabulary", async () => {
+test("classifier instructions stay language-neutral while fallback recognizes explicit localized modifications", async () => {
   const captured = [];
   const resolver = new IntentResolver({ classify: classifierReturning({ intent: "answer", operation: "answer" }, captured) });
   await resolver.resolve({ input: "anything" });
   assert.match(captured[0], /regardless of its language/i);
 
-  const sources = [
-    readFileSync(new URL("../app/agent.js", import.meta.url), "utf8"),
-    readFileSync(new URL("../app/execution-policy.js", import.meta.url), "utf8"),
-    readFileSync(new URL("../app/intent-resolver.js", import.meta.url), "utf8"),
-  ].join("\n");
-  assert.doesNotMatch(sources, /\\b\(\?:[^\n]*(?:buat|hapus|jalankan|perbaiki|lanjut|folder ini)/i);
+  const contract = fallbackIntentContract("perbaiki app.js dengan patch, jangan rewrite");
+  assert.equal(contract.intent, "change");
+  assert.equal(contract.category, "MODIFICATION");
 });
 
 test("English-only fallback remains conservative and deterministic", () => {

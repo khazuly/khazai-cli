@@ -16,9 +16,10 @@ export const OPERATIONS = new Set([
   "delete",
   "clear_workspace",
 ]);
-export const EVIDENCE = new Set(["inspection", "research", "mutation", "deletion", "validation"]);
+export const EVIDENCE = new Set(["inspection", "research", "mutation", "deletion", "validation", "git"]);
 export const CONTINUATIONS = new Set(["standalone", "refine_existing", "accept_offer"]);
 export const DOMAINS = new Set(["general", "obfuscation", "web", "git", "package"]);
+export const INTENT_CATEGORIES = new Set(["QUESTION", "INSPECTION", "MODIFICATION", "TESTING", "GIT_OPERATION", "DESTRUCTIVE_OPERATION", "RESEARCH", "UNKNOWN"]);
 
 const ENGLISH_ACTIONS = {
   change: /\b(?:create|build|implement|write|edit|fix|add|install|update|refactor|convert|generate|rename|move|copy|commit|push|publish|deploy)\b/i,
@@ -27,6 +28,18 @@ const ENGLISH_ACTIONS = {
   validate: /\b(?:test|testing|verify|validate|lint|typecheck|run|execute|runnable)\b/i,
   research: /https?:\/\/|\b(?:website|web|url|endpoint|documentation|docs|npm|github)\b/i,
 };
+const MULTILINGUAL_MODIFICATION = /\b(?:fix|refactor|patch|change|add|edit|update|modify|rewrite|implement|perbaiki|ubah|tambahkan|hapus|edit|perbarui|refaktor|gunakan\s+patch|jangan\s+rewrite)\b/i;
+
+function categoryFor(intent, operation) {
+  if (intent === "delete") return "DESTRUCTIVE_OPERATION";
+  if (operation === "git") return "GIT_OPERATION";
+  if (intent === "change") return "MODIFICATION";
+  if (intent === "validate") return "TESTING";
+  if (intent === "inspect") return "INSPECTION";
+  if (intent === "research") return "RESEARCH";
+  if (intent === "answer") return "QUESTION";
+  return "UNKNOWN";
+}
 
 function defaultEvidence(intent) {
   if (intent === "change") return ["mutation"];
@@ -52,9 +65,9 @@ function fallbackOperation(intent, input) {
 
 export function fallbackIntentContract(input) {
   const text = String(input || "").trim();
-  const deleteIntent = ENGLISH_ACTIONS.delete.test(text);
+  const deleteIntent = ENGLISH_ACTIONS.delete.test(text) || /\b(?:hapus|buang)\b/i.test(text);
   const negatedChange = /\b(?:do not|don't|without)\s+(?:create|write|edit|change|modify|update|delete|remove)\b/i.test(text);
-  const changeIntent = !deleteIntent && !negatedChange && ENGLISH_ACTIONS.change.test(text);
+  const changeIntent = !deleteIntent && !negatedChange && (ENGLISH_ACTIONS.change.test(text) || MULTILINGUAL_MODIFICATION.test(text));
   const validateIntent = !changeIntent && ENGLISH_ACTIONS.validate.test(text);
   const researchIntent = !changeIntent && ENGLISH_ACTIONS.research.test(text) && ENGLISH_ACTIONS.inspect.test(text);
   const inspectIntent = !changeIntent && ENGLISH_ACTIONS.inspect.test(text);
@@ -71,7 +84,7 @@ export function fallbackIntentContract(input) {
             : "unknown";
   const requestedExtensions = [...new Set((text.match(/\.(?:py|js|mjs|cjs|ts|tsx|html|css|json|md|sh)\b/gi) || []).map(value => value.toLowerCase()))];
   const validationRequested = ENGLISH_ACTIONS.validate.test(text);
-  const requiredEvidence = defaultEvidence(intent);
+  const requiredEvidence = fallbackOperation(intent, text) === "git" ? ["git"] : defaultEvidence(intent);
   if (intent === "change" && validationRequested) requiredEvidence.push("validation");
   return normalizeIntentContract({
     intent,
@@ -87,6 +100,7 @@ export function fallbackIntentContract(input) {
     createNewFiles: intent === "change",
     targetUrl: /https?:\/\/[^\s<>'"`)\]]+/i.exec(text)?.[0] || "",
     domain: /obfuscat|encrypt/i.test(text) ? "obfuscation" : "general",
+    category: categoryFor(intent, fallbackOperation(intent, text)),
   }, text);
 }
 
@@ -97,7 +111,9 @@ export function normalizeIntentContract(value, input = "") {
   const suppliedEvidence = Array.isArray(source.requiredEvidence)
     ? [...new Set(source.requiredEvidence.filter(item => EVIDENCE.has(item)))]
     : defaultEvidence(intent);
-  const requiredEvidence = [...new Set([...defaultEvidence(intent), ...suppliedEvidence])];
+  const requiredEvidence = operation === "git"
+    ? ["git"]
+    : [...new Set([...defaultEvidence(intent), ...suppliedEvidence])];
   return {
     request: String(input || ""),
     intent,
@@ -108,7 +124,7 @@ export function normalizeIntentContract(value, input = "") {
     requestedExtensions: Array.isArray(source.requestedExtensions)
       ? [...new Set(source.requestedExtensions.filter(item => /^\.[a-z0-9]+$/i.test(item)).map(item => item.toLowerCase()))]
       : [],
-    modifiesFiles: intent === "change" && Boolean(source.modifiesFiles),
+    modifiesFiles: intent === "change" && operation !== "git" && Boolean(source.modifiesFiles),
     validationRequested: intent === "validate" || Boolean(source.validationRequested),
     allowMutationBeforeFailure: intent === "change" && Boolean(source.allowMutationBeforeFailure),
     repairExistingOnFailure: intent === "validate" && Boolean(source.repairExistingOnFailure),
@@ -116,6 +132,7 @@ export function normalizeIntentContract(value, input = "") {
     targetUrl: typeof source.targetUrl === "string" ? source.targetUrl : "",
     domain: DOMAINS.has(source.domain) ? source.domain : "general",
     uncertain: intent === "unknown",
+    category: INTENT_CATEGORIES.has(source.category) ? source.category : categoryFor(intent, operation),
   };
 }
 
@@ -137,14 +154,16 @@ function classifierPrompt({ input, previousRequest = "", previousAssistant = "" 
     "Return exactly one JSON object and no prose.",
     "Use only these values:",
     "intent: answer | inspect | change | validate | delete | research | unknown",
+    "category: QUESTION | INSPECTION | MODIFICATION | TESTING | GIT_OPERATION | DESTRUCTIVE_OPERATION | RESEARCH | UNKNOWN",
     "operation: answer | list_files | count_files | inspect_code | discover_endpoints | research | create | modify | install | git | validate | delete | clear_workspace",
     "continuation: standalone | refine_existing | accept_offer",
     "requiredEvidence items: inspection | research | mutation | deletion | validation",
     "domain: general | obfuscation | web | git | package",
     "Schema:",
-    '{"intent":"...","operation":"...","continuation":"...","requiresPlan":false,"requiredEvidence":[],"requestedExtensions":[],"modifiesFiles":false,"validationRequested":false,"allowMutationBeforeFailure":false,"repairExistingOnFailure":false,"createNewFiles":false,"targetUrl":"","domain":"general"}',
+    '{"intent":"...","category":"...","operation":"...","continuation":"...","requiresPlan":false,"requiredEvidence":[],"requestedExtensions":[],"modifiesFiles":false,"validationRequested":false,"allowMutationBeforeFailure":false,"repairExistingOnFailure":false,"createNewFiles":false,"targetUrl":"","domain":"general"}',
     "A request to run or test an existing artifact is validate, not change. It must not create files before an observed failure.",
     "A requirement that newly implemented output must be runnable is change with validationRequested=true and requires mutation plus validation evidence.",
+    "Fix, refactor, change, add, edit, patch, perbaiki, ubah, tambahkan, hapus, jangan rewrite, and gunakan patch are MODIFICATION requests, not read-only questions.",
     "If the current message accepts an implementation offered in the previous assistant response, use accept_offer.",
     "If it modifies requirements of the previous implementation, use refine_existing.",
     "Current user message:",

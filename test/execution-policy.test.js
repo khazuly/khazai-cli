@@ -14,7 +14,7 @@ test("task contracts distinguish conversation, inspection, mutation, deletion, a
   assert.deepEqual(inferTaskContract("fix the bug in app.js").requiredEvidence, ["mutation"]);
   assert.deepEqual(inferTaskContract("delete old.py").requiredEvidence, ["deletion"]);
   assert.deepEqual(inferTaskContract("fix app.js and run tests").requiredEvidence, ["mutation", "validation"]);
-  assert.deepEqual(inferTaskContract("push this change").requiredEvidence, ["mutation"]);
+  assert.deepEqual(inferTaskContract("push this change").requiredEvidence, ["git"]);
   assert.deepEqual(inferTaskContract("how do I run app.js?").requiredEvidence, ["validation"]);
   assert.equal(inferTaskContract("verify that this obfuscated output runs").intent, "validate");
   assert.deepEqual(inferTaskContract("verify that this obfuscated output runs").requiredEvidence, ["validation"]);

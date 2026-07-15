@@ -22,6 +22,7 @@ import { EmptyState } from "./components/empty-state.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeEmoji } from "../lib/assistant-text.js";
+import { redactSecrets } from "../lib/secrets.js";
 
 function buildRegistry() {
   const r = new Registry();
@@ -63,6 +64,14 @@ export function toolResultFailed(result) {
   return classifyToolState(result, true) === "failed";
 }
 
+export function isInternalAgentFailure(value) {
+  return /(?:could not|couldn't|cannot)\s+parse\s+(?:the\s+)?response|invalid\s+tool\s+call|malformed\s+json|schema\s+validation|missing\s+evidence|required\s+execution\s+evidence|successful\s+workspace\s+change|acceptance\s+criteria|evidence\s+gap|\bstopped\b|\bblocked\b|\bdenied\b|safety\s+violation/i.test(String(value || ""));
+}
+
+export function isCompletionClaim(value) {
+  return !/(?:task is not complete|not complete|unable to complete|failed|error|missing evidence|belum bisa|belum selesai)/i.test(String(value || ""));
+}
+
 export function formatInteractiveQuestion(question, options = []) {
   const lines = [removeEmoji(question).trim()];
   options.filter(Boolean).forEach((option, index) => lines.push(`${index + 1}. ${removeEmoji(option)}`));
@@ -87,6 +96,7 @@ export function Session({ workspace }) {
   const streamBufferRef = useRef("");
   const streamTimerRef = useRef(null);
   const completedRef = useRef([]);
+  const agentSessionRef = useRef(null);
 
   if (!agentRef.current) {
     agentRef.current = new Agent(buildRegistry(), { workspace: workspace.path });
@@ -109,7 +119,14 @@ export function Session({ workspace }) {
       saveModel(arg);
       process.stdout.write("\u001b[2J\u001b[H");
       setCurrentModel(arg);
-      agentRef.current = new Agent(buildRegistry(), { workspace: workspace.path, model: arg });
+      // Model switching recreates the transport client, not the user's
+      // unfinished task. Agent session state intentionally excludes secrets.
+      agentSessionRef.current = agentRef.current?.exportSessionState?.() || null;
+      agentRef.current = new Agent(buildRegistry(), {
+        workspace: workspace.path,
+        model: arg,
+        sessionState: agentSessionRef.current,
+      });
       activeRef.current = null;
       completedRef.current = [];
       setCompletedMessages([]);
@@ -177,7 +194,7 @@ export function Session({ workspace }) {
       return false;
     };
 
-    appendArchived({ id: nextId(), type: "user", content: input });
+    appendArchived({ id: nextId(), type: "user", content: redactSecrets(input) });
 
     const agent = agentRef.current;
     agent.setQuestionHandler(() => new Promise(resolve => {
@@ -220,7 +237,7 @@ export function Session({ workspace }) {
       if (ev.type === "tool-call") {
         completeStreaming();
         toolStartRef.current = Date.now();
-        activate({ id: nextId(), type: "tool", tool: ev.tool, args: ev.args, done: false });
+        activate({ id: nextId(), type: "tool", tool: ev.tool, args: JSON.parse(redactSecrets(JSON.stringify(ev.args || {}))), done: false });
         continue;
       }
 
@@ -244,8 +261,16 @@ export function Session({ workspace }) {
         flushStream();
         const current = activeRef.current;
         const duration = toolStartRef.current ? Date.now() - toolStartRef.current : null;
-        const resultSize = Buffer.byteLength(ev.result || "");
-        const failed = toolResultFailed(ev.result);
+        const safeResult = redactSecrets(ev.result);
+        if (isInternalAgentFailure(safeResult)) {
+          // Legacy tools may still return a guard phrase as text. The agent
+          // converts current guards to steering; this protects the UI while a
+          // plugin/tool is being migrated and avoids a duplicate error card.
+          clearActive();
+          continue;
+        }
+        const resultSize = Buffer.byteLength(safeResult || "");
+        const failed = toolResultFailed(safeResult);
         taskTools++;
         if (ev.tool === "write" && /^Written /.test(ev.result)) filesCreated++;
         if (ev.tool === "edit" && /^Edited /.test(ev.result)) filesUpdated++;
@@ -254,19 +279,24 @@ export function Session({ workspace }) {
         clearActive();
         appendArchived(
           current?.type === "tool"
-            ? { ...current, content: ev.result, done: true, failed, duration, resultSize, expanded: false }
-            : { id: nextId(), type: "tool", tool: ev.tool, args: {}, content: ev.result, done: true, failed, duration, resultSize, expanded: false }
+            ? { ...current, content: safeResult, done: true, failed, duration, resultSize, expanded: false }
+            : { id: nextId(), type: "tool", tool: ev.tool, args: {}, content: safeResult, done: true, failed, duration, resultSize, expanded: false }
         );
         continue;
       }
 
+      // Steering is orchestration metadata. It changes the next model turn but
+      // must never become an assistant/error card in the normal UI.
+      if (ev.type === "steering") continue;
+
       if (ev.type === "answer" || ev.type === "error") {
+        if (isInternalAgentFailure(ev.content)) continue;
         completeStreaming();
-        if (ev.type === "answer") {
+        if (ev.type === "answer" && isCompletionClaim(ev.content)) {
           succeeded = true;
           setPlan([]);
         }
-        appendArchived({ id: nextId(), type: ev.type, content: removeEmoji(ev.content) });
+        appendArchived({ id: nextId(), type: ev.type, content: redactSecrets(removeEmoji(ev.content)) });
         continue;
       }
 
@@ -277,15 +307,18 @@ export function Session({ workspace }) {
           clearActive();
           appendArchived({ id: nextId(), type: "answer", content: current.content });
         }
-        setPlan([]);
-        succeeded = true;
+        if (isCompletionClaim(current?.content)) {
+          setPlan([]);
+          succeeded = true;
+        }
         continue;
       }
     }
     } catch (error) {
       clearActive();
-      appendArchived({ id: nextId(), type: "error", content: `Unexpected session error: ${error.message}` });
+      appendArchived({ id: nextId(), type: "error", content: "Agent belum bisa melanjutkan langkah ini secara otomatis. Coba ulangi instruksi dengan target file atau aksi yang lebih spesifik." });
     } finally {
+      agentSessionRef.current = agent.exportSessionState?.() || null;
       flushStream();
       clearActive();
       questionResolverRef.current = null;

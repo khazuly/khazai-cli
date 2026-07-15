@@ -108,15 +108,38 @@ function primaryContent(html) {
   return html;
 }
 
-function normalizeUrl(value) {
-  const url = new URL(String(value));
+export function normalizeUrl(value) {
+  let input = String(value || "").trim();
+  if (!input || /\s/.test(input)) throw new Error("URL tidak valid");
+  if (input.startsWith("//")) input = `https:${input}`;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(input)) input = `https://${input}`;
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error("URL tidak valid");
+  }
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only http:// and https:// URLs are supported");
-  if (url.username || url.password) throw new Error("URLs containing credentials are not allowed");
+  if (!url.hostname || (!url.hostname.includes(".") && url.hostname.toLowerCase() !== "localhost" && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(url.hostname))) {
+    throw new Error("URL tidak valid");
+  }
+  if (url.username || url.password) throw new Error("Unsafe URL rejected");
   if (["169.254.169.254", "metadata.google.internal"].includes(url.hostname.toLowerCase())) {
-    throw new Error("Cloud metadata endpoints are blocked");
+    throw new Error("Restricted endpoint rejected");
   }
   url.hash = "";
   return url.href;
+}
+
+function protocolFallbackUrl(url) {
+  const parsed = new URL(url);
+  parsed.protocol = "http:";
+  return parsed.href;
+}
+
+function shouldFallbackToHttp(error) {
+  const detail = `${error?.name || ""} ${error?.message || ""} ${error?.cause?.code || ""}`;
+  return /TypeError|TimeoutError|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|CERT|SSL|TLS|network/i.test(detail);
 }
 
 export function npmPackageFromUrl(value) {
@@ -220,6 +243,16 @@ async function requestPage(url, maxBytes = MAX_RESPONSE_BYTES, extraHeaders = {}
     throw new Error(`${lastError.cause.code} while connecting to ${host}`);
   }
   throw lastError || new Error("Request failed");
+}
+
+async function requestPageWithProtocolFallback(url, maxBytes = MAX_RESPONSE_BYTES, extraHeaders = {}) {
+  try {
+    return { ...(await requestPage(url, maxBytes, extraHeaders)), requestedUrl: url };
+  } catch (error) {
+    if (!url.startsWith("https://") || !shouldFallbackToHttp(error)) throw error;
+    const fallbackUrl = protocolFallbackUrl(url);
+    return { ...(await requestPage(fallbackUrl, maxBytes, extraHeaders)), requestedUrl: fallbackUrl };
+  }
 }
 
 async function fetchGithubReadmePage(originalUrl, repository) {
@@ -330,15 +363,16 @@ async function fetchPage(url, selector) {
 
   let response;
   let body;
+  let requestedUrl = url;
   try {
-    ({ response, body } = await requestPage(url));
+    ({ response, body, requestedUrl } = await requestPageWithProtocolFallback(url));
   } catch (error) {
     const githubRepository = githubRepositoryFromUrl(url);
     if (githubRepository) return fetchGithubReadmePage(url, githubRepository);
     throw error;
   }
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
-  const finalUrl = response.url || url;
+  const finalUrl = response.url || requestedUrl || url;
   let title = "";
   let description = "";
   let text;
@@ -463,8 +497,8 @@ async function fetchDiscoveryAssets(urls, referer) {
 
 export async function discoverEndpoints(inputUrl, maxAssets = MAX_DISCOVERY_ASSETS) {
   const target = normalizeUrl(inputUrl);
-  const { response, body } = await requestPage(target);
-  const finalUrl = response.url || target;
+  const { response, body, requestedUrl } = await requestPageWithProtocolFallback(target);
+  const finalUrl = response.url || requestedUrl || target;
   const title = extractMeta(body).title;
   const endpointMap = new Map();
   const add = candidates => {

@@ -40,6 +40,7 @@ function evidenceKinds(tool, args = {}) {
   if (name === "analyze") kinds.add("validation");
   if (name === "bash") {
     const command = args.command;
+    if (/^\s*git\s+(?:push|fetch|pull|commit|merge|rebase)\b/i.test(String(command || ""))) kinds.add("git");
     if (destructiveCommand(command)) {
       kinds.add("deletion");
       kinds.add("mutation");
@@ -104,29 +105,61 @@ export class ExecutionPolicy {
 
   completionDirective() {
     this.answerAttempts++;
-    const labels = {
-      mutation: "a successful workspace change",
-      deletion: "a successful deletion command",
-      inspection: "a successful workspace inspection",
-      research: "a successful research tool result",
-      validation: "a successful validation or test run",
+    const steering = this.completionSteering();
+    if (!steering) this.phase = "completed";
+    // Kept for callers that need a truthy completion guard. This value is
+    // orchestration-only and must never be rendered as an assistant answer.
+    return steering ? steering.guidance : null;
+  }
+
+  completionSteering() {
+    const gaps = this.completionGaps();
+    if (gaps.length === 0) return null;
+
+    const category = this.contract.category;
+    const byCategory = {
+      GIT_OPERATION: {
+        recommendedAction: "resume the pending Git command or resolve its remote, branch, upstream, or authentication problem",
+        guidance: "Continue the pending Git operation using its last command result. If authentication is required, request credentials cleanly; otherwise run the relevant Git recovery command.",
+      },
+      MODIFICATION: {
+        recommendedAction: gaps.includes("validation") ? "run the relevant validation for the applied change" : "inspect the target and apply a minimal targeted edit",
+        guidance: "Continue the active code change. Preserve unrelated code and use a targeted edit or patch; then run any requested validation.",
+      },
+      TESTING: {
+        recommendedAction: "run the relevant test, build, lint, or validation command",
+        guidance: "Continue the active validation task. Run the relevant check and use its result to choose the next recovery step.",
+      },
+      INSPECTION: {
+        recommendedAction: "perform the relevant read, search, or inspection",
+        guidance: "Continue the active inspection until the requested information is supported by a relevant tool result.",
+      },
+      RESEARCH: {
+        recommendedAction: "retry the relevant fetch or use a safe research fallback",
+        guidance: "Continue the active fetch or research task from its last result, using a relevant retry or fallback.",
+      },
+      DESTRUCTIVE_OPERATION: {
+        recommendedAction: "perform the requested deletion command safely",
+        guidance: "Continue the requested deletion task with the specific safe command and verify its result.",
+      },
     };
-    const missing = this.completionGaps().map(gap => labels[gap] || gap);
-    if (missing.length === 0) this.phase = "completed";
-    return missing.length
-      ? `The task is not complete. Missing evidence: ${missing.join(", ")}. Choose the next tool from the actual task state and continue.`
-      : null;
+    return {
+      needsSteering: true,
+      detectedIntent: category || this.contract.intent,
+      proposedAction: "final response before the active task has finished",
+      ...(byCategory[category] || {
+        recommendedAction: "take the next action required by the active task",
+        guidance: "Continue from the active task state and last tool result before giving a final response.",
+      }),
+    };
   }
 
   contextBlock() {
-    const completed = [...this.successfulKinds()];
-    const missing = this.completionGaps();
+    const steering = this.completionSteering();
     return [
       `Intent: ${this.contract.intent}`,
       `Phase: ${this.phase}`,
-      `Required evidence: ${this.contract.requiredEvidence.join(", ") || "none"}`,
-      `Completed evidence: ${completed.join(", ") || "none"}`,
-      `Missing evidence: ${missing.join(", ") || "none"}`,
+      `Next action: ${steering?.recommendedAction || "the task may be answered"}`,
     ].join("\n");
   }
 }

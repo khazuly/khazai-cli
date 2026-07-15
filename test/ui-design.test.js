@@ -207,7 +207,7 @@ test("tool states use words and long output is collapsed", async () => {
     h(ToolCall, { tool: "web", args: { url: "https://example.com" }, done: false }),
     h(ToolCall, { tool: "bash", args: { command: "npm test" }, done: true, content: `Exit: 0\n${output}` }),
     h(ToolCall, { tool: "bash", args: { command: "missing" }, done: true, content: "Exit: 2\nError: not found" }),
-    h(ToolCall, { tool: "bash", args: { command: "npm start" }, done: true, content: "BLOCKED: long-running server" }),
+    h(ToolCall, { tool: "bash", args: { command: "npm start" }, done: true, content: "Warning: redirected" }),
   ), 50, 30);
 
   assert.match(frame, /running\.\.\./);

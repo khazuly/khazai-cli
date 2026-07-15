@@ -29,7 +29,7 @@ test("tool evidence uses a lower-contrast tier than assistant answers", () => {
 test("tool presentation exposes text labels and states without decorative icons", () => {
   const running = presentTool({ tool: "web", args: { url: "https://example.com" }, done: false });
   const success = presentTool({ tool: "read", args: { path: "/tmp/file.js" }, content: "File: /tmp/file.js\nLines: 2\none\ntwo", done: true, duration: 618 });
-  const warning = presentTool({ tool: "bash", args: { command: "npm start" }, content: "BLOCKED: long-running server", done: true });
+  const warning = presentTool({ tool: "bash", args: { command: "npm start" }, content: "Warning: redirected", done: true });
   const failed = presentTool({ tool: "bash", args: { command: "node missing.js" }, content: "Exit: 2\nError: module not found", done: true });
 
   assert.deepEqual([running.label, running.state], ["Fetch", "running"]);
