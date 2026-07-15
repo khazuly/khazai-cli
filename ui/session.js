@@ -316,7 +316,9 @@ export function Session({ workspace }) {
     }
     } catch (error) {
       clearActive();
-      appendArchived({ id: nextId(), type: "error", content: "The agent could not continue this step automatically. Try again with a more specific target file or action." });
+      // Agent recovery is represented by internal steering and persisted task
+      // state. Do not turn an unexpected loop exception into a user-facing
+      // failure card; the next continuation resumes the pending task.
     } finally {
       agentSessionRef.current = agent.exportSessionState?.() || null;
       flushStream();

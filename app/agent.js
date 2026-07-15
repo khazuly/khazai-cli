@@ -616,8 +616,6 @@ export function extractTaggedToolCall(text, registry) {
 
 const STREAM_TAIL_CHARS = 160;
 const MAX_PROSE_CONTINUATIONS = 2;
-const MAX_TOOL_RECOVERY_ATTEMPTS = 5;
-
 // This deliberately does not try to repair JSON. A partial mutation is worse
 // than no mutation: only a complete value may reach a tool executor.
 function jsonCompletion(text) {
@@ -752,10 +750,9 @@ export class Agent {
     this._postPlanToolRedirects = 0;
     this._requestStartIndex = 0;
     this._invalidToolResponses = 0;
-    this._toolProtocolFallback = false;
     this._debug = Boolean(opts.debug || process.env.KHAZAI_DEBUG);
     this._emptyResponses = 0;
-    this._emptyRecoveryUsed = false;
+    this._transportFailures = 0;
     this._toolEvidence = [];
     this._mutationSnapshots = new Map();
     this._patchReviews = new Map();
@@ -825,6 +822,23 @@ export class Agent {
 
   _clearPendingAction() {
     this._pendingAction = null;
+  }
+
+  _pauseForRecovery({ detectedIntent, proposedAction, recommendedAction, guidance, reason = "" }) {
+    const nextStep = recommendedAction || this._activeTask.nextExpectedAction || "continue the active task";
+    this._activeTask.pendingProblem = redactSecrets(reason || this._activeTask.pendingProblem || "A recoverable agent step needs another attempt.");
+    this._activeTask.nextExpectedAction = nextStep;
+    this._rememberPendingAction({
+      status: "recovering",
+      reason: this._activeTask.pendingProblem,
+      nextStep,
+    });
+    return this._steer({
+      detectedIntent: detectedIntent || this._activeTask.activeIntent,
+      proposedAction,
+      recommendedAction: nextStep,
+      guidance,
+    });
   }
 
   _rememberInspection(tool, result) {
@@ -1153,7 +1167,9 @@ export class Agent {
       schema_validation: `The call does not match the selected tool schema (${detail || "invalid arguments"}). Correct argument names and types. ${compact}`,
       provider_parse_failure: `The previous provider response was not usable. ${compact} Reissue the next expected action using the current task state and tool schema.`,
     };
-    const escalation = attempt > 1 ? " This is a recovery attempt: use the smallest safe next operation instead of repeating the same oversized payload." : "";
+    const escalation = attempt > 1
+      ? " The previous correction did not produce an executable call. Change strategy now: inspect the exact target first when context is missing; for an existing file, use one edit patch with exact oldString/newString; for a new file, use one small write; for shell work, run one command only."
+      : "";
     return `Internal tool-call recovery: ${guidance[kind] || guidance.malformed_json}${escalation}\n${common}`;
   }
 
@@ -1357,7 +1373,7 @@ export class Agent {
     this._postPlanToolRedirects = 0;
     this._invalidToolResponses = 0;
     this._emptyResponses = 0;
-    this._emptyRecoveryUsed = false;
+    this._transportFailures = 0;
     this._toolEvidence = [];
     this._mutationSnapshots.clear();
     this._patchReviews.clear();
@@ -1396,17 +1412,24 @@ export class Agent {
       yield { type: "tool-result", tool: "web", result };
       const failed = result.startsWith("Error:");
       this._executionPolicy.record("web", args, result, failed);
-      this._plan[0].status = failed ? "failed" : "done";
+      this._plan[0].status = failed ? "pending" : "done";
       yield { type: "plan-update", index: 0, status: this._plan[0].status };
-      this._planIndex = 1;
-      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "web", args }) });
+      this._planIndex = failed ? 0 : 1;
+      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "web", args }) });
       this._messages.push({ role: "user", content: `---ENDPOINT DISCOVERY RESULT---\n${result}` });
       if (failed) {
-        yield { type: "answer", content: "Unable to complete the requested inspection. Please try again." };
+        this._activeTask.pendingProblem = String(result).slice(0, 500);
+        this._activeTask.nextExpectedAction = "retry the relevant fetch or use a safe endpoint-discovery fallback";
+        yield this._steer({
+          detectedIntent: "RESEARCH",
+          proposedAction: "failed endpoint discovery fetch",
+          recommendedAction: this._activeTask.nextExpectedAction,
+          guidance: "Keep the endpoint discovery task active. Use the failed fetch result to choose a relevant retry or safe fallback; do not report completion.",
+        });
       } else {
         yield { type: "answer", content: result };
+        return;
       }
-      return;
     }
 
     // Git push is an explicit, observable workspace action. Do not make it
@@ -1415,7 +1438,13 @@ export class Agent {
     if (gitPushRequest(this._taskContract)) {
       const bash = this._registry.get("bash");
       if (!bash) {
-        yield { type: "error", content: "The shell tool is unavailable, so the Git push could not run." };
+        yield this._pauseForRecovery({
+          detectedIntent: "GIT_OPERATION",
+          proposedAction: "run the pending Git push without the shell tool",
+          recommendedAction: "run the pending Git push with the configured shell tool",
+          guidance: "Keep the pending Git operation active. Restore the shell tool, then run the same push against the active remote and branch. Do not report completion before git push succeeds.",
+          reason: "The shell tool was unavailable for the pending Git push.",
+        });
         return;
       }
       const args = { command: "git push origin HEAD", workdir: this._workspace };
@@ -1433,9 +1462,9 @@ export class Agent {
       const answer = failed
         ? "Git push failed. Check the Shell result above."
         : "Git push completed successfully.";
-      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "bash", args }) });
+      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
       this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
-      this._messages.push({ role: "developer", content: answer });
+      this._messages.push({ role: "assistant", content: answer });
       yield { type: "answer", content: answer };
       return;
     }
@@ -1448,36 +1477,46 @@ export class Agent {
     if (clearWorkspaceRequest(this._taskContract)) {
       const bash = this._registry.get("bash");
       if (!bash) {
-        yield { type: "answer", content: "Unable to complete the requested workspace operation in this session." };
-        return;
+        yield this._steer({
+          detectedIntent: "DESTRUCTIVE_OPERATION",
+          proposedAction: "clear workspace without shell tool",
+          recommendedAction: "use the available destructive-operation tool",
+          guidance: "Keep the requested workspace-clear task active and choose an available safe tool action. Do not report completion.",
+        });
+      } else {
+        const args = {
+          command: "find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && test -z \"$(find . -mindepth 1 -maxdepth 1 -print -quit)\"",
+          workdir: this._workspace,
+        };
+        yield { type: "tool-call", tool: "bash", args };
+        let result;
+        try {
+          result = await bash.execute(args);
+        } catch (error) {
+          result = `Error: ${error.message}`;
+        }
+        yield { type: "tool-result", tool: "bash", result };
+        const failed = resultFailed(result);
+        this._toolEvidence.push({ tool: "bash", args: { ...args }, result, failed });
+        this._executionPolicy.record("bash", args, result, failed);
+        if (failed) {
+          this._activeTask.pendingProblem = String(result).slice(0, 500);
+          this._activeTask.nextExpectedAction = "recover the workspace-clear command from its last shell result";
+          yield this._steer({
+            detectedIntent: "DESTRUCTIVE_OPERATION",
+            proposedAction: "failed workspace-clear command",
+            recommendedAction: this._activeTask.nextExpectedAction,
+            guidance: "Keep the workspace-clear task active. Analyze the shell result and choose a safe recovery command; do not report completion.",
+          });
+        } else {
+          const answer = `Done. All files in ${this._workspace} were deleted and the folder was verified empty.`;
+          this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
+          this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
+          this._messages.push({ role: "assistant", content: answer });
+          yield { type: "answer", content: answer };
+          return;
+        }
       }
-      const args = {
-        command: "find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && test -z \"$(find . -mindepth 1 -maxdepth 1 -print -quit)\"",
-        workdir: this._workspace,
-      };
-      yield { type: "tool-call", tool: "bash", args };
-      let result;
-      try {
-        result = await bash.execute(args);
-      } catch (error) {
-        result = `Error: ${error.message}`;
-      }
-      yield { type: "tool-result", tool: "bash", result };
-      const failed = resultFailed(result);
-      this._toolEvidence.push({ tool: "bash", args: { ...args }, result, failed });
-      this._executionPolicy.record("bash", args, result, failed);
-      if (failed) {
-        const answer = "The workspace was not cleared. Check the Shell result above.";
-        this._messages.push({ role: "developer", content: answer });
-        yield { type: "answer", content: answer };
-        return;
-      }
-      const answer = `Done. All files in ${this._workspace} were deleted and the folder was verified empty.`;
-      this._messages.push({ role: "developer", content: JSON.stringify({ tool: "bash", args }) });
-      this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
-      this._messages.push({ role: "developer", content: answer });
-      yield { type: "answer", content: answer };
-      return;
     }
 
     // A plain directory-listing request has one deterministic implementation.
@@ -1500,15 +1539,22 @@ export class Agent {
         this._executionPolicy.record("glob", args, result, failed);
         this._rememberInspection({ name: "glob", args }, result);
         if (failed) {
-          yield { type: "answer", content: "Unable to inspect the workspace right now. Please try again." };
+          this._activeTask.pendingProblem = String(result).slice(0, 500);
+          this._activeTask.nextExpectedAction = "retry the relevant workspace inspection or use another inspection tool";
+          yield this._steer({
+            detectedIntent: "INSPECTION",
+            proposedAction: "failed workspace listing",
+            recommendedAction: this._activeTask.nextExpectedAction,
+            guidance: "Keep the inspection task active. Use the failed result to choose a relevant inspection retry or fallback; do not report completion.",
+          });
+        } else {
+          const answer = cachedToolAnswer({ name: "glob", args }, result);
+          this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "glob", args }) });
+          this._messages.push({ role: "user", content: `---TOOL RESULT: glob---\n${result}` });
+          this._messages.push({ role: "assistant", content: answer });
+          yield { type: "answer", content: answer };
           return;
         }
-        const answer = cachedToolAnswer({ name: "glob", args }, result);
-        this._messages.push({ role: "developer", content: JSON.stringify({ tool: "glob", args }) });
-        this._messages.push({ role: "user", content: `---TOOL RESULT: glob---\n${result}` });
-        this._messages.push({ role: "developer", content: answer });
-        yield { type: "answer", content: answer };
-        return;
       }
     }
 
@@ -1613,30 +1659,43 @@ export class Agent {
           if (streamTail) yield { type: "stream", token: streamTail };
           yield { type: "stream-end" };
         }
-        yield { type: "answer", content: "Unable to continue the task right now. Please try again." };
+        this._transportFailures++;
+        this._debugToolRecovery("transport_failure", finalError?.message || String(finalError));
+        if (this._lastToolWasExecuted && this._transportFailures < 2) {
+          yield this._steer({
+            detectedIntent: this._activeTask.activeIntent,
+            proposedAction: "provider request failed after the last tool result",
+            recommendedAction: this._activeTask.nextExpectedAction,
+            guidance: "Resume the active task from the last tool result. Perform the next expected action only; do not restart, change task, or report completion.",
+          });
+          continue;
+        }
+        yield this._pauseForRecovery({
+          proposedAction: "provider request failed before the next action",
+          recommendedAction: this._activeTask.nextExpectedAction,
+          guidance: "Keep the active task and plan intact. Resume from the last tool result with the next expected action when the model transport is available; do not restart or report a final answer.",
+          reason: finalError?.message || String(finalError),
+        });
         return;
       }
+      this._transportFailures = 0;
 
       if (!reply || !reply.trim() || reply.trim() === "{}" || reply.trim() === "[]") {
         this._emptyResponses++;
-        if (this._emptyResponses >= 2) {
-          if (this._emptyRecoveryUsed) {
-            yield { type: "answer", content: "Unable to continue the task right now. Please try again." };
-            return;
-          }
-          yield this._steer({ detectedIntent: this._taskContract.category, proposedAction: "empty model response", recommendedAction: "resume the next unfinished plan action", guidance: "Use the task state and prior tool results. Return one concrete safe action, or a concise answer only if all acceptance evidence is present." });
-          this._emptyResponses = 0;
-          this._emptyRecoveryUsed = true;
-          continue;
-        }
-        this._messages.push({ role: "user", content: "The LLM returned an empty response. Retry the last action directly. Do not explain." });
+        const action = this._activeTask.nextExpectedAction || "perform the next unfinished plan action";
+        yield this._steer({
+          detectedIntent: this._activeTask.activeIntent,
+          proposedAction: "empty model response",
+          recommendedAction: action,
+          guidance: `The response was empty while this task remains active. Resume exactly this action: ${action}. Use the active task state, target files, plan, and last tool result. Emit one valid matching tool call, or a final answer only after acceptance evidence is complete.`,
+        });
         continue;
       }
       this._emptyResponses = 0;
 
       let parsed = this._extractTool(reply);
       let tool = parsed.tool ? this._normalizeTool(parsed.tool) : null;
-      if (tool && !this._toolProtocolFallback) {
+      if (tool) {
         const validation = validateToolArguments(tool, this._registry);
         if (validation) {
           parsed = { tool: null, error: validation.detail, kind: validation.kind, truncated: false };
@@ -1646,24 +1705,8 @@ export class Agent {
 
       if (parsed.error) {
         this._debugToolRecovery(parsed.kind || "malformed_json", parsed.error);
-        if (this._toolProtocolFallback) {
-          const answer = "Unable to continue the task because the model could not produce a usable action.";
-          this._messages.push({ role: "assistant", content: answer });
-          yield { type: "answer", content: answer };
-          return;
-        }
         this._invalidToolResponses++;
         const recoveryAttempt = this._invalidToolResponses;
-        if (recoveryAttempt >= MAX_TOOL_RECOVERY_ATTEMPTS) {
-          // One final non-tool turn gives the model a graceful way to report
-          // useful state without exposing provider/parser diagnostics.
-          this._toolProtocolFallback = true;
-          this._messages.push({
-            role: "user",
-            content: "Internal recovery exhausted. Do not emit a tool call. Give a concise status of the current task and what remains, using the existing plan and tool results only.",
-          });
-          continue;
-        }
         this._messages.push({
           role: "user",
           // Do not add the invalid assistant payload to history: it must never
@@ -1673,7 +1716,6 @@ export class Agent {
         continue;
       }
       this._invalidToolResponses = 0;
-      this._toolProtocolFallback = false;
 
       if (!tool) {
         const visibleReply = pendingProse ? joinProseContinuation(pendingProse, reply) : reply;
@@ -1683,7 +1725,7 @@ export class Agent {
             ? visibleReply
             : (streamTail || reply.slice(streamVisibleLength));
           streamTail = "";
-          this._messages.push({ role: "developer", content: reply });
+          this._messages.push({ role: "assistant", content: reply });
           this._messages.push({
             role: "user",
             content: "The previous response ended mid-content. Continue from the exact cutoff and finish the response.",
@@ -1698,18 +1740,18 @@ export class Agent {
           this._planningPhase = false;
           this._executionPolicy.setPhase("executing");
           yield { type: "plan", items: plan };
-          this._messages.push({ role: "developer", content: visibleReply });
+          this._messages.push({ role: "assistant", content: visibleReply });
           this._messages.push({ role: "user", content: "Begin the first pending plan item now. Use exactly one tool call when a tool is needed." });
           continue;
         }
         const missingEvidence = this._missingCompletionEvidence();
         if (missingEvidence) {
           this._completionRedirects++;
-          this._messages.push({ role: "developer", content: reply });
+          this._messages.push({ role: "assistant", content: reply });
           this._debugToolRecovery("completion_evidence", missingEvidence);
           if (this._taskContract.category === "GIT_OPERATION" && /auth|credential|password|token|permission denied|401|403/i.test(this._activeTask.lastToolResult || "")) {
             const answer = "The commit is stored locally, but push requires GitHub authentication. Provide a token or configure credentials to continue.";
-            this._messages.push({ role: "developer", content: answer });
+            this._messages.push({ role: "assistant", content: answer });
             yield { type: "answer", content: answer };
             return;
           }
@@ -1734,7 +1776,7 @@ export class Agent {
           } catch {
             answer = "No answer provided";
           }
-          this._messages.push({ role: "developer", content: visibleReply });
+          this._messages.push({ role: "assistant", content: visibleReply });
           this._messages.push({ role: "user", content: `---USER ANSWER---\n${String(answer)}` });
           continue;
         }
@@ -1743,7 +1785,7 @@ export class Agent {
           // the remaining todos pending until their corresponding tool work has
           // actually finished, then continue the execution loop.
           this._planNarrations++;
-          this._messages.push({ role: "developer", content: reply });
+          this._messages.push({ role: "assistant", content: reply });
           if (this._planNarrations >= 3) {
             yield this._steer({ detectedIntent: this._taskContract.category, proposedAction: "narrate pending work", recommendedAction: "execute the active plan item", guidance: `Execute plan item ${this._planIndex + 1} with one matching tool. Do not report completion until its result succeeds.` });
             this._planNarrations = 0;
@@ -1775,7 +1817,7 @@ export class Agent {
         }
         if (this._requestMode === "mutate") {
           const answer = this._evidenceAnswer(visibleReply);
-          this._messages.push({ role: "developer", content: answer });
+          this._messages.push({ role: "assistant", content: answer });
           this._clearPendingAction();
           yield { type: "stream", token: answer };
           yield { type: "stream-end" };
@@ -1793,7 +1835,7 @@ export class Agent {
           const remaining = reply.slice(streamVisibleLength);
           if (remaining) yield { type: "stream", token: remaining };
         }
-        this._messages.push({ role: "developer", content: visibleReply });
+        this._messages.push({ role: "assistant", content: visibleReply });
         if (!this._pendingAction || this._pendingAction.status !== "awaiting_confirmation") this._clearPendingAction();
         yield { type: "stream-end" };
         return;
@@ -1805,7 +1847,7 @@ export class Agent {
       // to the requested workspace mutation while preserving model identity.
       if (this._acceptedCreationOffer && ["web", "websearch"].includes(tool.name)) {
         this._messages.push({
-          role: "developer",
+          role: "assistant",
           content: JSON.stringify({ tool: tool.name, args: tool.args }),
         });
         this._messages.push({
@@ -1817,7 +1859,7 @@ export class Agent {
 
       if (this._resolvedArtifactDocumentation && ["web", "websearch"].includes(tool.name)) {
         this._messages.push({
-          role: "developer",
+          role: "assistant",
           content: JSON.stringify({ tool: tool.name, args: tool.args }),
         });
         this._messages.push({
@@ -1893,7 +1935,7 @@ export class Agent {
 
       if (this._executionPolicy.contract.intent === "validate" && ["write", "edit"].includes(tool.name)) {
         const failedExecution = this._executionPolicy.evidence.some(entry => entry.tool === "bash" && entry.failed);
-        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (!failedExecution) {
           this._messages.push({
             role: "user",
@@ -1937,7 +1979,7 @@ export class Agent {
 
       if (this._requestMode === "read-only" && this._plan && this._planIndex >= this._plan.length) {
         this._postPlanToolRedirects++;
-        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (this._postPlanToolRedirects >= 3) {
           yield this._steer({ detectedIntent: this._taskContract.category, proposedAction: tool.name, recommendedAction: "final answer", guidance: "The required research evidence is already available. Answer using those results; do not run redundant tools." });
           this._postPlanToolRedirects = 0;
@@ -1967,7 +2009,7 @@ export class Agent {
       if (mismatchesPlan && !auxiliaryTool) {
         this._planMismatches++;
         const expected = expectedPlanTools(this._plan[this._planIndex].description) || [];
-        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         if (this._planMismatches >= 3) {
           yield this._steer({ detectedIntent: this._taskContract.category, proposedAction: tool.name, recommendedAction: expected.join(", ") || "a matching tool", guidance: `Execute active todo ${this._planIndex + 1} with one of: ${expected.join(", ")}. Preserve the current plan and results.` });
           this._planMismatches = 0;
@@ -1988,7 +2030,7 @@ export class Agent {
             this._completionRedirects = 0;
             continue;
           }
-          this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+          this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
           this._messages.push({ role: "user", content: "The request already contains enough information for a first implementation. Perform the file change now." });
           continue;
         }
@@ -2007,13 +2049,13 @@ export class Agent {
         } catch {
           answer = "No answer provided";
         }
-        this._messages.push({ role: "developer", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
+        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
         this._messages.push({ role: "user", content: `---USER ANSWER---\n${String(answer)}` });
         continue;
       }
 
       this._messages.push({
-        role: "developer",
+        role: "assistant",
         content: JSON.stringify({ tool: tool.name, args: tool.args }),
       });
       const signature = toolSignature(tool, this._workspace);
@@ -2027,7 +2069,7 @@ export class Agent {
         this._cachedInspectionRedirects++;
         if (this._cachedInspectionRedirects >= 3) {
           const answer = "The workspace listing is already available. Read a listed file to inspect its contents.";
-          this._messages.push({ role: "developer", content: answer });
+          this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -2041,7 +2083,7 @@ export class Agent {
         this._cachedInspectionRedirects++;
         if (this._cachedInspectionRedirects >= 3) {
           const answer = cachedToolAnswer(tool, cachedInspection);
-          this._messages.push({ role: "developer", content: answer });
+          this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -2059,7 +2101,7 @@ export class Agent {
           const answer = mutatesWorkspace(tool)
             ? this._evidenceAnswer("")
             : cachedToolAnswer(tool, this._lastToolResult);
-          this._messages.push({ role: "developer", content: answer });
+          this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -2070,11 +2112,15 @@ export class Agent {
         continue;
       }
       if (this._repeatedToolCalls >= 3) {
-        const detail = String(this._lastToolResult || "The operation did not complete.").slice(0, 1000);
-        const answer = `The operation did not complete.\n${detail}`;
-        this._messages.push({ role: "developer", content: answer });
-        yield { type: "answer", content: answer };
-        return;
+        this._debugToolRecovery("repeated_tool_call", String(this._lastToolResult || ""));
+        yield this._steer({
+          detectedIntent: this._activeTask.activeIntent,
+          proposedAction: `repeat ${tool.name}`,
+          recommendedAction: this._activeTask.nextExpectedAction,
+          guidance: "Do not repeat the last unsuccessful action. Analyze its result and take the smallest relevant recovery step for the active task.",
+        });
+        this._repeatedToolCalls = 0;
+        continue;
       }
       if (this._plan && this._planIndex < this._plan.length && !auxiliaryTool) {
         this._plan[this._planIndex].status = "running";
@@ -2242,7 +2288,7 @@ export class Agent {
         const count = fileCountFromToolResult(tool, result);
         if (count !== null) {
           const answer = `There are ${count} files in ${this._workspace}.`;
-          this._messages.push({ role: "developer", content: answer });
+          this._messages.push({ role: "assistant", content: answer });
           yield { type: "answer", content: answer };
           return;
         }
@@ -2253,7 +2299,7 @@ export class Agent {
       // read/write/edit forever while trying to "finish" the same task.
       if (["write", "edit"].includes(tool.name) && result.startsWith("No changes to ")) {
         const answer = `Done — ${tool.args.path} already matches the requested change.`;
-        this._messages.push({ role: "developer", content: answer });
+        this._messages.push({ role: "assistant", content: answer });
         yield { type: "answer", content: answer };
         return;
       }
@@ -2331,7 +2377,7 @@ export class Agent {
         const detail = result.startsWith("Syntax validation failed") ? result : "the provided oldString did not match any text in the file";
         this._messages.push({
           role: "user",
-          content: `The requested fix was not applied:\n${detail}\n\nAnalyze the problem:\n1. Syntax error → fix the code, use write to rewrite the entire file\n2. Missing dependency detected in the result → install it with npm install/pip install\n3. Text not found → read the file first, then use write with the corrected content\nThe user already asked for a fix; do not ask for confirmation.`,
+          content: `Internal targeted-edit recovery. The requested change was not applied: ${detail}\nRead the exact target file or failed block, then use one minimal edit with an exact oldString and corrected newString. Do not rewrite an existing file. Preserve unrelated code. If the result identifies a dependency issue, run only the relevant install command, then retry the same targeted edit. Continue the active task without asking for confirmation.`,
         });
         continue;
       }
@@ -2388,6 +2434,11 @@ export class Agent {
       }
       this._messages.push({ role: "user", content: msgContent });
     }
-    yield { type: "answer", content: "Unable to complete the task within this session. Please try again." };
+    yield this._pauseForRecovery({
+      proposedAction: "continue beyond the current execution window",
+      recommendedAction: this._activeTask.nextExpectedAction || "continue the next unfinished plan action",
+      guidance: "Keep the active task pending with its existing plan, target files, and evidence. Resume the next expected action on the following agent turn; never mark this task complete solely because an execution window ended.",
+      reason: "The current execution window ended before the active task met its acceptance criteria.",
+    });
   }
 }

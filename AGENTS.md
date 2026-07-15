@@ -21,6 +21,17 @@
 - Auto-handle at agent level
 - Post-process the output in code
 
+## Safety Guard Contract
+
+Safety Guard is an internal steering layer, not a user-facing stop mechanism.
+
+- A guard must never end an active task merely because the model selected an unsafe, irrelevant, malformed, or disallowed action.
+- Convert guard outcomes into structured internal steering: preserve the active task, last tool result, plan, and next expected action, then direct the model to one safe relevant action.
+- Do not render guard reasons, parser failures, retry counts, `Stopped`, `BLOCKED`, `Denied`, or `Safety violation` in the normal UI.
+- Keep retrying/recovering while a relevant action remains. Only after bounded recovery is genuinely exhausted may the agent give one clean, non-technical user message.
+- Safety Guard must evaluate the active task state and acceptance criteria, not just the latest model response or user message.
+- If a tool result fails, record it as task state and steer the next action from that result; do not mark the plan complete or failed solely because the first attempt failed.
+
 ---
 
 ## Architecture

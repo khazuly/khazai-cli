@@ -691,7 +691,9 @@ test("partial Claude tool generation is not retried for another timeout", async 
   assert.equal(resets, 0);
   assert.equal(events.some(event => event.type === "stream"), false);
   assert.equal(events.some(event => event.type === "error"), false);
-  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
+  assert.equal(events.some(event => event.type === "answer"), false);
+  assert.equal(events.some(event => event.type === "steering"), true);
+  assert.equal(agent._pendingAction?.status, "recovering");
 });
 
 test("Claude timeout without tokens is not doubled by session retry", async () => {
@@ -712,7 +714,9 @@ test("Claude timeout without tokens is not doubled by session retry", async () =
   assert.equal(calls, 1);
   assert.equal(resets, 0);
   assert.equal(events.some(event => event.type === "error"), false);
-  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
+  assert.equal(events.some(event => event.type === "answer"), false);
+  assert.equal(events.some(event => event.type === "steering"), true);
+  assert.equal(agent._pendingAction?.status, "recovering");
 });
 
 test("context includes current request once and prunes stale tool payloads", () => {
@@ -736,7 +740,7 @@ test("context includes current request once and prunes stale tool payloads", () 
   assert.match(combined, /Written new\.py/);
 });
 
-test("malformed tool recovery stays on the selected model and fails cleanly only after recovery", async () => {
+test("malformed tool recovery stays on the selected model and keeps the task pending", async () => {
   let calls = 0;
   const models = [];
   const registry = new Registry();
@@ -757,34 +761,41 @@ test("malformed tool recovery stays on the selected model and fails cleanly only
       return malformed;
     },
   });
+  agent._config.maxTurns = 8;
   const events = [];
   for await (const event of agent.loop("Create broken.py")) events.push(event);
 
-  assert.equal(calls, 6);
-  assert.deepEqual(models, ["claude", "claude", "claude", "claude", "claude", "claude"]);
+  assert.equal(calls, 8);
+  assert.deepEqual(models, ["claude", "claude", "claude", "claude", "claude", "claude", "claude", "claude"]);
   assert.equal(events.some(event => event.type === "tool-call"), false);
   assert.equal(events.some(event => event.type === "error"), false);
-  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
+  assert.equal(events.some(event => event.type === "answer"), false);
+  assert.equal(events.some(event => event.type === "steering"), true);
+  assert.equal(agent._pendingAction?.status, "recovering");
   assert.equal(events.some(event => /unparseable|truncated before/i.test(event.content || "")), false);
 });
 
-test("empty model responses receive steering then end with a clean recovery message", async () => {
+test("empty model responses receive detailed steering until a valid action arrives", async () => {
   let calls = 0;
-  const agent = new Agent(new Registry(), {
+  const registry = new Registry();
+  registry.register({ name: "write", description: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] }, async execute() { return "Written"; } });
+  const responses = ["", "", "", JSON.stringify({ tool: "write", args: { path: "recovered.js", content: "export const recovered = true;\n" } }), "Recovered the requested file."];
+  const agent = new Agent(registry, {
     model: "claude",
     workspace: "/tmp/empty-response-test",
     chat: async () => {
       calls++;
-      return "";
+      return responses.shift();
     },
   });
   const events = [];
   for await (const event of agent.loop("Create a file")) events.push(event);
 
-  assert.equal(calls, 4);
+  assert.equal(calls, 5);
   assert.equal(events.some(event => event.type === "error"), false);
   assert.equal(events.some(event => event.type === "steering"), true);
-  assert.match(events.find(event => event.type === "answer")?.content || "", /unable to continue/i);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write"]);
+  assert.equal(events.some(event => event.type === "answer"), false);
 });
 
 test("repeated successful glob uses cached evidence without exposing a hard-stop error", async () => {
@@ -916,7 +927,7 @@ test("interactive question events strip model markdown before rendering", async 
   assert.equal(events.some(event => /\*\*|`/.test(event.question || "")), false);
 });
 
-test("truncated write retries with the selected model and a bounded recovery request", async () => {
+test("truncated write retries with the selected model and a detailed recovery request", async () => {
   const contexts = [];
   const models = [];
   const registry = new Registry();
