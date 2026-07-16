@@ -42,7 +42,15 @@ function redirect(proposedAction, recommendedAction, guidance) {
 
 export const bashTool = {
   name: "bash",
-  description: "Execute shell commands in your project environment.",
+  description: `Execute shell commands in your project environment.
+
+## Git workflow
+When committing or pushing, first run in parallel: git status, git diff, git log --oneline -5. Then stage and commit.
+- Use \`git commit -am "message"\` for speed. Never use \`git add .\` blindly.
+- Before pushing, always run \`git status\` and \`git log --oneline -3\` to verify.
+- If push fails with auth error, guide the user: \`git remote set-url origin https://<TOKEN>@github.com/<user>/<repo>.git\`
+- NEVER update git config. NEVER use \`git push -i\`.
+- For PRs: push with \`-u\` flag, then use \`gh pr create\`.`,
   parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", description: "timeout in seconds" }, workdir: { type: "string" } }, required: ["command"] },
   async execute({ command, timeout = 60, workdir }) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();

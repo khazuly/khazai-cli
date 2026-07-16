@@ -264,10 +264,6 @@ function clearWorkspaceRequest(contract) {
   return contract?.operation === "clear_workspace";
 }
 
-function gitPushRequest(contract) {
-  return contract?.operation === "git" && /\bpush\b/i.test(String(contract.request || ""));
-}
-
 function isDeletionCommand(command) {
   return destructiveCommand(command);
 }
@@ -684,6 +680,17 @@ export function proseLooksIncomplete(text) {
   const withoutBold = withoutFences.replace(/\*\*[^\n]*?\*\*/g, "");
   if (delimiterCount(withoutBold, "`") % 2 !== 0) return true;
   return /(?:\[[^\]\n]*|\[[^\]\n]*\]\([^\)\n]*)$/.test(source);
+}
+
+function extractProseBeforeTool(text) {
+  const reply = String(text || "").trim();
+  const candidates = extractJsonCandidates(reply);
+  if (candidates.length === 0) return "";
+  const firstJson = reply.indexOf(candidates[0]);
+  if (firstJson <= 0) return "";
+  let prose = reply.slice(0, firstJson).trim();
+  prose = prose.replace(/^```[\s\S]*?\n/, "").replace(/\n```\s*$/, "").trim();
+  return prose;
 }
 
 function joinProseContinuation(prefix, continuation) {
@@ -1367,67 +1374,6 @@ export class Agent {
     let pendingProse = "";
     let proseContinuations = 0;
 
-    // Git push is an explicit, observable workspace action. Do not make it
-    // depend on the model producing a second tool call after intent resolution.
-    // The shell tool still owns execution, authentication, and error reporting.
-    if (gitPushRequest(this._taskContract)) {
-      const bash = this._registry.get("bash");
-      if (!bash) {
-        yield this._pauseForRecovery({
-          detectedIntent: "GIT_OPERATION",
-          proposedAction: "run the pending Git push without the shell tool",
-          recommendedAction: "run the pending Git push with the configured shell tool",
-          guidance: "Keep the pending Git operation active. Restore the shell tool, then run the same push against the active remote and branch. Do not report completion before git push succeeds.",
-          reason: "The shell tool was unavailable for the pending Git push.",
-        });
-        return;
-      }
-      const args = { command: "git push origin HEAD", workdir: this._workspace };
-      yield { type: "tool-call", tool: "bash", args };
-      let result;
-      try {
-        result = await bash.execute(args);
-      } catch (error) {
-        result = `Error: ${error.message}`;
-      }
-      const failed = resultFailed(result);
-      yield { type: "tool-result", tool: "bash", result };
-      this._toolEvidence.push({ tool: "bash", args, result, failed });
-      this._executionPolicy.record("bash", args, result, failed);
-      let answer;
-      if (failed) {
-        const detail = String(result || "").toLowerCase();
-        const isAuth = /auth|credential|password|token|permission denied|401|403|could not read username/i.test(detail);
-        const isNoUpstream = /no upstream|does not have a branch.*upstream|fatal:.*upstream/i.test(detail);
-        const isRejected = /rejected|non-fast-forward|failed to push/i.test(detail);
-        if (isAuth) {
-          answer = [
-            "Git push failed — authentication required.",
-            "",
-            "Set up credentials with one of these:",
-            "  • Token:  git remote set-url origin https://<TOKEN>@github.com/<user>/<repo>.git",
-            "  • SSH:     git remote set-url origin git@github.com:<user>/<repo>.git",
-            "  • gh CLI:  gh auth login",
-            "",
-            "Then retry the push.",
-          ].join("\n");
-        } else if (isNoUpstream) {
-          answer = `Git push failed — no upstream branch set.\nRun: git push --set-upstream origin $(git branch --show-current)`;
-        } else if (isRejected) {
-          answer = `Git push rejected.\n${result}\nTry: git pull --rebase origin $(git branch --show-current) && git push`;
-        } else {
-          answer = `Git push failed:\n${result}`;
-        }
-      } else {
-        answer = "Git push completed successfully.";
-      }
-      this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
-      this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
-      this._messages.push({ role: "assistant", content: answer });
-      yield { type: "answer", content: answer };
-      return;
-    }
-
     // Clearing a workspace is unambiguous when the user explicitly asks to
     // remove every file. Execute it locally instead of trusting a model to call
     // a destructive tool or accepting an unsupported "done" claim. `find`
@@ -1659,6 +1605,13 @@ export class Agent {
         if (validation) {
           parsed = { tool: null, error: validation.detail, kind: validation.kind, truncated: false };
           tool = null;
+        }
+      }
+
+      if (tool) {
+        const prose = extractProseBeforeTool(reply);
+        if (prose) {
+          yield { type: "stream", token: prose + "\n" };
         }
       }
 
