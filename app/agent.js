@@ -1394,9 +1394,33 @@ export class Agent {
       yield { type: "tool-result", tool: "bash", result };
       this._toolEvidence.push({ tool: "bash", args, result, failed });
       this._executionPolicy.record("bash", args, result, failed);
-      const answer = failed
-        ? "Git push failed. Check the Shell result above."
-        : "Git push completed successfully.";
+      let answer;
+      if (failed) {
+        const detail = String(result || "").toLowerCase();
+        const isAuth = /auth|credential|password|token|permission denied|401|403|could not read username/i.test(detail);
+        const isNoUpstream = /no upstream|does not have a branch.*upstream|fatal:.*upstream/i.test(detail);
+        const isRejected = /rejected|non-fast-forward|failed to push/i.test(detail);
+        if (isAuth) {
+          answer = [
+            "Git push failed — authentication required.",
+            "",
+            "Set up credentials with one of these:",
+            "  • Token:  git remote set-url origin https://<TOKEN>@github.com/<user>/<repo>.git",
+            "  • SSH:     git remote set-url origin git@github.com:<user>/<repo>.git",
+            "  • gh CLI:  gh auth login",
+            "",
+            "Then retry the push.",
+          ].join("\n");
+        } else if (isNoUpstream) {
+          answer = `Git push failed — no upstream branch set.\nRun: git push --set-upstream origin $(git branch --show-current)`;
+        } else if (isRejected) {
+          answer = `Git push rejected.\n${result}\nTry: git pull --rebase origin $(git branch --show-current) && git push`;
+        } else {
+          answer = `Git push failed:\n${result}`;
+        }
+      } else {
+        answer = "Git push completed successfully.";
+      }
       this._messages.push({ role: "assistant", content: JSON.stringify({ tool: "bash", args }) });
       this._messages.push({ role: "user", content: `---TOOL RESULT: bash---\n${result}` });
       this._messages.push({ role: "assistant", content: answer });
