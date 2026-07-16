@@ -13,6 +13,7 @@ import { webSearchTool } from "../tools/websearch.js";
 import { questionTool } from "../tools/question.js";
 import { taskTool } from "../tools/task.js";
 import { repoTool } from "../tools/repo.js";
+import { webfetchTool } from "../tools/webfetch.js";
 import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
 import { PlanList } from "./components/plan-list.js";
@@ -25,7 +26,7 @@ import { redactSecrets } from "../lib/secrets.js";
 
 function buildRegistry() {
   const r = new Registry();
-  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webSearchTool, repoTool, questionTool, taskTool]) r.register(t);
+  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webSearchTool, repoTool, questionTool, taskTool, webfetchTool]) r.register(t);
   return r;
 }
 

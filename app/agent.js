@@ -1,5 +1,5 @@
 import { countTokens } from "../lib/tokens.js";
-import { loadConfig, findProjectInstructions } from "../config/index.js";
+import { loadConfig } from "../config/index.js";
 import { chat, resetSession } from "../lib/llm.js";
 
 import { execAsync } from "../lib/exec-async.js";
@@ -10,6 +10,8 @@ import { existsSync, readFileSync, statSync, writeFileSync, mkdtempSync, chmodSy
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { redactSecrets, extractCredential } from "../lib/secrets.js";
+import { InstructionService } from "./instruction.js";
+import { getProviderPrompt } from "./prompts.js";
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -47,9 +49,11 @@ function fallbackPlan(contract) {
   if (["inspect", "research"].includes(contract?.intent)) {
     if (["research", "discover_endpoints"].includes(contract?.operation)) {
       return [
-        { status: "pending", description: "Inspect the requested website with shell or search tools" },
-        { status: "pending", description: "Search the web for indexed pages on the requested domain" },
-        { status: "pending", description: "Inspect discovered public assets with shell commands" },
+        { status: "pending", description: "Fetch the target URL and understand the page structure" },
+        { status: "pending", description: "Look for JavaScript bundle references in the HTML" },
+        { status: "pending", description: "Download and inspect bundles for API patterns" },
+        { status: "pending", description: "Test endpoints before generating code" },
+        { status: "pending", description: "Document required headers, cookies, and payload structure" },
       ];
     }
     return [
@@ -284,53 +288,6 @@ function isValidationCommand(command, domain = "general") {
     return /(?:obfus|encrypt|\.obf\b|\.enc\b)/i.test(normalized);
   }
   return true;
-}
-
-function endpointDiscoveryTarget(contract, history = []) {
-  if (contract?.operation !== "discover_endpoints") return null;
-  const findUrl = value => /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>"'`)\]]*)?/i.exec(String(value || ""))?.[0]?.replace(/[.,;:!?]+$/, "") || null;
-  const direct = contract.targetUrl || findUrl(contract.request);
-  if (direct) return direct;
-  for (let index = history.length - 1; index >= 0; index--) {
-    if (history[index]?.role !== "user" || String(history[index].content).startsWith("---")) continue;
-    const previous = findUrl(history[index].content);
-    if (previous) return previous;
-  }
-  return null;
-}
-
-function endpointTargetHost(targetUrl) {
-  try {
-    return new URL(/^https?:\/\//i.test(String(targetUrl)) ? targetUrl : `https://${targetUrl}`).hostname.replace(/^www\./i, "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-function commandMentionsEndpointTarget(command, targetUrl) {
-  const text = String(command || "").toLowerCase();
-  const host = endpointTargetHost(targetUrl);
-  return Boolean(host && text.includes(host));
-}
-
-function endpointAssetDownloadWritesOutsideTmp(command) {
-  const text = String(command || "");
-  const writesToTmp = /(?:^|[\s"'`=:(])\/tmp(?:\/|\b)|\bos\.tmpdir\s*\(|\btmpdir\s*\(|\bmktemp\b/i.test(text);
-  if (writesToTmp) return false;
-  return /\b(?:curl|wget)\b[\s\S]*(?:\s(?:-o|--output|-c|--cookie-jar)\s+\S+|\s--output-document=\S+|\s-O\b|>\s*[^&|;\s]+)/i.test(text)
-    || /\b(?:fs\.)?(?:writeFileSync|writeFile|createWriteStream|appendFileSync|appendFile|mkdirSync)\s*\(/i.test(text)
-    || /\b(?:Deno\.writeFile|Bun\.write)\s*\(/i.test(text)
-    || /\b(?:download|save|persist)\b[\s\S]*\b(?:chunk|bundle|script|asset|source\s*map|\.js|\.map)\b/i.test(text);
-}
-
-function endpointInspectionGuidance(targetUrl, proposedTool) {
-  return [
-    `The user asked to discover endpoints from ${targetUrl}.`,
-    proposedTool === "bash"
-      ? "The shell command must inspect that target domain directly."
-      : "Before repository or search tools, inspect the target site directly with bash.",
-    "Run a normal shell inspection: curl/wget the page, extract linked scripts/modules/chunks/source maps, inspect those assets, and scan for fetch/axios/XMLHttpRequest/WebSocket/EventSource/API/chat endpoint strings. If any fetched asset is written to disk, write only under /tmp.",
-  ].join("\n");
 }
 
 export function expectedPlanTools(description) {
@@ -1009,37 +966,27 @@ export class Agent {
   }
 
   _buildSystem() {
+    const instructionService = new InstructionService(this._workspace);
+    const instructions = instructionService.loadAllInstructions();
+    const instructionBlock = instructionService.getSystemPromptBlock();
+
+    const envInfo = [
+      `You are powered by the model named ${this._model}.`,
+      `Here is some useful information about the environment you are running in:`,
+      `<env>`,
+      `  Working directory: ${this._workspace}`,
+      `  Is directory a git repo: yes`,
+      `  Platform: ${process.platform}`,
+      `  Today's date: ${new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}`,
+      `</env>`,
+      "",
+    ].join("\n");
+
     const parts = [
-      this._config.system,
-      "",
-      "You are an autonomous developer working with the user inside one workspace.",
-      "",
-      "EXECUTION WORKFLOW:",
-      "1. Understand the current outcome and use conversation context for short follow-ups.",
-      "2. Inspect only the evidence needed to choose a safe action.",
-      "3. For a complex task, form a concrete plan; otherwise act directly.",
-      "4. Execute one tool at a time and use its actual result to choose the next step.",
-      "5. Recover from failures by changing the action based on the error, not by repeating it.",
-      "6. Verify requested outcomes with tests or observable state when applicable.",
-      "7. Give a final answer only when the task state shows the requested outcome is complete.",
-      "",
-      "DECISION CONTRACT:",
-      "- If an observable action is required, call a tool instead of describing the action.",
-      "- Never claim that a file was created, changed, deleted, tested, fetched, or executed without a successful tool result.",
-      "- Do not restart completed research or repeat an equivalent inspection when existing evidence answers the question.",
-      "- Preserve unrelated workspace modifications and stay within the user's requested scope.",
-      "- Ask a question only when a missing choice materially changes the implementation; otherwise make a safe assumption and proceed.",
-      "- On failure, inspect the error and select a different recovery action. Do not retry an identical failed call.",
-      "- Do not start long-lived foreground servers. Prepare the project and report the command the user can run.",
-      "",
-      "TOOL PROTOCOL:",
-      "- Respond with EXACTLY one JSON object: {\"tool\":\"name\",\"args\":{...}}",
-      "- No text before or after the JSON. No markdown. No explanation.",
-      "- Use normal concise prose only when no further tool action is needed.",
-      "",
-      `WORKSPACE: ${this._workspace}`,
-      "",
+      getProviderPrompt(this._model, this._workspace, instructionBlock),
+      envInfo,
     ];
+
     if (this._executionPolicy) {
       parts.push("CURRENT TASK STATE:", this._executionPolicy.contextBlock(), "");
     }
@@ -1047,8 +994,6 @@ export class Agent {
     if (this._lastAnalysis) {
       parts.push("LATEST ANALYSIS:", this._lastAnalysis, "");
     }
-    const proj = findProjectInstructions();
-    if (proj) parts.push("Project instructions:", proj, "");
     if (this._planningPhase) {
       parts.push(
         "Planning phase: return only a concise checklist in this exact format:",
@@ -1859,58 +1804,6 @@ export class Agent {
         continue;
       }
 
-      const endpointTarget = endpointDiscoveryTarget(this._taskContract, previousMessages);
-      const endpointInspectionPending = endpointTarget
-        && this._executionPolicy
-        && !this._executionPolicy.successfulKinds().has("endpoint_inspection");
-      const endpointInspectionComplete = endpointTarget
-        && this._executionPolicy
-        && this._executionPolicy.canComplete();
-      if (endpointInspectionComplete && ["bash", "repo", "web", "websearch"].includes(tool.name)) {
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
-        yield this._steer({
-          detectedIntent: "ENDPOINT_DISCOVERY",
-          proposedAction: tool.name,
-          recommendedAction: "final answer from collected endpoint evidence",
-          guidance: "The Shell inspection already collected the required endpoint evidence. Do not run another inspection tool; answer from the existing Shell result.",
-        });
-        continue;
-      }
-      if (endpointInspectionPending && tool.name !== "bash") {
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
-        yield this._steer({
-          detectedIntent: "ENDPOINT_DISCOVERY",
-          proposedAction: tool.name,
-          recommendedAction: "bash direct target inspection",
-          guidance: endpointInspectionGuidance(endpointTarget, tool.name),
-        });
-        continue;
-      }
-      if (
-        endpointInspectionPending
-        && tool.name === "bash"
-        && !commandMentionsEndpointTarget(tool.args?.command, endpointTarget)
-      ) {
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
-        yield this._steer({
-          detectedIntent: "ENDPOINT_DISCOVERY",
-          proposedAction: "bash command for a different target",
-          recommendedAction: "bash direct target inspection",
-          guidance: endpointInspectionGuidance(endpointTarget, "bash"),
-        });
-        continue;
-      }
-      if (endpointTarget && tool.name === "bash" && endpointAssetDownloadWritesOutsideTmp(tool.args?.command)) {
-        this._messages.push({ role: "assistant", content: JSON.stringify({ tool: tool.name, args: tool.args }) });
-        yield this._steer({
-          detectedIntent: "ENDPOINT_DISCOVERY",
-          proposedAction: "download endpoint assets outside /tmp",
-          recommendedAction: "bash endpoint asset inspection using /tmp",
-          guidance: "Endpoint discovery may download scripts, chunks, bundles, and source maps, but any files written during that inspection must be under /tmp. Retry with /tmp, os.tmpdir(), mktemp -d /tmp/..., or keep assets in memory.",
-        });
-        continue;
-      }
-
       const t = this._registry.get(tool.name);
       if (this._activeTask.activeIntent === "GIT_OPERATION" && tool.name === "bash" && !/^\s*git\b/i.test(String(tool.args?.command || ""))) {
         yield this._steer({ detectedIntent: "GIT_OPERATION", proposedAction: tool.args?.command || tool.name, recommendedAction: "git command for the pending remote/branch operation", guidance: `Continue the pending Git task. Last problem: ${this._activeTask.pendingProblem || "none"}. Run only the relevant git recovery or push action.` });
@@ -2393,10 +2286,15 @@ export class Agent {
 
       if (tool.name === "bash") {
         this._consecutiveBash++;
-        if (this._consecutiveBash >= 3) {
+        const isEndpointDiscovery = this._taskContract?.operation === "discover_endpoints"
+          || this._taskContract?.intent === "research";
+        const bashLimit = isEndpointDiscovery ? 15 : 3;
+        if (this._consecutiveBash >= bashLimit) {
           this._messages.push({
             role: "user",
-            content: `STOP running bash commands. You have run ${this._consecutiveBash} in a row. You have enough information. Call the write tool now, or respond concisely. Do NOT run more bash commands.`,
+            content: isEndpointDiscovery
+              ? `You have run ${this._consecutiveBash} bash commands for endpoint discovery. You should now have enough information from the JS bundle inspection. Summarize all discovered endpoints with their methods, required headers, and payload formats. Do NOT run more bash commands.`
+              : `STOP running bash commands. You have run ${this._consecutiveBash} in a row. You have enough information. Call the write tool now, or respond concisely. Do NOT run more bash commands.`,
           });
           this._consecutiveBash = 0;
           continue;

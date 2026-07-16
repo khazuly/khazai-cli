@@ -62,60 +62,6 @@ test("execution policy accepts contextual evidence supplied by the orchestrator"
   assert.equal(policy.canComplete(), true);
 });
 
-test("endpoint discovery requires JavaScript asset inspection evidence", () => {
-  const policy = new ExecutionPolicy({
-    intent: "research",
-    operation: "discover_endpoints",
-    requiredEvidence: ["research"],
-    domain: "web",
-    targetUrl: "https://fixture-chat.example",
-  });
-
-  assert.deepEqual(policy.completionGaps(), ["research", "endpoint_inspection", "endpoint_asset_inspection"]);
-  policy.record(
-    "bash",
-    { command: "curl -Ls https://fixture-chat.example | head -80" },
-    "Exit: 0\n<!doctype html>\n<a href=\"/chat\">chat</a>",
-    false,
-  );
-  assert.deepEqual(policy.completionGaps(), ["endpoint_asset_inspection"]);
-  assert.equal(policy.canComplete(), false);
-
-  policy.record(
-    "bash",
-    { command: "tmp=$(mktemp -d /tmp/khazai-endpoints-XXXXXX); curl -Ls https://fixture-chat.example/assets/app.js > \"$tmp/app.js\"; rg \"fetch|/api|chat\" \"$tmp\"" },
-    "Exit: 0\nJS chars 42000 from https://fixture-chat.example/assets/app.js\nfetch('/api/chat', { method: 'POST' })\n[POST] /api/chat",
-    false,
-  );
-  assert.equal(policy.canComplete(), true);
-});
-
-test("endpoint asset evidence accepts natural shell bundle scans with quoted API paths", () => {
-  const policy = new ExecutionPolicy({
-    intent: "research",
-    operation: "discover_endpoints",
-    requiredEvidence: ["research"],
-    domain: "web",
-    targetUrl: "https://login-fixture.example",
-  });
-
-  policy.record(
-    "bash",
-    {
-      command: "cd /tmp && curl -s 'https://cdn.login-fixture.example/assets/bundle.123.js' | grep -oE '\"(/api/v4/[a-z0-9_/]+)\"' | grep -E '(login|auth)'",
-    },
-    [
-      "Exit: 0",
-      "\"/api/v4/account/login_by_password\"",
-      "\"/api/v4/account/login_by_otp\"",
-      "\"/api/v4/authentication/login_by_google\"",
-    ].join("\n"),
-    false,
-  );
-
-  assert.equal(policy.canComplete(), true);
-});
-
 test("command semantics separate inspection, deletion, and validation", () => {
   assert.equal(inspectionCommand("find . -type f | head -20"), true);
   assert.equal(destructiveCommand("find . -type f -delete"), true);
@@ -129,4 +75,28 @@ test("negated mutation does not create a false completion requirement", () => {
   const contract = inferTaskContract("review app.js but do not edit the file");
   assert.equal(contract.intent, "inspect");
   assert.deepEqual(contract.requiredEvidence, ["inspection"]);
+});
+
+test("research tasks require inspection evidence", () => {
+  const policy = new ExecutionPolicy("explain this repository");
+  assert.deepEqual(policy.completionGaps(), ["inspection"]);
+  
+  policy.record("read", { path: "README.md" }, "File contents", false);
+  assert.equal(policy.canComplete(), true);
+});
+
+test("mutation tasks require mutation evidence", () => {
+  const policy = new ExecutionPolicy("fix the bug in app.js");
+  assert.deepEqual(policy.completionGaps(), ["mutation"]);
+  
+  policy.record("edit", { path: "app.js" }, "Fixed bug", false);
+  assert.equal(policy.canComplete(), true);
+});
+
+test("validation tasks require validation evidence", () => {
+  const policy = new ExecutionPolicy("run tests");
+  assert.deepEqual(policy.completionGaps(), ["validation"]);
+  
+  policy.record("bash", { command: "npm test" }, "Exit: 0", false);
+  assert.equal(policy.canComplete(), true);
 });

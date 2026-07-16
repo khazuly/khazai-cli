@@ -207,7 +207,7 @@ function validateSource(path, content) {
 export { detectDependencies };
 export const readTool = {
   name: "read",
-  description: "Read file contents with line numbers.",
+  description: "Read a file from the filesystem.",
   parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] },
   async execute({ path, offset = 1, limit = 2000, _agentWorkspace }) {
     requireWorkspace(path, _agentWorkspace);
@@ -229,7 +229,7 @@ export const readTool = {
 
 export const writeTool = {
   name: "write",
-  description: "Write content to a file.",
+  description: "Write a file to the local filesystem.",
   parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
   async execute({ path, content, _agentWorkspace }) {
     requireWorkspace(path, _agentWorkspace);
@@ -297,7 +297,7 @@ const EDITORS = [
 
 export const editTool = {
   name: "edit",
-  description: "Edit a file by replacing text (exact, trimmed, or fuzzy).",
+  description: "Edit a file by replacing text.",
   parameters: { type: "object", properties: { path: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["path", "oldString", "newString"] },
   async execute({ path, oldString, newString, _agentWorkspace }) {
     requireWorkspace(path, _agentWorkspace);

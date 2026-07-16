@@ -258,7 +258,7 @@ function detectDuplicates(path, content) {
 
 export const analyzeTool = {
   name: "analyze",
-  description: "Analyze code, bugs, and errors without changing files or running the application. Checks syntax, error locations, relevant matches, and source context.",
+  description: "Analyze code files for syntax errors, bugs, and code quality issues.",
   parameters: {
     type: "object",
     properties: {

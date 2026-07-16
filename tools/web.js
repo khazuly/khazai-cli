@@ -3,10 +3,7 @@ const MAX_CACHE_ENTRIES = 30;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_PAGE_CHARS = 2 * 1024 * 1024;
 const MAX_OUTPUT_CHARS = 30000;
-const MAX_DISCOVERY_ASSETS = 500;
-const MAX_DISCOVERY_ASSET_BYTES = 10 * 1024 * 1024;
-const DISCOVERY_CONCURRENCY = 8;
-const USER_AGENT = "Mozilla/5.0 (compatible; khazai-ai; +https://github.com/khazuly/khazai-cli)";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const _pageCache = new Map();
 
 function decodeEntities(text) {
@@ -397,177 +394,9 @@ async function fetchPage(url, selector) {
   return { title, description, text, links, finalUrl, contentType, totalChars: text.length, responseBytes: Buffer.byteLength(body) };
 }
 
-function resolveAssetUrl(value, baseUrl) {
-  try {
-    const url = new URL(decodeEntities(String(value)).replace(/\\\//g, "/"), baseUrl);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
-    url.hash = "";
-    return url.href;
-  } catch {
-    return null;
-  }
-}
-
-function extractScriptAssets(html, baseUrl) {
-  const assets = [];
-  const seen = new Set();
-  const add = raw => {
-    const url = resolveAssetUrl(raw, baseUrl);
-    if (url && !seen.has(url)) { seen.add(url); assets.push(url); }
-  };
-  for (const match of String(html).matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) add(match[1]);
-  for (const match of String(html).matchAll(/<link\b([^>]*\brel=["'][^"']*(?:modulepreload|preload)[^"']*["'][^>]*)>/gi)) {
-    const href = /\bhref=["']([^"']+)["']/i.exec(match[1])?.[1];
-    if (href && (/\bas=["']script["']/i.test(match[1]) || /\.(?:m?js)(?:[?#]|$)/i.test(href))) add(href);
-  }
-  return assets;
-}
-
-function extractInlineScripts(html) {
-  return [...String(html).matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
-    .map(match => match[1].trim())
-    .filter(Boolean);
-}
-
-function cleanEndpoint(raw, baseUrl) {
-  let value = decodeEntities(String(raw || ""))
-    .replace(/\\u002f/gi, "/")
-    .replace(/\\\//g, "/")
-    .replace(/\\([?&=])/g, "$1")
-    .trim()
-    .replace(/[),;]+$/, "");
-  if (!value || value.length > 1000 || /\s/.test(value)) return null;
-  if (value.startsWith("//")) value = new URL(baseUrl).protocol + value;
-  if (!/^(?:https?:\/\/|\/)/i.test(value)) return null;
-  if (/\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|eot)(?:[?#]|$)/i.test(value)) return null;
-  if (/^\/(?:_next|static|assets?|webpack|node_modules)(?:\/|$)/i.test(value)) return null;
-  if (value.startsWith("/") && !value.startsWith("//")) {
-    const segments = value.split(/[?#]/)[0].split("/").filter(Boolean);
-    const endpointLike = /\b(?:api|graphql|auth|oauth|login|logout|token|user|account|shop|seller|product|item|order|payment|search|document|upload|download|cart|checkout|webhook|session|config|service)\b/i.test(value);
-    if (segments.length < 2 && !endpointLike) return null;
-  }
-  return value;
-}
-
-export function extractEndpointCandidates(source, baseUrl, evidence = "document") {
-  const found = new Map();
-  const add = (raw, method = null, pattern = "string") => {
-    const endpoint = cleanEndpoint(raw, baseUrl);
-    if (!endpoint) return;
-    const previous = found.get(endpoint);
-    if (!previous || (!previous.method && method)) found.set(endpoint, { endpoint, method, evidence, pattern });
-  };
-  const text = String(source || "");
-  for (const match of text.matchAll(/\bfetch\s*\(\s*(["'\x60])([^"'\x60]+)\1([\s\S]{0,240})/gi)) {
-    const method = /\bmethod\s*:\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']/i.exec(match[3])?.[1]?.toUpperCase() || "GET";
-    add(match[2], method, "fetch");
-  }
-  for (const match of text.matchAll(/\baxios\s*\.\s*(get|post|put|patch|delete|head|options)\s*\(\s*(["'\x60])([^"'\x60]+)\2/gi)) add(match[3], match[1].toUpperCase(), "axios");
-  for (const match of text.matchAll(/\b(?:url|endpoint|baseURL)\s*:\s*(["'\x60])([^"'\x60]+)\1/gi)) add(match[2], null, "configuration");
-  for (const match of text.matchAll(/(["'\x60])((?:https?:\\?\/\\?\/|\/)[^"'\x60\s]{2,1000})\1/g)) add(match[2], null, "string");
-  return [...found.values()];
-}
-
-function extractReferencedAssets(source, baseUrl) {
-  const assets = [];
-  const seen = new Set();
-  for (const match of String(source).matchAll(/(?:sourceMappingURL=|["'\x60])([^"'\x60\s]+\.(?:m?js|map)(?:[?#][^"'\x60\s]*)?)/gi)) {
-    const url = resolveAssetUrl(match[1], baseUrl);
-    if (url && !seen.has(url)) { seen.add(url); assets.push(url); }
-  }
-  return assets;
-}
-
-async function fetchDiscoveryAssets(urls, referer) {
-  const inspected = [];
-  const errors = [];
-  for (let index = 0; index < urls.length; index += DISCOVERY_CONCURRENCY) {
-    const results = await Promise.all(urls.slice(index, index + DISCOVERY_CONCURRENCY).map(async url => {
-      try {
-        const { response, body } = await requestPage(url, MAX_DISCOVERY_ASSET_BYTES, { Referer: referer });
-        return { url: response.url || url, body };
-      } catch (error) {
-        return { url, error: error.message };
-      }
-    }));
-    for (const result of results) result.error ? errors.push(result.url + ": " + result.error) : inspected.push(result);
-  }
-  return { inspected, errors };
-}
-
-export async function discoverEndpoints(inputUrl, maxAssets = MAX_DISCOVERY_ASSETS) {
-  const target = normalizeUrl(inputUrl);
-  const { response, body, requestedUrl } = await requestPageWithProtocolFallback(target);
-  const finalUrl = response.url || requestedUrl || target;
-  const title = extractMeta(body).title;
-  const endpointMap = new Map();
-  const add = candidates => {
-    for (const candidate of candidates) {
-      const previous = endpointMap.get(candidate.endpoint);
-      if (!previous || (!previous.method && candidate.method)) endpointMap.set(candidate.endpoint, candidate);
-    }
-  };
-  add(extractEndpointCandidates(body, finalUrl, finalUrl));
-  for (const [index, script] of extractInlineScripts(body).entries()) add(extractEndpointCandidates(script, finalUrl, finalUrl + "#inline-script-" + (index + 1)));
-
-  const assetLimit = Math.min(Math.max(1, Math.trunc(Number(maxAssets) || MAX_DISCOVERY_ASSETS)), MAX_DISCOVERY_ASSETS);
-  const htmlAssets = extractScriptAssets(body, finalUrl);
-  const queue = htmlAssets.slice(0, assetLimit);
-  const seenAssets = new Set(queue);
-  const inspected = [];
-  const errors = [];
-  let cursor = 0;
-  let omittedAssets = Math.max(0, htmlAssets.length - queue.length);
-  while (cursor < queue.length) {
-    const batch = queue.slice(cursor, cursor + DISCOVERY_CONCURRENCY);
-    cursor += batch.length;
-    const fetched = await fetchDiscoveryAssets(batch, finalUrl);
-    inspected.push(...fetched.inspected);
-    errors.push(...fetched.errors);
-    for (const asset of fetched.inspected) {
-      add(extractEndpointCandidates(asset.body, asset.url, asset.url));
-      for (const referenced of extractReferencedAssets(asset.body, asset.url)) {
-        if (seenAssets.has(referenced)) continue;
-        if (seenAssets.size >= assetLimit) {
-          omittedAssets++;
-          continue;
-        }
-        seenAssets.add(referenced);
-        queue.push(referenced);
-      }
-    }
-  }
-  const endpoints = [...endpointMap.values()].sort((a, b) => a.endpoint.localeCompare(b.endpoint));
-  const lines = [
-    "Passive endpoint discovery",
-    "Target: " + finalUrl,
-    ...(title ? ["Title: " + title] : []),
-    "HTML bytes inspected: " + Buffer.byteLength(body),
-    "JavaScript/source-map assets discovered: " + seenAssets.size,
-    "Assets successfully inspected: " + inspected.length,
-    ...(omittedAssets ? ["Assets omitted after reaching maxAssets: " + omittedAssets] : []),
-    "Endpoint candidates: " + endpoints.length,
-    "",
-    "Endpoint candidates:",
-  ];
-  if (!endpoints.length) lines.push("- None found in the public HTML or inspected assets.");
-  for (const candidate of endpoints) {
-    lines.push("- [" + (candidate.method || "?") + "] " + candidate.endpoint);
-    lines.push("  Evidence: " + candidate.evidence + " (" + candidate.pattern + ")");
-  }
-  lines.push("", "Assets inspected (" + inspected.length + "):");
-  for (const asset of inspected) lines.push("- " + asset.url + " (" + Buffer.byteLength(asset.body) + " bytes)");
-  if (errors.length) {
-    lines.push("", "Asset errors (" + errors.length + "):");
-    for (const error of errors) lines.push("- " + error);
-  }
-  lines.push("", "Methods marked [?] were present as URLs or routes but had no explicit HTTP method in the inspected code.");
-  return lines.join("\n");
-}
-
 export const webTool = {
   name: "web",
-  description: "Fetch an HTTP(S) page, or inspect its HTML, JavaScript bundles, chunks, source maps, and endpoint candidates with discover=true.",
+  description: "Fetch an HTTP(S) URL and return its content.",
   parameters: {
     type: "object",
     properties: {
@@ -575,15 +404,12 @@ export const webTool = {
       selector: { type: "string", description: "Optional HTML tag to extract, such as main or article" },
       offset: { type: "number", description: "Character offset for pagination (default 0)" },
       limit: { type: "number", description: "Characters to return (default 15000, max 30000)" },
-      discover: { type: "boolean", description: "Inspect HTML and loaded JavaScript assets for endpoint candidates" },
-      maxAssets: { type: "number", description: "Maximum JavaScript and source-map assets to inspect (default and max 500)" },
     },
     required: ["url"],
   },
-  async execute({ url, selector, offset = 0, limit = 15000, discover = false, maxAssets = MAX_DISCOVERY_ASSETS }) {
+  async execute({ url, selector, offset = 0, limit = 15000 }) {
     try {
       const normalizedUrl = normalizeUrl(url);
-      if (discover) return await discoverEndpoints(normalizedUrl, maxAssets);
       const normalizedSelector = selector ? String(selector).trim().toLowerCase() : "";
       if (normalizedSelector && !/^[a-z][a-z0-9-]*$/i.test(normalizedSelector)) {
         return "Error: selector must be a single HTML tag name";

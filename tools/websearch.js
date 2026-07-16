@@ -168,7 +168,7 @@ async function search(query) {
 
 export const webSearchTool = {
   name: "websearch",
-  description: "Search the web and return normalized result titles, direct URLs, domains, and snippets.",
+  description: "Search the web using a search engine.",
   parameters: {
     type: "object",
     properties: {

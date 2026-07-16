@@ -37,9 +37,10 @@ if (inline) {
   const { repoTool } = await import("../tools/repo.js");
   const { questionTool } = await import("../tools/question.js");
   const { taskTool } = await import("../tools/task.js");
+  const { webfetchTool } = await import("../tools/webfetch.js");
 
   const r = new Registry();
-  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webSearchTool, repoTool, questionTool, taskTool]) r.register(t);
+  for (const t of [readTool, writeTool, editTool, globTool, grepTool, bashTool, analyzeTool, webSearchTool, repoTool, questionTool, taskTool, webfetchTool]) r.register(t);
   const agent = new Agent(r, { model });
 
   for await (const ev of agent.loop(inline)) {

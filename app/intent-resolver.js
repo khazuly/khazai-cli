@@ -99,8 +99,8 @@ export function fallbackIntentContract(input) {
     allowMutationBeforeFailure: intent === "change",
     repairExistingOnFailure: intent === "validate",
     createNewFiles: intent === "change",
-    targetUrl: /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>'"`)\]]*)?/i.exec(text)?.[0] || "",
-    domain: /obfuscat|encrypt/i.test(text) ? "obfuscation" : "general",
+  targetUrl: /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s<>'"`)\]]*)?/i.exec(text)?.[0] || "",
+  domain: /obfuscat|encrypt/i.test(text) ? "obfuscation" : (researchIntent && /https?:\/\//i.test(text)) ? "web" : "general",
     category: categoryFor(intent, fallbackOperation(intent, text)),
   }, text);
 }

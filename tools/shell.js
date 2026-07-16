@@ -42,7 +42,7 @@ function redirect(proposedAction, recommendedAction, guidance) {
 
 export const bashTool = {
   name: "bash",
-  description: "Execute a shell command (timeout in seconds). Retries up to 2 times on timeout with doubled timeout.",
+  description: "Execute shell commands in your project environment.",
   parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", description: "timeout in seconds" }, workdir: { type: "string" } }, required: ["command"] },
   async execute({ command, timeout = 60, workdir }) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();

@@ -5,7 +5,7 @@ import { execAsync } from "../lib/exec-async.js";
 
 export const globTool = {
   name: "glob",
-  description: "Find files matching a glob pattern. Excludes node_modules, .git, build artifacts, and patterns from .gitignore by default.",
+  description: "Find files by glob pattern.",
   parameters: {
     type: "object",
     properties: {
@@ -26,9 +26,9 @@ export const globTool = {
       } else {
         nameArg = `-name "${String(pattern)}"`;
       }
-      const cmd = `find "${cwd}" -type f ${exclusions} ${nameArg} 2>/dev/null | head -300`;
+      const cmd = `cd "${cwd}" && find . -type f ${exclusions} ${nameArg} 2>/dev/null | head -300`;
       const { stdout } = await execAsync(cmd, { timeoutMs: 10000 });
-      const files = stdout.split("\n").filter(Boolean).map(f => f.replace(cwd + "/", "").replace(cwd, "."));
+      const files = stdout.split("\n").filter(Boolean).map(f => f.replace("./", ""));
       if (!files.length) return `No files matching "${pattern}" in ${cwd}`;
       return `Found ${files.length}:\n${files.join("\n")}`;
     } catch { return `Search failed for "${pattern}"`; }
@@ -37,7 +37,7 @@ export const globTool = {
 
 export const grepTool = {
   name: "grep",
-  description: "Search file contents with regex.",
+  description: "Search file contents using regular expressions.",
   parameters: { type: "object", properties: { pattern: { type: "string" }, include: { type: "string" }, path: { type: "string" } }, required: ["pattern"] },
   async execute({ pattern, include, path: dir }) {
     const searchDir = dir ? resolve(process.cwd(), String(dir)) : process.cwd();
