@@ -693,6 +693,14 @@ function extractProseBeforeTool(text) {
   return prose;
 }
 
+function stripMarkdown(text) {
+  return String(text || "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/^#+\s+/gm, "");
+}
+
 function joinProseContinuation(prefix, continuation) {
   const left = String(prefix || "");
   const right = String(continuation || "");
@@ -860,9 +868,9 @@ export class Agent {
       .replace(/```\w*\n[\s\S]*?```/g, (m) => {
         const code = m.replace(/```\w*\n?/g, "").trim();
         return code;
-      })
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+      });
+    clean = stripMarkdown(clean);
+    clean = clean.replace(/\n{3,}/g, "\n\n").trim();
     return clean;
   }
 
@@ -1611,7 +1619,7 @@ export class Agent {
       if (tool) {
         const prose = extractProseBeforeTool(reply);
         if (prose) {
-          yield { type: "stream", token: prose + "\n" };
+          yield { type: "stream", token: stripMarkdown(prose) + "\n" };
         }
       }
 
@@ -1631,6 +1639,7 @@ export class Agent {
 
       if (!tool) {
         const visibleReply = pendingProse ? joinProseContinuation(pendingProse, reply) : reply;
+        const displayReply = stripMarkdown(visibleReply);
         if (proseLooksIncomplete(visibleReply) && proseContinuations < MAX_PROSE_CONTINUATIONS) {
           proseContinuations++;
           pendingProse = pendingProse
@@ -1728,7 +1737,7 @@ export class Agent {
           });
         }
         if (this._requestMode === "mutate") {
-          const answer = this._evidenceAnswer(visibleReply);
+          const answer = stripMarkdown(this._evidenceAnswer(visibleReply));
           this._messages.push({ role: "assistant", content: answer });
           this._clearPendingAction();
           yield { type: "stream", token: answer };
@@ -1738,13 +1747,13 @@ export class Agent {
         // Suppress only a verified tool call; normal prose must never disappear
         // merely because it contains the word "tool" or JSON as an example.
         if (pendingProse) {
-          yield { type: "stream", token: visibleReply };
+          yield { type: "stream", token: displayReply };
         } else if (streamMode === "text") {
-          if (streamTail) yield { type: "stream", token: streamTail };
+          if (streamTail) yield { type: "stream", token: stripMarkdown(streamTail) };
         } else {
           // Non-tool structured text (for example a JSON answer) is released
           // only after parsing proves it is safe to show.
-          const remaining = reply.slice(streamVisibleLength);
+          const remaining = stripMarkdown(reply.slice(streamVisibleLength));
           if (remaining) yield { type: "stream", token: remaining };
         }
         this._messages.push({ role: "assistant", content: visibleReply });

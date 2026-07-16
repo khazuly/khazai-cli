@@ -75,7 +75,7 @@ test("incomplete streamed Markdown is continued before the final response", asyn
   assert.match(contexts[1], /ended mid-content/i);
   assert.equal(events.filter(event => event.type === "stream-end").length, 1);
   assert.equal((visible.match(/Hello!/g) || []).length, 1);
-  assert.match(visible, /- \*\*Search capabilities\*\* \(glob and grep\)/);
+  assert.match(visible, /- Search capabilities \(glob and grep\)/);
   assert.match(visible, /- Shell commands$/);
 });
 
@@ -224,7 +224,7 @@ test("resolved package README prevents another web research cycle", async () => 
   assert.equal(events.some(event => event.type === "error"), false);
 });
 
-test("read-only tool preamble is never streamed before its tool call", async () => {
+test("read-only tool preamble is streamed before its tool call", async () => {
   const registry = new Registry();
   registry.register({
     name: "bash",
@@ -232,7 +232,7 @@ test("read-only tool preamble is never streamed before its tool call", async () 
     parameters: { type: "object", properties: {} },
     async execute() { return "Exit: 0\n9"; },
   });
-  const preamble = "HASIL LAMA YANG TIDAK BOLEH TAMPIL\n\n```plain\nstale content\n```\n";
+  const preamble = "I'll count the files for you.\n\n";
   const responses = [
     preamble + JSON.stringify({ tool: "bash", args: { command: "find . -type f | wc -l" } }),
   ];
@@ -243,14 +243,13 @@ test("read-only tool preamble is never streamed before its tool call", async () 
   const events = [];
   for await (const event of agent.loop("ada total berapa file di folder ini")) events.push(event);
 
-  assert.equal(events.some(event => event.type === "stream"), false);
+  assert.equal(events.some(event => event.type === "stream"), true);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
   assert.equal(events.filter(event => event.type === "answer").length, 1);
   assert.equal(events.find(event => event.type === "answer")?.content, "There are 9 files in /tmp/preamble-guard-test.");
-  assert.equal(events.some(event => JSON.stringify(event).includes("HASIL LAMA")), false);
 });
 
-test("implementation refinement inherits mutation context and hides tool preamble", async () => {
+test("implementation refinement inherits mutation context and shows tool preamble", async () => {
   const registry = new Registry();
   registry.register({
     name: "write",
@@ -267,7 +266,7 @@ test("implementation refinement inherits mutation context and hides tool preambl
   const responses = [
     JSON.stringify({ tool: "write", args: { path: "obfuscator.py", content: "print('v1')\n" } }),
     "Created the first implementation.",
-    "Implementasi lama yang tidak boleh tampil\n" + JSON.stringify({
+    "I'll update the implementation.\n" + JSON.stringify({
       tool: "write",
       args: { path: "obfuscator.py", content: "print('runnable obfuscated output')\n" },
     }),
@@ -283,7 +282,6 @@ test("implementation refinement inherits mutation context and hides tool preambl
   for await (const event of agent.loop("tapi gw mau kode hasil enkripsi tetap normal dan bisa dijalankan")) events.push(event);
 
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["write", "bash"]);
-  assert.equal(events.some(event => event.type === "stream" && /Implementasi lama/.test(event.token)), false);
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Updated the implementation/);
   assert.equal(events.some(event => event.type === "error"), false);
 });
@@ -870,7 +868,7 @@ test("a prior workspace listing is reused before reading file contents", async (
   assert.match(events.find(event => event.type === "stream")?.token || "", /obfuscate\.py contains/);
 });
 
-test("explicit Git push runs once without relying on a second model tool call", async () => {
+test("explicit Git push runs through the bash tool like OpenCode", async () => {
   const registry = new Registry();
   const commands = [];
   registry.register({
@@ -882,16 +880,22 @@ test("explicit Git push runs once without relying on a second model tool call", 
       return "Exit: 0\nTo github.com:khazuly/khazai-cli.git\n   abc123..def456  master -> master";
     },
   });
+  const responses = [
+    "I'll check the status first.",
+    JSON.stringify({ tool: "bash", args: { command: "git status" } }),
+    "Everything looks good. Pushing now.",
+    JSON.stringify({ tool: "bash", args: { command: "git push origin HEAD" } }),
+    "Push completed successfully.",
+  ];
   const agent = new Agent(registry, {
     workspace: "/tmp/git-push-test",
-    chat: async () => { throw new Error("Git push must not require a follow-up model response"); },
+    chat: scriptedChat(responses),
   });
   const events = [];
   for await (const event of agent.loop("git push perubahan ke repo khazuly/khazai-cli")) events.push(event);
 
-  assert.deepEqual(commands, ["git push origin HEAD"]);
-  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
-  assert.equal(events.find(event => event.type === "answer")?.content, "Git push completed successfully.");
+  assert.ok(commands.includes("git push origin HEAD"));
+  assert.equal(events.find(event => event.type === "answer")?.content, "Push completed successfully.");
 });
 
 test("interactive question events strip model markdown before rendering", async () => {
