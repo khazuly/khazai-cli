@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
+import { URL } from "node:url";
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+const rawArgs = process.argv.slice(2);
+
+if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
+  console.log(pkg.version);
+  process.exit(0);
+}
+
+if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
+  console.log(`khazai-ai v${pkg.version} - AI coding agent
+
+Usage:
+  khazai-ai                         Interactive TUI
+  khazai-ai run "prompt"            Run one task with streaming output
+  khazai-ai "prompt"                Run one task with streaming output
+  khazai-ai --model provider/model  Select a configured model
+  khazai-ai --agent build           Select an agent profile
+  khazai-ai --continue "prompt"     Continue the latest saved session
+  khazai-ai --session ID "prompt"   Continue a specific session
+  khazai-ai --fork ID "prompt"      Fork a session before running
+  khazai-ai run --auto "prompt"     Auto-approve permission prompts
+`);
+  process.exit(0);
+}
+
+const options = {};
+const positional = [];
+for (let index = 0; index < rawArgs.length; index++) {
+  const value = rawArgs[index];
+  if (["--model", "--agent", "--session", "--fork"].includes(value)) {
+    options[value.slice(2)] = rawArgs[++index];
+  } else if (value === "--continue") {
+    options.continue = true;
+  } else if (value === "--auto") {
+    options.auto = true;
+  } else if (value === "run" && positional.length === 0) {
+    // Optional OpenCode-style run subcommand.
+  } else {
+    positional.push(value);
+  }
+}
+
+const inline = positional.join(" ").trim();
+if (inline) {
+  const { Agent } = await import("../app/agent.js");
+  const { Registry } = await import("../app/registry.js");
+  const { builtinTools } = await import("../app/builtin-tools.js");
+  const { SessionStore } = await import("../app/session-store.js");
+  const { shutdownWebSearch } = await import("../tools/websearch.js");
+  const { shutdownAllLsp } = await import("../app/lsp.js");
+  const { getMcpManager, shutdownAllMcp } = await import("../app/mcp.js");
+  const { getWorkspace } = await import("../config/workspace.js");
+
+  const workspace = process.cwd();
+  const store = new SessionStore(workspace);
+  let session;
+  if (options.fork) session = store.fork(options.fork);
+  else if (options.session) session = store.load(options.session);
+  else if (options.continue) {
+    const latest = store.list()[0];
+    session = latest ? store.load(latest.id) : store.create({ model: options.model, agent: options.agent });
+  } else {
+    session = store.create({ model: options.model, agent: options.agent });
+  }
+
+  const registry = new Registry();
+  const mcpManager = getMcpManager(workspace);
+  const mcpTools = getWorkspace().trusted ? await mcpManager.refresh() : [];
+  for (const tool of [...builtinTools(workspace), ...mcpTools].filter(Boolean)) {
+    registry.register(tool);
+  }
+  const agent = new Agent(registry, {
+    workspace,
+    sessionId: session.id,
+    model: options.model || session.model,
+    agent: options.agent || session.agent,
+    sessionState: session.agentState,
+    autoApprove: options.auto,
+    partHandler: part => store.updatePart(part.sessionId, part),
+  });
+  const terminal = process.stdin.isTTY && process.stderr.isTTY
+    ? createInterface({ input: process.stdin, output: process.stderr })
+    : null;
+  agent.setQuestionHandler(async question => {
+    if (!terminal) return question.options?.[0] || "";
+    const suffix = question.options?.length ? `\n${question.options.map((item, i) => `${i + 1}. ${item}`).join("\n")}` : "";
+    return terminal.question(`${question.question}${suffix}\n> `);
+  });
+  agent.setPermissionHandler(async permission => {
+    if (!terminal) return "Reject";
+    const answer = await terminal.question(
+      `${permission.reason}\n1. Allow once\n2. Always allow\n3. Reject\n> `,
+    );
+    return { "1": "Allow once", "2": "Always allow", "3": "Reject" }[answer.trim()] || answer;
+  });
+
+  const before = store.captureGitState();
+  const agentStateBefore = session.agentState;
+  let streamed = false;
+  let streamText = "";
+  const visibleMessages = [
+    ...(session.messages || []),
+    { type: "user", content: inline },
+  ];
+  try {
+    for await (const event of agent.loop(inline)) {
+      if (event.type === "stream") {
+        streamed = true;
+        streamText += event.token;
+        process.stdout.write(event.token);
+      } else if (event.type === "stream-end" && streamed) {
+        process.stdout.write("\n");
+        visibleMessages.push({ type: "answer", content: streamText });
+        streamed = false;
+        streamText = "";
+      } else if (event.type === "answer" && !streamed) {
+        process.stdout.write(`${event.content}\n`);
+        visibleMessages.push({ type: "answer", content: event.content });
+      } else if (event.type === "tool-call") {
+        process.stderr.write(`[${event.tool}] ${JSON.stringify(event.args)}\n`);
+      } else if (event.type === "error") {
+        process.stderr.write(`${event.content}\n`);
+      }
+    }
+  } finally {
+    terminal?.close();
+    session.model = options.model || session.model;
+    session.agent = options.agent || session.agent;
+    if (session.turns.length === 0) session.title = inline.slice(0, 72);
+    store.recordTurn(session, {
+      input: inline,
+      before,
+      after: store.captureGitState(),
+      messages: visibleMessages,
+      agentState: agent.exportSessionState(),
+      agentStateBefore,
+    });
+    await Promise.all([shutdownAllLsp(), shutdownAllMcp(), shutdownWebSearch()]);
+  }
+  process.exit(0);
+}
+
+const { startUI } = await import("../ui/app.js");
+await startUI();

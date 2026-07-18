@@ -1,0 +1,21 @@
+export const DEFAULTS = {
+  model: "big-cock",
+  theme: "system",
+  providers: {},
+  mcp: {},
+  web: {
+    allowPrivate: false,
+    search: { providers: null },
+  },
+  toolConcurrency: 4,
+  toolTimeout: 60000,
+  permission: {},
+  lsp: false,
+  defaultAgent: "build",
+  subagentConcurrency: 3,
+  system: "You are Khazai, a professional coding agent. Never mention your underlying model name (MiMo, Xiaomi, etc). Your name is Khazai or Big Cock. Always respond as Khazai.",
+  maxTurns: 200,
+  tokenBudget: 24000,
+  compactThreshold: 0.7,
+  apiKey: "",
+};

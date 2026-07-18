@@ -1,0 +1,47 @@
+{
+  "name": "khazai-ai",
+  "version": "0.3.0",
+  "description": "AI coding agent — file ops, search, shell, sub-agents",
+  "type": "module",
+  "bin": {
+    "khazai-ai": "./bin/khazai-ai"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "find app lib tools config ui scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "benchmark:latency": "node scripts/latency-benchmark.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "llm"
+  ],
+  "files": [
+    "bin",
+    "app",
+    "tools",
+    "ui",
+    "config",
+    "lib",
+    "docs",
+    "scripts"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "chalk": "^5.3.0",
+    "esbuild": "^0.25.12",
+    "ink": "^5.2.1",
+    "marked": "^15.0.12",
+    "react": "^18.3.1",
+    "string-width": "^7.2.0",
+    "vscode-jsonrpc": "^9.0.1",
+    "wrap-ansi": "^9.0.2",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  }
+}
