@@ -1640,6 +1640,17 @@ export class Agent {
       selected.unshift(message);
       used += size;
     }
+    // Ensure we don't start with a tool message — providers require a
+    // preceding assistant message with tool_calls for every tool result.
+    while (selected.length > 0 && selected[0]?.role === "tool") {
+      const idx = this._messages.indexOf(selected[0]);
+      if (idx > 0) {
+        selected.unshift(this._messages[idx - 1]);
+      } else {
+        // Corrupted state; drop the orphan tool message.
+        selected.shift();
+      }
+    }
     return [{ role: "system", content: sys }, ...summary, ...selected];
   }
 

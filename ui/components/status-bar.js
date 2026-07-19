@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { toolTarget } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
 
-const WORKING_INTERVAL_MS = 1_000;
+const WORKING_INTERVAL_MS = 80;
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 const ACTIVE_LABELS = {
   read: "Reading",
@@ -40,9 +42,12 @@ export function StatusBar({ running, plan = [], activeTool = null, startedAt = n
   const action = activeTool
     ? ACTIVE_LABELS[activeTool.tool] || "Working"
     : activePlan >= 0 ? `Working ${activePlan + 1}/${plan.length}` : "Working";
-  const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : frame;
+  const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : Math.floor(frame * WORKING_INTERVAL_MS / 1000);
+  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+
   return h(Box, { marginBottom: 0, paddingLeft: 1 },
-    h(Text, { bold: true, color: theme.primary }, action),
+    h(Text, { color: theme.primary }, spinner),
+    h(Text, { bold: true, color: theme.primary }, " ", action),
     target ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, "  ", target) : null,
     h(Text, { color: theme.metadata }, `  ${elapsed}s · Esc cancel`),
   );

@@ -344,8 +344,8 @@ export function PromptInput({
   const sidePadding = PANEL_SPACE.repeat(PANEL_HORIZONTAL_PADDING);
   const innerWidth = Math.max(1, panelWidth - (PANEL_HORIZONTAL_PADDING * 2) - 4);
   const visibleInput = secret && input.value ? "•".repeat(graphemes(input.value).length) : input.value;
-  const displayValue = input.value ? `❯ ${visibleInput}` : "❯ Ask KhazAI...";
-  const displayCursor = input.value ? input.cursor + 2 : graphemes(displayValue).length;
+  const displayValue = visibleInput || "";
+  const displayCursor = input.value ? input.cursor : 0;
   const inputRows = layoutEditableText(displayValue, displayCursor, innerWidth);
 
   if (questionOptions.length > 0) {
@@ -368,17 +368,13 @@ export function PromptInput({
       : row.cells.slice(cursorOffset < row.cells.length ? cursorOffset + 1 : cursorOffset).join("");
     const visibleLength = row.cells.length + (cursorOffset === row.cells.length ? 1 : 0);
     const padding = PANEL_SPACE.repeat(Math.max(0, innerWidth - visibleLength));
-    const firstPrefixLength = rowIndex === 0 ? Math.min(2, before.length) : 0;
-    const prefix = before.slice(0, firstPrefixLength);
-    const normalBefore = before.slice(firstPrefixLength);
     return h(Text, {
       key: `input-line-${rowIndex}`,
       color: theme.inputText,
       backgroundColor: theme.panel,
     },
       sidePadding,
-      prefix ? h(Text, { bold: true }, prefix) : null,
-      input.value ? normalBefore : h(Text, { dimColor: true }, normalBefore),
+      input.value ? before : h(Text, { dimColor: true }, before),
       cursorOffset === null ? null : `\u001b[5;7m${cursorCharacter}\u001b[25;27m`,
       input.value ? after : h(Text, { dimColor: true }, after),
       padding,
@@ -427,24 +423,31 @@ export function PromptInput({
       )
     : null;
 
+  const hintLeft = `${activeModel || "build"} · ${disabled ? "Esc cancel" : "Enter send"}`;
+  const hintRight = disabled ? "" : "! shell · @ file · / commands · ⇧Shift+Enter newline";
+
   return h(Box, { flexDirection: "column", width: "100%", paddingX: 1 },
     fileDropdown || cmdDropdown,
     h(Box, {
       flexDirection: "column",
       width: panelWidth,
+      backgroundColor: disabled ? theme.panel : undefined,
       borderStyle: "round",
       borderColor: disabled ? theme.border : theme.primary,
       paddingX: 1,
     },
-      h(Text, { color: theme.metadata, dimColor: true }, disabled ? " Working " : " Message "),
+      h(Box, { flexDirection: "row" },
+        h(Text, { color: disabled ? theme.muted : theme.primary, bold: !disabled }, "❯"),
+        h(Text, { color: theme.metadata, dimColor: true, marginLeft: 1 },
+          disabled ? " Working..." : " Ask anything..."),
+      ),
       ...content,
     ),
     terminalWidth < 60
-      ? h(Text, { color: theme.metadata, dimColor: true, wrap: "truncate-end" },
-          `${activeModel || "build"} · Enter send · ⇧Enter newline`)
+      ? h(Text, { color: theme.metadata, dimColor: true, wrap: "truncate-end" }, hintLeft)
       : h(Box, { justifyContent: "space-between", width: panelWidth },
-          h(Text, { color: theme.metadata, dimColor: true }, `${activeModel || "build"} · ${disabled ? "Esc cancel" : "review approvals"}`),
-          h(Text, { color: theme.metadata, dimColor: true }, "! shell · @ file · / commands · Enter send · Shift+Enter newline"),
+          h(Text, { color: theme.metadata, dimColor: true }, hintLeft),
+          hintRight ? h(Text, { color: theme.metadata, dimColor: true }, hintRight) : null,
         )
   );
 }

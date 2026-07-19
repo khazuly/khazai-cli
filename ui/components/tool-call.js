@@ -67,8 +67,6 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
     flexDirection: "column",
     flexShrink: 0,
     width: "100%",
-    paddingLeft: 1,
-    marginBottom: 1,
   },
     h(Box, { flexShrink: 0, width: "100%" },
       h(Box, { flexShrink: 0 },
