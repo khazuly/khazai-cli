@@ -3,6 +3,7 @@ import { Text, Box, useStdout } from "ink";
 import { extname } from "node:path";
 import { PASTEL } from "../palette.js";
 import { useTheme } from "../theme.js";
+import { resolveLanguage, highlightLine } from "../../lib/syntax-highlighter.js";
 
 const MAX_PREVIEW_LINES = 20;
 
@@ -24,77 +25,20 @@ const EXTENSIONS = {
   ".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "typescript",
   ".json": "json",
   ".py": "python",
-  ".sh": "shell", ".bash": "shell", ".zsh": "shell",
+  ".sh": "bash", ".bash": "bash", ".zsh": "bash",
   ".html": "html", ".htm": "html",
   ".css": "css",
   ".md": "markdown", ".mdx": "markdown",
   ".yaml": "yaml", ".yml": "yaml",
+  ".sql": "sql",
+  ".rs": "rust",
+  ".go": "go",
+  ".rb": "ruby",
 };
-
-const KEYWORDS = {
-  javascript: new Set("as async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch throw try typeof var void while with yield".split(" ")),
-  typescript: new Set("abstract as async await break case catch class const continue declare debugger default delete do else enum export extends finally for from function get if implements import in infer instanceof interface keyof let namespace new of private protected public readonly return set static super switch throw try type typeof var void while with yield".split(" ")),
-  python: new Set("and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield".split(" ")),
-  shell: new Set("case do done elif else esac fi for function if in select then until while".split(" ")),
-  json: new Set(["true", "false", "null"]),
-  yaml: new Set(["true", "false", "null", "yes", "no"]),
-};
-
-const TOKEN_PATTERNS = {
-  javascript: /\/\/.*$|\/\*.*?\*\/|`(?:\\.|[^`])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b/g,
-  typescript: /\/\/.*$|\/\*.*?\*\/|`(?:\\.|[^`])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b/g,
-  json: /"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|-?\b\d+(?:\.\d+)?\b/g,
-  python: /#.*$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w]*\b/g,
-  shell: /#.*$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\$\{?\w+\}?|\b\d+\b|\b[A-Za-z_][\w-]*\b/g,
-  html: /<!--.*?-->|<\/?[A-Za-z][^>]*>|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,
-  css: /\/\*.*?\*\/|#[0-9a-fA-F]{3,8}\b|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?(?:px|rem|em|%|s|ms|deg)?\b|@[\w-]+/g,
-  markdown: /^#{1,6}\s.*$|`[^`]*`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]*\)/g,
-  yaml: /#.*$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:true|false|null|yes|no)\b|-?\b\d+(?:\.\d+)?\b|^[\s-]*[\w.-]+(?=:\s)/g,
-};
-
-const LANGUAGE_ALIASES = {
-  bash: "shell", sh: "shell", shell: "shell", zsh: "shell",
-  js: "javascript", javascript: "javascript", jsx: "javascript",
-  ts: "typescript", typescript: "typescript", tsx: "typescript",
-  py: "python", python: "python",
-  html: "html", css: "css", json: "json",
-  md: "markdown", markdown: "markdown", yaml: "yaml", yml: "yaml",
-};
-
-function resolveLanguage(language) {
-  const value = String(language || "").trim().toLowerCase();
-  return LANGUAGE_ALIASES[value] || EXTENSIONS[value.startsWith(".") ? value : `.${value}`] || "plain";
-}
 
 function languageForPath(path) {
-  return resolveLanguage(extname(path));
-}
-
-function tokenColor(token, language, colors) {
-  if (/^(\/\/|\/\*|#|<!--)/.test(token)) return colors.muted;
-  if (/^("|'|`)/.test(token)) return colors.string;
-  if (language === "html" && /^</.test(token)) return colors.tag;
-  if (language === "markdown" && (/^#/.test(token) || /^\*\*/.test(token))) return colors.keyword;
-  if (/^(\$\{?\w+\}?|@)/.test(token)) return colors.keyword;
-  if (/^-?\d/.test(token) || /^(true|false|null|yes|no)$/.test(token)) return colors.number;
-  if (KEYWORDS[language]?.has(token)) return colors.keyword;
-  return colors.text;
-}
-
-function tokenizeLine(line, language, colors) {
-  const pattern = TOKEN_PATTERNS[language];
-  if (!pattern || !line) return [{ text: line, color: colors.text }];
-
-  const tokens = [];
-  let cursor = 0;
-  for (const match of line.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > cursor) tokens.push({ text: line.slice(cursor, index), color: colors.text });
-    tokens.push({ text: match[0], color: tokenColor(match[0], language, colors) });
-    cursor = index + match[0].length;
-  }
-  if (cursor < line.length) tokens.push({ text: line.slice(cursor), color: colors.text });
-  return tokens.length ? tokens : [{ text: line, color: colors.text }];
+  const key = EXTENSIONS[extname(path)];
+  return resolveLanguage(key) || "plain";
 }
 
 function lineDiff(before, after) {
@@ -177,14 +121,14 @@ function HighlightedLine({ row, language, lineNumber, width, colors }) {
   const prefix = row.type === "delete" ? "-" : row.type === "add" ? "+" : " ";
   const prefixColor = row.type === "delete" ? colors.deleted : row.type === "add" ? colors.added : colors.muted;
   const text = fitLine(row.text, Math.max(1, width - 3));
-  const parts = tokenizeLine(text, language, colors);
+  const parts = highlightLine(text, language);
   const padding = " ".repeat(Math.max(0, width - Array.from(text).length - 2));
 
   return h(Box, { key: lineNumber, width },
     h(Text, { backgroundColor: colors.background },
       " ",
       h(Text, { color: prefixColor }, prefix),
-      ...parts.map((part, index) => h(Text, { key: `${lineNumber}-${index}`, color: part.color }, part.text)),
+      ...parts.map((part, index) => h(Text, { key: `${lineNumber}-${index}`, color: colors[part.color] || colors.text }, part.text)),
       padding,
     )
   );
@@ -226,7 +170,7 @@ function SyntaxPanel({ title, language, rows }) {
 }
 
 export function MarkdownCodeBlock({ content, language }) {
-  const resolvedLanguage = resolveLanguage(language);
+  const resolvedLanguage = resolveLanguage(language) || "plain";
   const rows = String(content).split("\n").map(text => ({ type: "context", text }));
   return h(SyntaxPanel, {
     title: "Code",

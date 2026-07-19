@@ -8,8 +8,8 @@ import { resolveTheme } from "../ui/theme.js";
 
 test("semantic themes support system, dark, light, mono, and NO_COLOR", () => {
   assert.equal(resolveTheme("system", {}).name, "system");
-  assert.equal(resolveTheme("dark", {}).panel, "#0f0f10");
-  assert.equal(resolveTheme("light", {}).background, "#ffffff");
+  assert.equal(resolveTheme("dark", {}).panel, "#181825");
+  assert.equal(resolveTheme("light", {}).background, "#eff1f5");
   assert.equal(resolveTheme("mono", {}).colorEnabled, false);
   assert.equal(resolveTheme("dark", { NO_COLOR: "1" }).name, "mono");
 });
