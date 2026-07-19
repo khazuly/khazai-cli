@@ -1,0 +1,112 @@
+{
+  "$schema": "./schema.json",
+  "locale": "en",
+  "displayName": "English",
+  "messages": {
+    "app": {
+      "connectingMCP": "Connecting configured MCP servers..."
+    },
+    "banner": {
+      "approvalAuto": "auto",
+      "approvalReview": "review",
+      "titlePrefix": "KhazAI"
+    },
+    "emptyState": {
+      "header": "Ready",
+      "tryLabel": "Try",
+      "examples": [
+        "explain this repository",
+        "fix failing tests",
+        "create REST API",
+        "optimize this code"
+      ]
+    },
+    "trustPrompt": {
+      "header": "Trust this directory?",
+      "yes": "Yes",
+      "no": "No",
+      "footer": "Arrows select · Enter confirm"
+    },
+    "summary": {
+      "header": "Finished",
+      "attentionHeader": "Finished with issues",
+      "tool_one": "tool",
+      "tool_other": "tools",
+      "checkNotRun": "Check  not run",
+      "checkLabel": "Check",
+      "exitLabel": "exit"
+    },
+    "statusBar": {
+      "workingGeneric": "Working",
+      "workingPlan": "Working {current}/{total}",
+      "escCancel": "Esc cancel",
+      "activeLabels": {
+        "read": "Reading",
+        "glob": "Searching",
+        "grep": "Searching",
+        "websearch": "Searching web",
+        "webfetch": "Fetching",
+        "repo": "Inspecting repository",
+        "write": "Writing",
+        "edit": "Editing",
+        "apply_patch": "Applying patch",
+        "bash": "Running",
+        "analyze": "Analyzing",
+        "task": "Delegating"
+      }
+    },
+    "planList": {
+      "header": "Plan"
+    },
+    "permissionDisplay": {
+      "header": "Action required"
+    },
+    "errorDisplay": {
+      "header": "Error",
+      "nextLabel": "Next",
+      "suggestionSyntax": "Review the reported location and rewrite the incomplete block.",
+      "suggestionNotFound": "Check the path or create the missing file first.",
+      "suggestionTimeout": "Run the command manually or reduce the operation scope."
+    },
+    "promptInput": {
+      "askPlaceholder": "Ask KhazAI...",
+      "tooltipWorking": " Working ",
+      "tooltipMessage": " Message ",
+      "tooltipWait": " Waiting ",
+      "workingTooltip": " Working ",
+      "messageHeader": " Message ",
+      "fileHeader": "Files",
+      "promptPrefix": "> ",
+      "hints": {
+        "short": "{model} · Enter send · Shift+Enter newline",
+        "long": "{model} · {disabled} · ! shell · @ file · / commands · Enter send · Shift+Enter newline"
+      },
+      "optionSelectFooter": "↑↓ select · Enter confirm · 1-9 quick select",
+      "disabledCancel": "Esc cancel",
+      "disabledApprove": "review approvals"
+    },
+    "toolCall": {
+      "failed": "failed",
+      "warning": "warning",
+      "running": "running",
+      "resultPreviewShowMore": "show {count} more...",
+      "resultPreviewMoreLines": "show {count} more lines...",
+      "resultPreviewMoreChars": "show {count} more chars..."
+    },
+    "codePreview": {
+      "codeHeader": "Code",
+      "unchangedLines": "… {count} unchanged lines",
+      "moreLines": "… {count} more lines",
+      "writeLabel": "Write",
+      "editLabel": "Edit"
+    },
+    "markdown": {
+      "defaultColumn": "Column {index}"
+    },
+    "roleMessage": {
+      "user": "You",
+      "assistant": "KhazAI"
+    },
+    "emptyFilesDropdown": "Files"
+  }
+}
