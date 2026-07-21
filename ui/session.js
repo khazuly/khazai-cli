@@ -14,7 +14,7 @@ import { lspStatus } from "../app/lsp.js";
 import { configuredModels, loadConfig, saveModel, saveProvider, saveTheme } from "../config/index.js";
 import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
 import { listModels } from "../lib/llm.js";
-import { COMMANDS } from "./commands.js";
+import { COMMANDS, formatCommandHelp } from "./commands.js";
 import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
 import { PlanList } from "./components/plan-list.js";
@@ -263,7 +263,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/sessions" || cmd === "/continue") {
       const sessions = sessionStoreRef.current.list();
       if (sessions.length === 0) {
-        appendArchived({ id: nextId(), type: "answer", content: "No saved sessions were found." });
+        appendArchived({ id: nextId(), type: "answer", content: "No saved sessions for this folder." });
         return;
       }
       const values = sessions.map(session => ({
@@ -437,8 +437,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       return;
     }
     if (cmd === "/help") {
-      const list = COMMANDS.map(c => `\`${c.name}\` — ${c.description}`).join("\n");
-      appendArchived({ id: nextId(), type: "answer", content: `**Commands:**\n${list}` });
+      appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     }
     if (cmd === "/expand") {
       const latest = completedRef.current.findLast(message => message.type === "tool");

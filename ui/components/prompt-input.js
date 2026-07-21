@@ -3,10 +3,12 @@ import { Text, Box, useInput, useStdout } from "ink";
 import { useEffect, useState } from "react";
 import {
   PANEL_HORIZONTAL_PADDING,
-  PANEL_END,
   PANEL_SPACE,
 } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
+
+const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
+const MAX_COMMAND_CHOICES = 6;
 
 const segmenter = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -159,7 +161,11 @@ export function PromptInput({
         input.value.indexOf("/") + 1
       );
 
-  const showCmd = filtered.length > 0 && input.value.startsWith("/");
+  const commandChoices = (!inSubMode && input.value === "/"
+    ? QUICK_COMMANDS.map(name => commands.find(command => command.name === name)).filter(Boolean)
+    : filtered
+  ).slice(0, MAX_COMMAND_CHOICES);
+  const showCmd = commandChoices.length > 0 && input.value.startsWith("/");
   const beforeCursor = graphemes(input.value).slice(0, input.cursor).join("");
   const fileToken = /(?:^|\s)@([^\s]*)$/.exec(beforeCursor);
   const fileQuery = fileToken?.[1]?.toLowerCase() || "";
@@ -213,7 +219,7 @@ export function PromptInput({
       }
     } else if (showCmd) {
       if (key.return) {
-        const sel = filtered[cmdIdx];
+        const sel = commandChoices[cmdIdx];
         if (!inSubMode && sel.sub) {
           const newVal = sel.name + " ";
           setInput({ value: newVal, cursor: newVal.length });
@@ -231,15 +237,15 @@ export function PromptInput({
         return;
       }
       if (key.upArrow) {
-        setCmdIdx(i => i > 0 ? i - 1 : filtered.length - 1);
+        setCmdIdx(i => i > 0 ? i - 1 : commandChoices.length - 1);
         return;
       }
       if (key.downArrow) {
-        setCmdIdx(i => i < filtered.length - 1 ? i + 1 : 0);
+        setCmdIdx(i => i < commandChoices.length - 1 ? i + 1 : 0);
         return;
       }
       if (key.tab) {
-        const sel = filtered[cmdIdx];
+        const sel = commandChoices[cmdIdx];
         if (inSubMode) {
           const spaceIdx = input.value.lastIndexOf(" ") + 1;
           setInput({ value: input.value.slice(0, spaceIdx) + sel.name + " ", cursor: input.value.slice(0, spaceIdx).length + sel.name.length + 1 });
@@ -349,13 +355,16 @@ export function PromptInput({
   const inputRows = layoutEditableText(displayValue, displayCursor, innerWidth);
 
   if (questionOptions.length > 0) {
-    return h(Box, { flexDirection: "column", width: "100%", marginLeft: 2 },
+    const optionWidth = Math.max(12, terminalWidth - 2);
+    return h(Box, { flexDirection: "column", width: optionWidth, marginLeft: 2 },
       ...questionOptions.map((option, index) => h(Text, {
         key: `${index}-${option}`,
         color: index === optionIdx ? theme.secondary : undefined,
         bold: index === optionIdx,
+        wrap: "truncate-end",
+        width: optionWidth,
       }, index === optionIdx ? "> " : "  ", `${index + 1}. ${option}`)),
-      h(Text, { dimColor: true }, "↑↓ select · Enter confirm · 1-9 quick select"),
+      h(Text, { dimColor: true, wrap: "truncate-end", width: optionWidth }, "↑↓ select · Enter confirm · 1-9 quick select"),
     );
   }
 
@@ -379,7 +388,6 @@ export function PromptInput({
       input.value ? after : h(Text, { dimColor: true }, after),
       padding,
       sidePadding,
-      PANEL_END,
     );
   });
 
@@ -390,7 +398,8 @@ export function PromptInput({
         marginBottom: 1,
         width: Math.max(20, Math.min(64, (process.stdout.columns || 80) - 2)),
       },
-        ...filtered.map((item, i) => {
+        h(Text, { color: theme.metadata, bold: true }, inSubMode ? subInfo.cmd.name.slice(1) : input.value === "/" ? "Quick commands" : "Commands"),
+        ...commandChoices.map((item, i) => {
           const selected = i === cmdIdx;
           const name = item.name || "";
           const desc = inSubMode ? item.description || "" : item.description || "";
@@ -400,7 +409,7 @@ export function PromptInput({
               color: selected ? theme.secondary : undefined,
               bold: selected || isActive,
             }, selected ? "> " : "  ", name),
-            desc ? h(Text, { dimColor: true }, "  ", desc) : null,
+            desc ? h(Text, { dimColor: true, wrap: "truncate-end" }, "  ", desc) : null,
             isActive ? h(Text, { dimColor: true }, "  (active)") : null
           );
         })

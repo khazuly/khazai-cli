@@ -134,6 +134,34 @@ function compactLines(content, state, expanded, maximum = 8) {
   };
 }
 
+function pathLabel(value) {
+  const parts = String(value || "").split("/").filter(Boolean);
+  return parts.at(-1) || String(value || "");
+}
+
+function shellSummary(command, state) {
+  if (state === "running") return "Running shell command";
+  if (state === "failed") return "Shell command failed";
+  const source = String(command || "").trim();
+  const remove = /^rm\s+(?:-[A-Za-z]+\s+)*([^\s;&|]+)/.exec(source);
+  if (remove) return `Deleted ${pathLabel(remove[1])}`;
+  const create = /^mkdir\s+(?:-[A-Za-z]+\s+)*([^\s;&|]+)/.exec(source);
+  if (create) return `Created ${pathLabel(create[1])}`;
+  const move = /^mv\s+([^\s;&|]+)\s+([^\s;&|]+)/.exec(source);
+  if (move) return `Moved ${pathLabel(move[1])} to ${pathLabel(move[2])}`;
+  return "Shell completed";
+}
+
+function toolSummary(tool, args, state) {
+  if (tool === "bash") return shellSummary(args.command, state);
+  if (state === "running") return `Running ${TOOL_LABELS[tool] || tool}`;
+  if (state === "failed") return `${TOOL_LABELS[tool] || tool} failed`;
+  if (tool === "write") return `Wrote ${pathLabel(args.path)}`;
+  if (tool === "edit") return `Edited ${pathLabel(args.path)}`;
+  if (tool === "read") return `Read ${pathLabel(args.path)}`;
+  return toolTarget(tool, args) || `${TOOL_LABELS[tool] || tool} completed`;
+}
+
 export function presentTool({ tool, args = {}, content = "", done = false, duration = null, resultSize = 0, expanded = false }) {
   const normalized = normalizeVerticalWhitespace(content || "");
   const state = classifyToolState(normalized, done);
@@ -181,9 +209,11 @@ export function presentTool({ tool, args = {}, content = "", done = false, durat
     label: TOOL_LABELS[tool] || tool.charAt(0).toUpperCase() + tool.slice(1),
     accent: TOOL_ACCENTS[tool] || "#89929d",
     state,
+    statusLabel: state === "success" ? "completed" : state,
     duration: done ? formatDuration(duration) : null,
-    target: toolTarget(tool, args),
+    summary: toolSummary(tool, args, state),
     metadata: metadata.filter(Boolean),
+    details: tool === "bash" && args.command ? [`Command  ${args.command}`] : [],
     preview,
     searchResults,
     collapsible: Boolean(searchResults?.hidden || preview.hiddenLines || preview.hiddenChars),

@@ -308,7 +308,7 @@ export class SessionStore {
       .map(name => {
         try { return JSON.parse(readFileSync(join(this.directory, name), "utf-8")); } catch { return null; }
       })
-      .filter(Boolean)
+      .filter(session => session?.id && typeof session.workspace === "string" && resolve(session.workspace) === this.workspace)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(({ id, title, model, agent, createdAt, updatedAt }) => ({ id, title, model, agent, createdAt, updatedAt }));
   }

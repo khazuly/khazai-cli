@@ -48,48 +48,34 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
   const theme = useTheme();
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
   const accent = theme.colorEnabled ? presentation.accent : undefined;
-  const stateColor = presentation.state === "failed"
-    ? theme.error
-    : presentation.state === "warning"
-      ? theme.warning
-      : presentation.state === "running"
-        ? theme.secondary
-        : theme.muted;
   const stateLabel = presentation.state === "running"
-    ? null
-    : presentation.state === "failed"
-      ? "failed"
-      : presentation.state === "warning"
-        ? "warning"
-        : null;
+    ? "running"
+    : presentation.statusLabel;
 
   return h(Box, {
     flexDirection: "column",
     flexShrink: 0,
     width: "100%",
   },
-    h(Box, { flexShrink: 0, width: "100%" },
-      h(Box, { flexShrink: 0 },
-        h(Text, { bold: true, color: accent }, presentation.label),
-      ),
-      presentation.target
-        ? h(Box, { flexShrink: 1, minWidth: 1 },
-            h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, "  ", presentation.target)
-          )
-        : null,
-      h(Box, { flexGrow: 1, minWidth: 1 }),
-      presentation.duration
-        ? h(Box, { flexShrink: 0 }, h(Text, { color: stateColor }, presentation.duration))
-        : null,
-      stateLabel && presentation.state !== "running"
-        ? h(Text, { color: resultColor(presentation.state, theme) }, presentation.duration ? `  ${stateLabel}` : stateLabel)
-        : null,
+    h(Text, { bold: true, color: accent, wrap: "wrap" },
+      presentation.label,
+      stateLabel ? ` · ${stateLabel}` : "",
+      presentation.duration ? ` · ${presentation.duration}` : "",
     ),
-    presentation.metadata.length
-      ? h(Text, { color: theme.metadata, wrap: "wrap" }, presentation.metadata.join(" · "))
+    presentation.summary
+      ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, presentation.summary)
       : null,
-    presentation.state === "running"
-      ? h(Text, { color: stateColor, dimColor: true }, stateLabel)
+    presentation.metadata.length
+      ? h(Text, { color: theme.metadata, wrap: "wrap" }, `${presentation.metadata.join(" · ")}${done && !expanded ? " · /expand" : ""}`)
+      : null,
+    expanded && presentation.details.length
+      ? h(Box, { flexDirection: "column", marginTop: 1 },
+          ...presentation.details.map((detail, index) => h(Text, {
+            key: `detail-${index}`,
+            color: theme.metadata,
+            wrap: "wrap",
+          }, detail)),
+        )
       : null,
     done && (expanded || presentation.state === "failed" || presentation.state === "warning")
       ? h(ResultPreview, { presentation, theme })

@@ -24,6 +24,24 @@ test("provider credentials use mode 0600 and environment variables take preceden
   }
 });
 
+test("session lists only include sessions from the current workspace", () => {
+  const root = mkdtempSync(join(tmpdir(), "khazai-workspace-sessions-"));
+  const data = join(root, "data");
+  const workspaceA = join(root, "workspace-a");
+  const workspaceB = join(root, "workspace-b");
+  mkdirSync(workspaceA);
+  mkdirSync(workspaceB);
+  const storeA = new SessionStore(workspaceA, data);
+  const storeB = new SessionStore(workspaceB, data);
+  const sessionA = storeA.create({ title: "Workspace A" });
+  const sessionB = storeB.create({ title: "Workspace B" });
+
+  writeFileSync(storeA.path(sessionB.id), readFileSync(storeB.path(sessionB.id)));
+
+  assert.deepEqual(storeA.list().map(session => session.id), [sessionA.id]);
+  assert.deepEqual(storeB.list().map(session => session.id), [sessionB.id]);
+});
+
 test("OpenAI-compatible streaming assembles native tool-call deltas", async () => {
   const originalFetch = globalThis.fetch;
   const encoder = new TextEncoder();

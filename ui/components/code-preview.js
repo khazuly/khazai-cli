@@ -1,24 +1,9 @@
 import { createElement as h } from "react";
-import { Text, Box, useStdout } from "ink";
-import { extname } from "node:path";
-import { PASTEL } from "../palette.js";
-import { useTheme } from "../theme.js";
-import { resolveLanguage, highlightLine } from "../../lib/syntax-highlighter.js";
+import { basename, extname } from "node:path";
+import { resolveLanguage } from "../../lib/syntax-highlighter.js";
+import { CodePanel } from "./code-panel.js";
 
 const MAX_PREVIEW_LINES = 20;
-
-const COLORS = {
-  background: "#0d1117",
-  text: "#c9d1d9",
-  muted: PASTEL.muted,
-  keyword: PASTEL.mauve,
-  string: PASTEL.blue,
-  number: PASTEL.lavender,
-  tag: PASTEL.sage,
-  deleted: PASTEL.rose,
-  added: PASTEL.sage,
-  hunk: PASTEL.blue,
-};
 
 const EXTENSIONS = {
   ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
@@ -47,8 +32,8 @@ function lineDiff(before, after) {
 
   if (oldLines.length * newLines.length > 40_000) {
     return [
-      ...oldLines.map(text => ({ type: "delete", text })),
-      ...newLines.map(text => ({ type: "add", text })),
+      ...oldLines.map((text, index) => ({ type: "delete", text, oldLine: index + 1 })),
+      ...newLines.map((text, index) => ({ type: "add", text, newLine: index + 1 })),
     ];
   }
 
@@ -66,16 +51,19 @@ function lineDiff(before, after) {
   let j = 0;
   while (i < oldLines.length && j < newLines.length) {
     if (oldLines[i] === newLines[j]) {
-      rows.push({ type: "context", text: oldLines[i++] });
+      rows.push({ type: "context", text: oldLines[i], oldLine: i + 1, newLine: j + 1 });
+      i++;
       j++;
     } else if (table[i + 1][j] >= table[i][j + 1]) {
-      rows.push({ type: "delete", text: oldLines[i++] });
+      rows.push({ type: "delete", text: oldLines[i], oldLine: i + 1 });
+      i++;
     } else {
-      rows.push({ type: "add", text: newLines[j++] });
+      rows.push({ type: "add", text: newLines[j], newLine: j + 1 });
+      j++;
     }
   }
-  while (i < oldLines.length) rows.push({ type: "delete", text: oldLines[i++] });
-  while (j < newLines.length) rows.push({ type: "add", text: newLines[j++] });
+  while (i < oldLines.length) rows.push({ type: "delete", text: oldLines[i], oldLine: ++i });
+  while (j < newLines.length) rows.push({ type: "add", text: newLines[j], newLine: ++j });
   return rows;
 }
 
@@ -102,76 +90,13 @@ function collapseContext(rows) {
   return collapsed;
 }
 
-function limitRows(rows) {
-  if (rows.length <= MAX_PREVIEW_LINES) return rows;
-  return [
-    ...rows.slice(0, MAX_PREVIEW_LINES),
-    { type: "omitted", text: `… ${rows.length - MAX_PREVIEW_LINES} more lines` },
-  ];
-}
-
-function fitLine(value, width) {
-  const characters = Array.from(String(value));
-  if (characters.length <= width) return characters.join("");
-  if (width <= 1) return "…".slice(0, width);
-  return characters.slice(0, width - 1).join("") + "…";
-}
-
-function HighlightedLine({ row, language, lineNumber, width, colors }) {
-  const prefix = row.type === "delete" ? "-" : row.type === "add" ? "+" : " ";
-  const prefixColor = row.type === "delete" ? colors.deleted : row.type === "add" ? colors.added : colors.muted;
-  const text = fitLine(row.text, Math.max(1, width - 3));
-  const parts = highlightLine(text, language);
-  const padding = " ".repeat(Math.max(0, width - Array.from(text).length - 2));
-
-  return h(Box, { key: lineNumber, width },
-    h(Text, { backgroundColor: colors.background },
-      " ",
-      h(Text, { color: prefixColor }, prefix),
-      ...parts.map((part, index) => h(Text, { key: `${lineNumber}-${index}`, color: colors[part.color] || colors.text }, part.text)),
-      padding,
-    )
-  );
-}
-
-function MetaLine({ text, color, width, background }) {
-  const content = fitLine(` ${text}`, Math.max(1, width));
-  return h(Text, { color, backgroundColor: background }, content.padEnd(width));
-}
-
 function SyntaxPanel({ title, language, rows }) {
-  const { stdout } = useStdout();
-  const theme = useTheme();
-  const colors = theme.colorEnabled ? {
-    ...COLORS,
-    background: theme.codeBackground,
-    text: theme.assistant,
-    muted: theme.muted,
-    deleted: theme.error,
-    added: theme.success,
-    hunk: theme.info,
-  } : Object.fromEntries(Object.keys(COLORS).map(key => [key, undefined]));
-  const width = Math.max(16, (stdout?.columns || 80) - 2);
-  const heading = fitLine(` ${title}  ·  ${language}`, width);
-  return h(Box, {
-    flexDirection: "column",
-    width,
-  },
-    h(Text, { bold: true, color: colors.text, backgroundColor: colors.background }, heading.padEnd(width)),
-    h(Box, { flexDirection: "column" },
-    ...limitRows(rows).map((row, index) => {
-      if (row.type === "meta-delete") return h(MetaLine, { key: index, text: row.text, color: colors.deleted, background: colors.background, width });
-      if (row.type === "meta-add") return h(MetaLine, { key: index, text: row.text, color: colors.added, background: colors.background, width });
-      if (row.type === "hunk") return h(MetaLine, { key: index, text: row.text, color: colors.hunk, background: colors.background, width });
-      if (row.type === "omitted") return h(MetaLine, { key: index, text: row.text, color: colors.muted, background: colors.background, width });
-      return h(HighlightedLine, { key: index, row, language, lineNumber: index, width, colors });
-    }))
-  );
+  return h(CodePanel, { title, language, rows, maximumRows: MAX_PREVIEW_LINES });
 }
 
 export function MarkdownCodeBlock({ content, language }) {
   const resolvedLanguage = resolveLanguage(language) || "plain";
-  const rows = String(content).split("\n").map(text => ({ type: "context", text }));
+  const rows = String(content).split("\n").map((text, index) => ({ type: "context", text, oldLine: index + 1, newLine: index + 1 }));
   return h(SyntaxPanel, {
     title: "Code",
     language: resolvedLanguage,
@@ -179,21 +104,22 @@ export function MarkdownCodeBlock({ content, language }) {
   });
 }
 
-export function CodePreview({ tool, args }) {
+export function CodePreview({ tool, args, expanded = false }) {
   const path = String(args?.path || "untitled");
   const language = languageForPath(path);
   const isEdit = tool === "edit";
+  const diff = isEdit ? lineDiff(args?.oldString ?? "", args?.newString ?? "") : [];
+  const additions = diff.filter(row => row.type === "add").length;
+  const deletions = diff.filter(row => row.type === "delete").length;
   const rows = isEdit
-    ? [
-        { type: "meta-delete", text: `--- ${path}` },
-        { type: "meta-add", text: `+++ ${path}` },
-        { type: "hunk", text: "@@" },
-        ...collapseContext(lineDiff(args?.oldString ?? "", args?.newString ?? "")),
-      ]
-    : String(args?.content ?? "").split("\n").map(text => ({ type: "context", text }));
+    ? expanded ? collapseContext(diff) : diff.filter(row => row.type !== "context")
+    : String(args?.content ?? "").split("\n").map((text, index) => ({ type: "context", text, oldLine: index + 1, newLine: index + 1 }));
+  const title = isEdit
+    ? `${basename(path)} · ${language} · +${additions} −${deletions}`
+    : `${basename(path)} · ${language}`;
 
   return h(SyntaxPanel, {
-    title: `${isEdit ? "Edit" : "Write"}  ${path}`,
+    title,
     language,
     rows,
   });

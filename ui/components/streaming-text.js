@@ -79,6 +79,7 @@ function renderToken(token, key, depth = 0) {
 // simple while still respecting terminal height.
 function limitSourceRows(text, columns, maximumRows) {
   const source = String(text || "");
+  if (!Number.isFinite(maximumRows)) return source;
   const width = Math.max(8, Math.trunc(Number(columns) || 80) - 1);
   const rowLimit = Math.max(1, Math.trunc(Number(maximumRows) || 1));
   const physicalRows = [];
@@ -100,7 +101,7 @@ function limitSourceRows(text, columns, maximumRows) {
   return ["…", ...physicalRows.slice(-(rowLimit - 1))].join("\n");
 }
 
-export function StreamingText({ content, columns, maximumRows }) {
+export function StreamingText({ content, columns, maximumRows = Infinity }) {
   const theme = useTheme();
   const raw = String(content || "");
 

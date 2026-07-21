@@ -11,6 +11,7 @@ import { StatusBar } from "../ui/components/status-bar.js";
 import { SessionFooter } from "../ui/components/session-footer.js";
 import { ToolCall } from "../ui/components/tool-call.js";
 import { CodePreview } from "../ui/components/code-preview.js";
+import { COMMANDS } from "../ui/commands.js";
 import { ThemeProvider, resolveTheme } from "../ui/theme.js";
 import { formatInteractiveQuestion } from "../ui/session.js";
 import {
@@ -151,8 +152,10 @@ test("conversation hierarchy and tool metadata remain compact at mobile width", 
 
   assert.ok(frame.indexOf("You") < frame.indexOf("KhazAI"));
   assert.ok(frame.indexOf("KhazAI") < frame.indexOf("Shell"));
-  assert.match(frame, /Shell\s+https:\/\/shopee\.co\.id\/buy…\s+618 ms/);
+  assert.match(frame, /Shell · completed · 618 ms/);
+  assert.match(frame, /https:\/\/shopee\.co\.id\/buyer\/login/);
   assert.match(frame, /text\/html · 187 B · 103 chars/);
+  assert.match(frame, /\/expand/);
   assert.doesNotMatch(frame, /URL:|Content-Type:|Total chars:|[✓✗◌]/);
   assert.ok(maximumBlankRun(frame.trimEnd()) <= 2);
 });
@@ -231,6 +234,24 @@ test("tool states use words and long output is collapsed", async () => {
   assert.doesNotMatch(frame, /[✓✗◌]/);
 });
 
+test("successful shell commands reveal raw details only when expanded", async () => {
+  const props = {
+    tool: "bash",
+    args: { command: "rm -f /root/test/snake_game.py && ls -la /root/test" },
+    done: true,
+    duration: 441,
+    resultSize: 107,
+    content: "Exit: 0",
+  };
+  const collapsed = await renderComponent(h(ToolCall, props), 50, 20);
+  const expanded = await renderComponent(h(ToolCall, { ...props, expanded: true }), 50, 20);
+
+  assert.match(collapsed, /Deleted snake_game\.py/);
+  assert.match(collapsed, /exit 0 · 107 B · \/expand/);
+  assert.doesNotMatch(collapsed, /rm -f/);
+  assert.match(expanded, /Command\s+rm -f/);
+});
+
 test("input cursor uses terminal-native blink without periodic redraws", async () => {
   const stdout = new TerminalOutput(40, 24);
   const stdin = new TerminalInput();
@@ -292,7 +313,7 @@ test("user messages use an accent rail and input uses a responsive bordered comp
   stdin.destroy();
 });
 
-test("write and edit tool results show GitHub Dark syntax previews", async () => {
+test("write and edit tool results show terminal-native syntax previews", async () => {
   const messages = [
     {
       id: "write-preview", type: "tool", tool: "write", done: true,
@@ -306,11 +327,15 @@ test("write and edit tool results show GitHub Dark syntax previews", async () =>
     },
   ];
   const frame = await renderComponent(h(MessageList, { messages }), 50, 30);
-  assert.match(frame, /Write\s+\/tmp\/demo\.py\s+·\s+python/);
+  assert.match(frame, /demo\.py\s+·\s+python/);
+  assert.match(frame, /1\s+def greet/);
   assert.match(frame, /def greet\(name\):/);
-  assert.match(frame, /Edit\s+\/tmp\/config\.py\s+·\s+python/);
-  assert.match(frame, /-value = 1/);
-  assert.match(frame, /\+value = 2/);
+  assert.match(frame, /− value = 1/);
+  assert.match(frame, /1 \+ value = 2/);
+  assert.match(frame, /config\.py\s+·\s+python\s+·\s+\+1\s+−1/);
+  assert.match(frame, /1\s+− value = 1/);
+  assert.match(frame, /1\s+\+ value = 2/);
+  assert.doesNotMatch(frame, /---|\+\+\+|@@/);
 
   const stdout = new TerminalOutput(50, 20);
   const instance = render(
@@ -319,10 +344,53 @@ test("write and edit tool results show GitHub Dark syntax previews", async () =>
   );
   await new Promise(resolve => setTimeout(resolve, 40));
   if (!process.env.NO_COLOR) {
-    assert.match(stdout.frames.join(""), /\u001b\[48;2;13;17;23m/);
+    assert.match(stdout.frames.join(""), /\u001b\[38;2;/);
+    assert.doesNotMatch(stdout.frames.join(""), /\u001b\[48;2;/);
   }
   instance.unmount();
   instance.cleanup();
+});
+
+test("syntax panels keep each code line on one terminal row", async () => {
+  const content = 'const veryLongIdentifier = "abcdefghijklmnopqrstuvwxyz0123456789";';
+  const frame = await renderComponent(h(CodePreview, {
+    tool: "write",
+    args: { path: "/tmp/example.js", content },
+  }), 40, 20);
+
+  assert.match(frame, /1\s+const veryLongIdentifier/);
+  assert.doesNotMatch(frame, /1\s+1\s+const veryLongIdentifier/);
+  assert.match(frame, /"abcdef…/);
+  assert.equal(frame.split("\n").length, 2);
+  for (const line of frame.split("\n")) {
+    assert.ok(line.length <= 40, `code row exceeds terminal width: ${line}`);
+  }
+});
+
+test("expanded edit previews include surrounding context", async () => {
+  const args = {
+    path: "/tmp/config.py",
+    oldString: "first\nsecond\nvalue = 1\nfourth\nfifth",
+    newString: "first\nsecond\nvalue = 2\nfourth\nfifth",
+  };
+  const compact = await renderComponent(h(CodePreview, { tool: "edit", args }), 60, 20);
+  const expanded = await renderComponent(h(CodePreview, { tool: "edit", args, expanded: true }), 60, 20);
+
+  assert.doesNotMatch(compact, /first|second|fourth|fifth/);
+  assert.match(expanded, /first/);
+  assert.match(expanded, /fifth/);
+});
+
+test("streaming content uses a single stable assistant renderer", async () => {
+  const frame = await renderComponent(h(MessageList, { messages: [{
+    id: "streaming-markdown",
+    type: "streaming",
+    content: "Sedang menyiapkan contoh.\n\n```python\ndef token():\n",
+  }] }), 50, 20);
+
+  assert.equal((frame.match(/KhazAI/g) || []).length, 1);
+  assert.match(frame, /Sedang menyiapkan contoh\./);
+  assert.doesNotMatch(frame, /def token/);
 });
 
 test("factual completion receipt shows files and validation records without model claims", async () => {
@@ -517,6 +585,54 @@ test("interactive options use keyboard selection instead of free-text input", as
   assert.match(output, /↑↓ select · Enter confirm/);
   assert.deepEqual(selected, ["Tidak, batalkan"]);
 
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
+test("interactive session options stay on one terminal row", async () => {
+  const frame = await renderComponent(h(PromptInput, {
+    onSubmit() {},
+    onCommand() {},
+    commands: [],
+    disabled: false,
+    questionOptions: [
+      "coba cek endpoint login facebook · auto-free · 3452283c",
+      "coba cek file yang ada di folder ini · auto-free · ba133fbd",
+    ],
+    onSelectOption() {},
+  }), 44, 14);
+
+  assert.match(frame, /> 1\. coba cek endpoint login facebook/);
+  assert.doesNotMatch(frame, /3452283c/);
+  for (const line of frame.split("\n")) {
+    assert.ok(line.length <= 44, `session option exceeds terminal width: ${line}`);
+  }
+});
+
+test("command palette stays compact while searching commands", async () => {
+  const stdout = new TerminalOutput(40, 24);
+  const stdin = new TerminalInput();
+  const instance = render(h(PromptInput, {
+    onSubmit() {}, onCommand() {}, commands: COMMANDS, disabled: false,
+  }), {
+    stdout,
+    stdin,
+    debug: true,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 30));
+  stdin.push("/");
+  await new Promise(resolve => setTimeout(resolve, 80));
+  const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
+
+  assert.match(output, /Quick commands/);
+  assert.match(output, /\/new\s+Start a persistent session/);
+  assert.match(output, /\/model\s+Change the active model/);
+  assert.doesNotMatch(output, /\/compact|\/connect|\/collapse/);
+  assert.ok((output.match(/\n\s*[> ]?\s*\//g) || []).length <= 6);
   instance.unmount();
   instance.cleanup();
   stdin.destroy();

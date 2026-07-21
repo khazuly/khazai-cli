@@ -3,6 +3,7 @@ import { Text, Box, useStdout } from "ink";
 import { ToolCall } from "./tool-call.js";
 import { CodePreview, MarkdownCodeBlock } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
+import { StreamingText } from "./streaming-text.js";
 import { normalizeVerticalWhitespace } from "../text-layout.js";
 import { useTheme } from "../theme.js";
 import {
@@ -98,12 +99,6 @@ function RoleMessage({ role, content }) {
   return h(Box, {
     flexDirection: "column",
     marginBottom: 1,
-    borderStyle: "single",
-    borderTop: false,
-    borderBottom: false,
-    borderRight: false,
-    borderColor: theme.metadata,
-    paddingLeft: 1,
   },
     h(Text, { bold: true, color: theme.secondary }, role),
     h(Box, { flexDirection: "column", width: "100%" },
@@ -112,15 +107,19 @@ function RoleMessage({ role, content }) {
   );
 }
 
+function StreamingMessage({ content }) {
+  return h(Box, {
+    flexDirection: "column",
+    marginBottom: 1,
+  },
+    h(Text, { bold: true, color: useTheme().secondary }, "KhazAI"),
+    h(StreamingText, { content }),
+  );
+}
+
 function UserMessage({ content }) {
   const theme = useTheme();
   return h(Box, {
-    borderStyle: "single",
-    borderTop: false,
-    borderBottom: false,
-    borderRight: false,
-    borderColor: theme.primary,
-    paddingLeft: 1,
     marginBottom: 1,
   },
     h(Box, { flexDirection: "column" },
@@ -212,7 +211,6 @@ function PermissionDisplay({ message }) {
 }
 
 export function MessageList({ messages }) {
-  const theme = useTheme();
   const items = messages.map(m => {
     switch (m.type) {
       case "user":
@@ -221,12 +219,6 @@ export function MessageList({ messages }) {
         return h(Box, {
           key: m.id,
           flexDirection: "column",
-          borderStyle: "single",
-          borderTop: false,
-          borderBottom: false,
-          borderRight: false,
-          borderColor: theme.muted,
-          paddingLeft: 1,
           marginBottom: 1,
         },
           h(ToolCall, {
@@ -234,15 +226,15 @@ export function MessageList({ messages }) {
             resultSize: m.resultSize, content: m.content, expanded: m.expanded,
           }),
           hasCodePreview(m)
-            ? h(Box, { marginLeft: 1, marginRight: 1, marginBottom: 1 },
-                h(CodePreview, { tool: m.tool, args: m.args })
+            ? h(Box, { marginBottom: 1, width: "100%" },
+                h(CodePreview, { tool: m.tool, args: m.args, expanded: Boolean(m.expanded) })
               )
             : null,
         );
       case "answer":
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "streaming":
-        return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
+        return h(StreamingMessage, { key: m.id, content: m.content });
       case "error":
         return h(ErrorDisplay, { key: m.id, content: m.content });
       case "summary":

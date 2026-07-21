@@ -10,29 +10,50 @@ const THEMES = [
   { name: "mono", description: "Monochrome (no colors)" },
 ];
 
-export const COMMANDS = [
-  { name: "/exit", description: "Exit application" },
-  { name: "/model", description: "Show AI model", sub: MODELS },
-  { name: "/models", description: "Select a configured provider model" },
-  { name: "/connect", description: "Connect an OpenAI-compatible provider" },
-  { name: "/new", description: "Start a new persistent session" },
-  { name: "/sessions", description: "List and resume sessions" },
-  { name: "/continue", description: "Resume a previous session" },
-  { name: "/fork", description: "Fork the current session" },
-  { name: "/undo", description: "Undo the last turn and compatible file changes" },
-  { name: "/redo", description: "Redo the last undone turn" },
-  { name: "/compact", description: "Compact agent context" },
-  { name: "/export", description: "Export the current session to Markdown" },
-  { name: "/details", description: "Toggle expanded tool details" },
-  { name: "/auto", description: "Toggle auto-approval for ask permissions" },
-  { name: "/agent", description: "Select a primary agent profile" },
-  { name: "/skills", description: "List discovered reusable skills" },
-  { name: "/lsp", description: "Show language server status" },
-  { name: "/mcp", description: "List, refresh, or authenticate MCP servers" },
-  { name: "/theme", description: "Change color theme", sub: THEMES },
-  { name: "/expand", description: "Expand the latest tool result" },
-  { name: "/collapse", description: "Collapse the latest tool result" },
-  { name: "/help", description: "Show available commands" },
+export const COMMAND_GROUPS = [
+  { id: "session", label: "Session" },
+  { id: "workspace", label: "Workspace" },
+  { id: "view", label: "View" },
+  { id: "settings", label: "Settings" },
 ];
+
+export const COMMANDS = [
+  { name: "/new", description: "Start a persistent session", group: "session" },
+  { name: "/sessions", description: "Resume a session in this folder", group: "session" },
+  { name: "/continue", description: "Resume the latest folder session", group: "session" },
+  { name: "/fork", description: "Fork the current session", group: "session" },
+  { name: "/undo", description: "Undo the last compatible turn", group: "session" },
+  { name: "/redo", description: "Redo the last undone turn", group: "session" },
+  { name: "/compact", description: "Compact session context", group: "session" },
+  { name: "/export", description: "Export this session to Markdown", group: "session" },
+  { name: "/connect", description: "Connect an OpenAI-compatible provider", group: "workspace" },
+  { name: "/agent", description: "Select a primary agent", group: "workspace" },
+  { name: "/skills", description: "List available workspace skills", group: "workspace" },
+  { name: "/lsp", description: "Show language server status", group: "workspace" },
+  { name: "/mcp", description: "Manage MCP servers", group: "workspace" },
+  { name: "/model", description: "Change the active model", group: "view", sub: MODELS },
+  { name: "/models", description: "Select a configured model", group: "view" },
+  { name: "/theme", description: "Change the interface theme", group: "view", sub: THEMES },
+  { name: "/details", description: "Toggle tool result details", group: "view" },
+  { name: "/expand", description: "Expand the latest tool result", group: "view" },
+  { name: "/collapse", description: "Collapse tool details", group: "view" },
+  { name: "/auto", description: "Toggle auto-approval", group: "settings" },
+  { name: "/help", description: "Show command reference", group: "settings" },
+  { name: "/exit", description: "Exit KhazAI", group: "settings" },
+];
+
+export function groupedCommands(commands = COMMANDS) {
+  return COMMAND_GROUPS.map(group => ({
+    ...group,
+    commands: commands.filter(command => command.group === group.id),
+  })).filter(group => group.commands.length > 0);
+}
+
+export function formatCommandHelp(commands = COMMANDS) {
+  return groupedCommands(commands).map(group => [
+    `**${group.label}**`,
+    ...group.commands.map(command => `\`${command.name}\` — ${command.description}`),
+  ].join("\n")).join("\n\n");
+}
 
 export { MODELS, THEMES };

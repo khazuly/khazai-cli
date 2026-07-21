@@ -33,7 +33,7 @@ test("tool presentation exposes text labels and states without decorative icons"
   const failed = presentTool({ tool: "bash", args: { command: "node missing.js" }, content: "Exit: 2\nError: module not found", done: true });
 
   assert.deepEqual([running.label, running.state], ["Shell", "running"]);
-  assert.deepEqual([success.label, success.state, success.duration], ["Read", "success", "618 ms"]);
+  assert.deepEqual([success.label, success.state, success.statusLabel, success.duration], ["Read", "success", "completed", "618 ms"]);
   assert.deepEqual([warning.label, warning.state], ["Shell", "warning"]);
   assert.deepEqual([failed.label, failed.state], ["Shell", "failed"]);
   assert.equal("icon" in running, false);
@@ -47,9 +47,25 @@ test("fetch metadata is condensed into content type, bytes, and character count"
     content: "URL: https://shopee.co.id/\nContent-Type: text/html\nBytes: 187\nTotal 103 chars | showing 0-103\nPage title",
   });
 
-  assert.equal(view.target, "https://shopee.co.id/");
+  assert.equal(view.summary, "https://shopee.co.id/");
   assert.deepEqual(view.metadata, ["text/html", "187 B", "103 chars"]);
   assert.deepEqual(view.preview.lines, ["Page title"]);
+});
+
+test("shell summaries are concise while preserving commands as expandable details", () => {
+  const view = presentTool({
+    tool: "bash",
+    args: { command: "rm -f /root/test/snake_game.py && ls -la /root/test" },
+    content: "Exit: 0",
+    done: true,
+    duration: 441,
+    resultSize: 107,
+  });
+
+  assert.equal(view.summary, "Deleted snake_game.py");
+  assert.equal(view.statusLabel, "completed");
+  assert.deepEqual(view.metadata, ["exit 0", "107 B"]);
+  assert.deepEqual(view.details, ["Command  rm -f /root/test/snake_game.py && ls -la /root/test"]);
 });
 
 test("search preview defaults to three results and expands without losing long titles", () => {
