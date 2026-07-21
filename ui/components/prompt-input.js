@@ -1,10 +1,7 @@
 import { createElement as h } from "react";
 import { Text, Box, useInput, useStdout } from "ink";
 import { useEffect, useState } from "react";
-import {
-  PANEL_HORIZONTAL_PADDING,
-  PANEL_SPACE,
-} from "../dark-panel.js";
+import { PANEL_SPACE } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
 
 const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
@@ -346,9 +343,8 @@ export function PromptInput({
   });
 
   const terminalWidth = stdout?.columns || 80;
-  const panelWidth = Math.max(12, terminalWidth - 2);
-  const sidePadding = PANEL_SPACE.repeat(PANEL_HORIZONTAL_PADDING);
-  const innerWidth = Math.max(1, panelWidth - (PANEL_HORIZONTAL_PADDING * 2) - 4);
+  const panelWidth = Math.max(12, terminalWidth);
+  const innerWidth = Math.max(1, panelWidth - 4);
   const visibleInput = secret && input.value ? "•".repeat(graphemes(input.value).length) : input.value;
   const displayValue = visibleInput || "";
   const displayCursor = input.value ? input.cursor : 0;
@@ -382,12 +378,10 @@ export function PromptInput({
       color: theme.inputText,
       backgroundColor: theme.panel,
     },
-      sidePadding,
       input.value ? before : h(Text, { dimColor: true }, before),
       cursorOffset === null ? null : `\u001b[5;7m${cursorCharacter}\u001b[25;27m`,
       input.value ? after : h(Text, { dimColor: true }, after),
       padding,
-      sidePadding,
     );
   });
 
@@ -435,7 +429,7 @@ export function PromptInput({
   const hintLeft = `${activeModel || "build"} · ${disabled ? "Esc cancel" : "Enter send"}`;
   const hintRight = disabled ? "" : "! shell · @ file · / commands · ⇧Shift+Enter newline";
 
-  return h(Box, { flexDirection: "column", width: "100%", paddingX: 1 },
+  return h(Box, { flexDirection: "column", width: "100%" },
     fileDropdown || cmdDropdown,
     h(Box, {
       flexDirection: "column",

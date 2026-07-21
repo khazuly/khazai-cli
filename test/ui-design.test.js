@@ -305,6 +305,8 @@ test("user messages use an accent rail and input uses a responsive bordered comp
   assert.equal(userContentLine - youLine, 1, "You label and content should remain compact");
   assert.ok(lines[youLine].length < 40, "user label should not force a padded full-width background");
   assert.match(rendered, /[╭╮╰╯]/);
+  const composerTop = lines.find(line => line.includes("╭"));
+  assert.equal(composerTop.length, 40, "composer should use the full terminal width");
   for (const line of rendered.split("\n")) {
     assert.ok(line.length <= 40, `dark panel exceeds terminal width: ${line}`);
   }
