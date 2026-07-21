@@ -1,93 +1,16 @@
 import { createElement as h } from "react";
-import { Text, Box, useStdout } from "ink";
+import { Text, Box } from "ink";
 import { ToolCall } from "./tool-call.js";
-import { CodePreview, MarkdownCodeBlock } from "./code-preview.js";
+import { CodePreview } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
-import { StreamingText } from "./streaming-text.js";
 import { normalizeVerticalWhitespace } from "../text-layout.js";
 import { useTheme } from "../theme.js";
-import {
-  PANEL_HORIZONTAL_PADDING,
-  PANEL_END,
-  PANEL_SPACE,
-  padPanelLine,
-  wrapPanelText,
-} from "../dark-panel.js";
 
 function hasCodePreview(message) {
   if (!message.done) return false;
   if (message.tool === "write") return /^Written \d+ bytes to /.test(message.content || "");
   if (message.tool === "edit") return /^Edited /.test(message.content || "");
   return false;
-}
-
-function renderInline(text, keyPrefix, theme) {
-  const tokens = text.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/g);
-  return tokens.filter(Boolean).map((token, index) => {
-    const key = `${keyPrefix}-${index}`;
-    if (token.startsWith("**") && token.endsWith("**")) {
-      return h(Text, { key, bold: true }, token.slice(2, -2));
-    }
-    if (token.startsWith("`") && token.endsWith("`")) {
-      return h(Text, { key, color: theme.secondary }, token.slice(1, -1));
-    }
-    return token;
-  });
-}
-
-function renderListLine(marker, content, key, theme, marginLeft = 0) {
-  const markerWidth = Array.from(marker).length;
-  return h(Box, {
-    key,
-    flexShrink: 1,
-    alignItems: "flex-start",
-    marginLeft,
-  },
-    h(Box, { width: markerWidth, flexShrink: 0 },
-      h(Text, { dimColor: true }, marker),
-    ),
-    h(Box, { flexGrow: 1, flexShrink: 1 },
-      h(Text, { color: theme.assistant, wrap: "wrap" }, ...renderInline(content, key, theme)),
-    ),
-  );
-}
-
-function renderTextLine(line, key, theme) {
-  const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-  const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
-  const bullet = /^(\s*)[-*]\s+(.+)$/.exec(line);
-  if (heading) return h(Text, { key, bold: true, color: theme.assistant, wrap: "wrap" }, ...renderInline(heading[2], key, theme));
-  if (numbered) return renderListLine(`${numbered[1]}. `, numbered[2], key, theme);
-  if (bullet) return renderListLine("- ", bullet[2], key, theme, bullet[1].length > 0 ? 3 : 0);
-  return h(Text, { key, color: theme.assistant, wrap: "wrap" }, ...(line ? renderInline(line, key, theme) : [" "]));
-}
-
-function answerBlocks(content) {
-  const blocks = [];
-  let text = [];
-  let code = null;
-  const flushText = () => {
-    if (text.length) blocks.push({ type: "text", lines: text });
-    text = [];
-  };
-
-  for (const line of content.split("\n")) {
-    if (code) {
-      if (/^`{1,3}\s*$/.test(line)) {
-        blocks.push({ type: "code", language: code.language, content: code.lines.join("\n") });
-        code = null;
-      } else code.lines.push(line);
-      continue;
-    }
-    const openingFence = /^```\s*([A-Za-z0-9_+.-]+)?\s*$/.exec(line);
-    if (openingFence) {
-      flushText();
-      code = { language: openingFence[1] || "plain", lines: [] };
-    } else text.push(line);
-  }
-  if (code) blocks.push({ type: "code", language: code.language, content: code.lines.join("\n") });
-  flushText();
-  return blocks;
 }
 
 function FormattedAnswer({ content }) {
@@ -108,12 +31,20 @@ function RoleMessage({ role, content }) {
 }
 
 function StreamingMessage({ content }) {
+  const theme = useTheme();
+  const lines = String(content || "").split("\n");
   return h(Box, {
     flexDirection: "column",
     marginBottom: 1,
   },
-    h(Text, { bold: true, color: useTheme().secondary }, "KhazAI"),
-    h(StreamingText, { content }),
+    h(Text, { bold: true, color: theme.secondary }, "KhazAI"),
+    ...lines.map((line, index) => h(Text, {
+      key: index,
+      color: theme.assistant,
+      wrap: "truncate-end",
+      width: "100%",
+    }, line || " ")),
+    h(Text, { color: theme.metadata, dimColor: true }, "▋"),
   );
 }
 

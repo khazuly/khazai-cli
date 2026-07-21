@@ -383,7 +383,7 @@ test("expanded edit previews include surrounding context", async () => {
   assert.match(expanded, /fifth/);
 });
 
-test("streaming content uses a single stable assistant renderer", async () => {
+test("streaming content uses stable, line-bounded rendering", async () => {
   const frame = await renderComponent(h(MessageList, { messages: [{
     id: "streaming-markdown",
     type: "streaming",
@@ -392,7 +392,7 @@ test("streaming content uses a single stable assistant renderer", async () => {
 
   assert.equal((frame.match(/KhazAI/g) || []).length, 1);
   assert.match(frame, /Sedang menyiapkan contoh\./);
-  assert.doesNotMatch(frame, /def token/);
+  assert.match(frame, /def token/);
 });
 
 test("factual completion receipt shows files and validation records without model claims", async () => {
