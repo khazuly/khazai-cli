@@ -13,7 +13,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { redactSecrets } from "../lib/secrets.js";
+import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { toProviderMessages } from "../lib/providers.js";
 
 const DATA_DIR = join(homedir(), ".local", "share", "khazai-ai", "sessions");
@@ -27,7 +27,7 @@ function workspaceKey(workspace) {
 }
 
 function safeJSON(value) {
-  return JSON.parse(redactSecrets(JSON.stringify(value)));
+  return redactSerializable(value);
 }
 
 function legacyToolParts(session) {

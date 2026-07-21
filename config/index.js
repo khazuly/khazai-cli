@@ -7,11 +7,14 @@ const CONFIG_DIR = join(homedir(), ".config", "khazai-ai");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const PROJECT_FILES = [".khazai-ai.json", ".khazai-airc"];
 const MODEL = "big-cock";
-const MODEL_ALIASES = new Set([MODEL, "cock"]);
+const AUTO_FREE_MODEL = "auto-free";
+const MODEL_ALIASES = new Set([MODEL, "cock", AUTO_FREE_MODEL]);
 
 export function normalizeModel(model) {
   const value = String(model || "").toLowerCase();
-  if (MODEL_ALIASES.has(value) || !value) return MODEL;
+  if (!value) return MODEL;
+  if (value === AUTO_FREE_MODEL) return AUTO_FREE_MODEL;
+  if (MODEL_ALIASES.has(value)) return MODEL;
   return value.includes("/") ? String(model) : MODEL;
 }
 
@@ -92,6 +95,7 @@ export function configuredModels() {
   const config = loadConfig();
   return [
     MODEL,
+    AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>
       (value.models || []).map(model => `${provider}/${model}`)),
   ];

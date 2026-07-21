@@ -23,9 +23,12 @@ import { EmptyState } from "./components/empty-state.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
-import { redactSecrets } from "../lib/secrets.js";
+import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
+
+const MODEL_LABELS = { "auto-free": "Auto (free)" };
+const displayModel = model => MODEL_LABELS[model] || model;
 
 function buildRegistry(workspace, mcpTools = []) {
   const r = new Registry();
@@ -194,7 +197,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     const chooseModel = async requested => {
       const models = configuredModels();
-      const selected = requested || await requestValue("Select a model", models);
+      const choices = models.map(model => ({ label: displayModel(model), value: model }));
+      const selected = requested || await requestValue("Select a model", choices.map(choice => choice.label), { values: choices });
       if (!selected || !models.includes(selected)) {
         appendArchived({ id: nextId(), type: "error", content: `Model "${selected}" is not configured.` });
         return;
@@ -214,7 +218,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       currentSessionRef.current.model = selected;
       currentSessionRef.current.agentState = agentRef.current.exportSessionState();
       currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
-      appendArchived({ id: nextId(), type: "answer", content: `Model changed to ${selected}.` });
+      appendArchived({ id: nextId(), type: "answer", content: `Model changed to ${displayModel(selected)}.` });
     };
     if (cmd === "/model" || cmd === "/models") {
       await chooseModel(arg);
@@ -601,7 +605,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
               type: "tool",
               callId: part.callId,
               tool: part.tool,
-              args: JSON.parse(redactSecrets(JSON.stringify(part.state.input || {}))),
+              args: redactSerializable(part.state.input || {}),
               done: false,
             });
           }
@@ -634,7 +638,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         discardStreaming();
         toolStartRef.current = Date.now();
-        activate({ id: nextId(), type: "tool", tool: ev.tool, args: JSON.parse(redactSecrets(JSON.stringify(ev.args || {}))), done: false });
+        activate({ id: nextId(), type: "tool", tool: ev.tool, args: redactSerializable(ev.args || {}), done: false });
         continue;
       }
 
@@ -656,6 +660,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "stream-discard") {
         discardStreaming();
+        continue;
+      }
+
+      if (ev.type === "stream-commit") {
+        completeStreaming();
         continue;
       }
 

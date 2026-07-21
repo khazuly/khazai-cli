@@ -73,6 +73,24 @@ test("normal model prose remains streamed", async () => {
   assert.equal(visible.join(""), response);
 });
 
+test("provider timeout is configurable per workspace", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-provider-timeout-"));
+  writeFileSync(join(workspace, ".khazai-ai.json"), JSON.stringify({ providerTimeout: 180_000 }));
+  let timeoutMs;
+  const agent = new Agent(new Registry(), {
+    workspace,
+    intentResolver: intent(),
+    chat: async (_messages, options) => {
+      timeoutMs = options.timeoutMs;
+      options.onToken?.("Done.");
+      return "Done.";
+    },
+  });
+
+  for await (const _event of agent.loop("answer this")) {}
+  assert.equal(timeoutMs, 180_000);
+});
+
 test("default hot path sends one primary request and releases typed text immediately", async () => {
   let calls = 0;
   let providerFinished = false;
@@ -240,7 +258,7 @@ test("tool calls emit pending, running, completed, and finish lifecycle states",
   assert.equal(events.some(event => event.type === "steering"), false);
 });
 
-test("provisional streamed prose is discarded before a tool call", async () => {
+test("streamed prose is committed before a tool call", async () => {
   const registry = new Registry();
   registry.register({
     name: "write",
@@ -269,12 +287,13 @@ test("provisional streamed prose is discarded before a tool call", async () => {
 
   const events = [];
   for await (const event of agent.loop("create game.py")) events.push(event);
-  const discardIndex = events.findIndex(event => event.type === "stream-discard");
+  const commitIndex = events.findIndex(event => event.type === "stream-commit");
   const toolIndex = events.findIndex(event =>
     event.type === "tool-part" && event.part?.tool === "write"
   );
-  assert.ok(discardIndex >= 0);
-  assert.ok(discardIndex < toolIndex);
+  assert.ok(commitIndex >= 0);
+  assert.ok(commitIndex < toolIndex);
+  assert.equal(events.filter(event => event.type === "stream").map(event => event.token).join(""), "I will create the game now.Created and validated game.py.");
   assert.equal(events.filter(event => event.type === "stream-end").length, 1);
 });
 

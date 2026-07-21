@@ -52,6 +52,34 @@ test("OpenAI-compatible streaming assembles native tool-call deltas", async () =
   }
 });
 
+test("native tool calls preserve preceding streamed prose", async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  const payload = [
+    { choices: [{ delta: { content: "I will inspect the file first." } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_read", function: { name: "read", arguments: '{\"path\":\"a.js\"}' } }] } }] },
+  ].map(value => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n";
+  globalThis.fetch = async () => ({
+    ok: true,
+    headers: { get: () => "text/event-stream" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(payload));
+        controller.close();
+      },
+    }),
+  });
+  const events = [];
+  try {
+    const provider = new OpenAICompatibleProvider({ id: "local", baseURL: "http://localhost:1234/v1" });
+    const result = await provider.chat([], { model: "test", onEvent: event => events.push(event) });
+    assert.equal(events.filter(event => event.type === "text-delta").map(event => event.text).join(""), "I will inspect the file first.");
+    assert.match(result, /\"tool\":\"read\"/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("permission defaults match OpenCode and remember always approval", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-permission-"));
   const service = new PermissionService(workspace, { permission: {} });

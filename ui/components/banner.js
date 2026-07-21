@@ -4,6 +4,7 @@ import { useTheme } from "../theme.js";
 
 export const MODEL_LABELS = {
   "big-cock": "Big Cock",
+  "auto-free": "Auto (free)",
 };
 
 export function Banner({ model, workspace, agent = "build", autoApprove = false }) {

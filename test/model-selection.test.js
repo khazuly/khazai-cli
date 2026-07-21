@@ -13,10 +13,11 @@ test("Big Cock remains the default and legacy model shortcuts migrate safely", (
   assert.equal(normalizeModel("local/qwen"), "local/qwen");
   assert.deepEqual(MODELS, [
     { name: "big-cock", description: "Big Cock (default)" },
+    { name: "auto-free", description: "Auto (free)" },
   ]);
   assert.deepEqual(COMMANDS.find(command => command.name === "/model")?.sub, MODELS);
   assert.equal(COMMANDS.some(command => command.name === "/think"), false);
-  assert.deepEqual(MODEL_LABELS, { "big-cock": "Big Cock" });
+  assert.deepEqual(MODEL_LABELS, { "big-cock": "Big Cock", "auto-free": "Auto (free)" });
 });
 
 test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
@@ -46,6 +47,20 @@ test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
       definition: { baseURL: "http://localhost:8080/v1", env: "LOCAL_KEY" },
     },
   );
+});
+
+test("Auto free resolves to the configured gateway without a user-facing provider name", () => {
+  assert.deepEqual(resolveModelDescriptor("auto-free"), {
+    requested: "auto-free",
+    providerID: "auto-free",
+    modelID: "kilo-auto/free",
+    exactID: "auto-free/kilo-auto/free",
+    definition: {
+      baseURL: "https://api.kilo.ai/api/gateway",
+      env: "KILO_API_KEY",
+      headers: {},
+    },
+  });
 });
 
 test("default transport sends Big Cock's provider model and rejects unqualified unknown models", async () => {

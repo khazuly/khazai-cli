@@ -1,5 +1,6 @@
 const MODELS = [
   { name: "big-cock", description: "Big Cock (default)" },
+  { name: "auto-free", description: "Auto (free)" },
 ];
 
 const THEMES = [

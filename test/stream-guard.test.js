@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Agent, expectedPlanTools, extractJsonCandidates, extractTaggedToolCall, mutationSatisfiesPlanItem, streamDisposition } from "../app/agent.js";
+import { Agent } from "../app/agent.js";
+import { expectedPlanTools, mutationSatisfiesPlanItem, streamDisposition } from "../app/agent/helpers/task.js";
+import { extractJsonCandidates, extractTaggedToolCall } from "../app/agent/helpers/parser.js";
 import { Registry } from "../app/registry.js";
 
 test("Claude function_calls wrapper is structured even after prose", () => {

@@ -4,7 +4,8 @@ import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { ExecutionPolicy } from "../app/execution-policy.js";
 import { fallbackIntentContract } from "../app/intent-resolver.js";
-import { redactSecrets } from "../lib/secrets.js";
+import { redactSecrets, redactSerializable } from "../lib/secrets.js";
+import { getProviderCredential } from "../lib/auth.js";
 
 const token = "ghp_123456789012345678901234567890123456";
 
@@ -71,4 +72,19 @@ test("global redaction masks common credential forms", () => {
   assert.doesNotMatch(safe, new RegExp(token));
   assert.doesNotMatch(safe, /abcdefghijklmnopqrstuvwxyz|hunter2/);
   assert.match(safe, /\[REDACTED\]/);
+});
+
+test("structured redaction preserves strings containing escaped source quotes", () => {
+  const value = {
+    output: 'const token = "ghp_123456789012345678901234567890123456";',
+  };
+
+  const safe = redactSerializable(value);
+  assert.equal(typeof safe.output, "string");
+  assert.doesNotMatch(JSON.stringify(safe), /ghp_123456789012345678901234567890123456/);
+  assert.match(safe.output, /\[REDACTED\]/);
+});
+
+test("provider credentials do not depend on a Kilo CLI installation", () => {
+  assert.equal(getProviderCredential("auto-free", "KILO_API_KEY", "/tmp/khazai-missing-auth.json"), "");
 });
