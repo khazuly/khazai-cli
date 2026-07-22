@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Writable } from "node:stream";
+import stringWidth from "string-width";
 import { createElement as h } from "react";
 import { Box, Static, Text, render } from "ink";
 import { MessageList } from "../ui/components/message-list.js";
@@ -110,6 +111,14 @@ test("streaming preview stays within the real viewport while retaining the full 
   assert.match(preview, /response line 20$/);
   assert.match(complete, /response line 1/);
   assert.doesNotMatch(preview, /response line 1(?:\n|$)/);
+});
+
+test("streaming preview reserves the final terminal column for wide characters", () => {
+  const preview = streamViewportText("ab界cd界ef", 10, 4);
+
+  for (const line of preview.split("\n")) {
+    assert.ok(stringWidth(line) <= 9, `stream row reaches the final terminal column: ${line}`);
+  }
 });
 
 test("stream normalization preserves spaces across provider chunks", () => {

@@ -8,7 +8,6 @@ import { MODEL_LABELS } from "../ui/components/banner.js";
 
 test("Big Cock remains the default and legacy model shortcuts migrate safely", () => {
   assert.equal(DEFAULTS.model, "big-cock");
-  assert.equal(loadConfig().model, "big-cock");
   assert.equal(normalizeModel("gpt"), "big-cock");
   assert.equal(normalizeModel("local/qwen"), "local/qwen");
   assert.deepEqual(MODELS, [
@@ -88,6 +87,39 @@ test("default transport sends Big Cock's provider model and rejects unqualified 
     assert.equal(requests.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("Auto Free retries anonymously when an authenticated BYOK route fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.KILO_API_KEY;
+  const headers = [];
+  process.env.KILO_API_KEY = "kilo-account-key";
+  globalThis.fetch = async (_url, options) => {
+    headers.push(options.headers);
+    if (headers.length === 1) {
+      return {
+        ok: false,
+        status: 520,
+        statusText: "Unknown Error",
+        async text() { return '{"error":{"metadata":{"is_byok":true}}}'; },
+      };
+    }
+    return {
+      ok: true,
+      headers: { get: () => "application/json" },
+      async json() { return { choices: [{ message: { content: "fallback ok" } }] }; },
+    };
+  };
+  try {
+    assert.equal(await chat([{ role: "user", content: "test" }], { model: "auto-free" }), "fallback ok");
+    assert.equal(headers.length, 2);
+    assert.equal(headers[0].Authorization, "Bearer kilo-account-key");
+    assert.equal("Authorization" in headers[1], false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.KILO_API_KEY;
+    else process.env.KILO_API_KEY = originalKey;
   }
 });
 

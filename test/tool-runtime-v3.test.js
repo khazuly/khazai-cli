@@ -135,6 +135,32 @@ test("unified executor enforces a bounded timeout", async () => {
   assert.match(result.result, /timed out after 250ms/);
 });
 
+test("tool-specific timeout can exceed the global executor timeout", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-tool-timeout-"));
+  const registry = new Registry();
+  registry.register({
+    name: "patient",
+    timeoutMs: 500,
+    description: "patient",
+    parameters: { type: "object", properties: {} },
+    execute: () => new Promise(resolve => setTimeout(() => resolve("done"), 300)),
+  });
+  const executor = new ToolExecutor({
+    registry,
+    lifecycle: new ToolLifecycle({ sessionId: "tool-timeout", workspace }),
+    permissionService: new PermissionService(workspace, { permission: {} }),
+    workspace,
+    sessionId: "tool-timeout",
+    timeoutMs: 250,
+  });
+  let result;
+  for await (const event of executor.execute({ name: "patient", args: {}, id: "patient-call" })) {
+    if (event.type === "execution-result") result = event;
+  }
+  assert.equal(result.failed, false);
+  assert.equal(result.result, "done");
+});
+
 test("mixed mutation batches execute sequentially without provider reissue", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-mixed-batch-"));
   const registry = new Registry();
@@ -254,6 +280,17 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
   const workspace = mkdtempSync(join(tmpdir(), "khazai-todo-"));
   const registry = new Registry();
   registry.register(todoWriteTool);
+  registry.register({
+    name: "read",
+    description: "Read a file.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    async execute() { return "source"; },
+  });
   const responses = [
     JSON.stringify({
       tool: "todowrite",
@@ -265,6 +302,7 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
       },
       id: "todo-call",
     }),
+    JSON.stringify({ tool: "read", args: { path: "package.json" }, id: "read-call" }),
     "Plan updated.",
   ];
   const agent = new Agent(registry, {
@@ -281,5 +319,9 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
   assert.deepEqual(plan.items, [
     { description: "Inspect files", status: "done" },
     { description: "Run tests", status: "running" },
+  ]);
+  assert.deepEqual(events.filter(event => event.type === "plan-update"), [
+    { type: "plan-update", index: 1, status: "running" },
+    { type: "plan-update", index: 1, status: "done" },
   ]);
 });

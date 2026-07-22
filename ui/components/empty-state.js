@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { useTheme } from "../theme.js";
 
 const EXAMPLES = [
@@ -11,7 +11,8 @@ const EXAMPLES = [
 
 export function EmptyState() {
   const theme = useTheme();
-  const terminalWidth = process.stdout.columns || 80;
+  const { stdout } = useStdout();
+  const terminalWidth = stdout?.columns || 80;
 
   return h(Box, {
     flexDirection: "column",
@@ -27,7 +28,7 @@ export function EmptyState() {
       borderColor: theme.border,
       paddingX: 3,
       paddingY: 1,
-      width: Math.min(60, terminalWidth - 4),
+      width: Math.max(12, Math.min(60, terminalWidth - 4)),
     },
       h(Text, { bold: true, color: theme.primary }, "Welcome to KhazAI"),
       h(Text, { dimColor: true, color: theme.metadata }, "Your AI-powered CLI coding assistant"),

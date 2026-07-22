@@ -58,7 +58,7 @@ export function classifyToolState(result, done = true) {
   if (!done) return "running";
   const text = String(result || "");
   if (/^(?:Warning|WARN(?:ING)?\b)/i.test(text)) return "warning";
-  if (/^(?:Error|Syntax validation failed)/i.test(text)) return "failed";
+  if (/^(?:Error|Syntax validation failed|Tool (?:execution )?(?:timed out|aborted))/i.test(text)) return "failed";
   const exit = /^Exit:\s*(-?\d+)/im.exec(text);
   return exit && Number(exit[1]) !== 0 ? "failed" : "success";
 }

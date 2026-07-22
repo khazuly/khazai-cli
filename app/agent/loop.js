@@ -374,7 +374,7 @@ export class LoopMethods {
         return;
       }
       yield* commitProseBeforeTool(tool);
-      const auxiliaryTool = false;
+      const auxiliaryTool = tool.name === "todowrite";
       tool.id ||= randomUUID();
       const loopRecovery = this._toolLoopRecovery(tool);
       if (loopRecovery) {
@@ -396,10 +396,7 @@ export class LoopMethods {
           function: { name: tool.name, arguments: JSON.stringify(publicToolArgs(tool.args)) },
         }],
       });
-      if (this._plan && this._planIndex < this._plan.length && !auxiliaryTool) {
-        this._plan[this._planIndex].status = "running";
-        yield { type: "plan-update", index: this._planIndex, status: "running" };
-      }
+      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem();
       let result;
       let part;
       let finishReason = "tool-calls";
@@ -422,8 +419,9 @@ export class LoopMethods {
           description: todo.content,
           status: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending",
         }));
-        this._planIndex = Math.max(0, this._plan.findIndex(item => item.status !== "done"));
-        yield { type: "plan", items: this._plan };
+        const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
+        this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
+        yield { type: "plan", items: this._plan.map(item => ({ ...item })) };
       }
       result = redactSecrets(result);
       this._rememberToolOutcome(tool, result);
@@ -461,6 +459,7 @@ export class LoopMethods {
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield { type: "tool-part", part: lifecyclePart };
       }
+      yield* this._finishPlanItem(planTracker, part.state.status === "completed" && !resultFailed(result));
     }
     this._finishLatency();
     yield { type: "error", content: `Maximum step count reached (${this._config.maxTurns}).` };

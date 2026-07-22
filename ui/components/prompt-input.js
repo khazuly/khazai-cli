@@ -1,108 +1,13 @@
 import { createElement as h } from "react";
 import { Text, Box, useInput, useStdout } from "ink";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PANEL_SPACE } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
+import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
 
 const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
 const MAX_COMMAND_CHOICES = 6;
-
-const segmenter = typeof Intl.Segmenter === "function"
-  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
-  : null;
-
-function graphemes(text) {
-  return segmenter
-    ? Array.from(segmenter.segment(text), ({ segment }) => segment)
-    : Array.from(text);
-}
-
-function insertText(state, text) {
-  const value = graphemes(state.value);
-  const inserted = graphemes(text);
-  return {
-    value: [...value.slice(0, state.cursor), ...inserted, ...value.slice(state.cursor)].join(""),
-    cursor: state.cursor + inserted.length,
-  };
-}
-
-function removeBackward(state) {
-  if (state.cursor === 0) return state;
-  const value = graphemes(state.value);
-  return {
-    value: [...value.slice(0, state.cursor - 1), ...value.slice(state.cursor)].join(""),
-    cursor: state.cursor - 1,
-  };
-}
-
-function moveVertical(state, direction) {
-  const value = graphemes(state.value);
-  const lineStart = (() => {
-    for (let i = state.cursor - 1; i >= 0; i--) if (value[i] === "\n") return i + 1;
-    return 0;
-  })();
-  const lineEnd = (() => {
-    for (let i = state.cursor; i < value.length; i++) if (value[i] === "\n") return i;
-    return value.length;
-  })();
-  const column = state.cursor - lineStart;
-
-  if (direction < 0) {
-    if (lineStart === 0) return state;
-    const previousEnd = lineStart - 1;
-    let previousStart = 0;
-    for (let i = previousEnd - 1; i >= 0; i--) {
-      if (value[i] === "\n") {
-        previousStart = i + 1;
-        break;
-      }
-    }
-    return { ...state, cursor: Math.min(previousStart + column, previousEnd) };
-  }
-
-  if (lineEnd === value.length) return state;
-  const nextStart = lineEnd + 1;
-  let nextEnd = value.length;
-  for (let i = nextStart; i < value.length; i++) {
-    if (value[i] === "\n") {
-      nextEnd = i;
-      break;
-    }
-  }
-  return { ...state, cursor: Math.min(nextStart + column, nextEnd) };
-}
-
-function printableText(input) {
-  return graphemes(input.replace(/\r\n?/g, "\n"))
-    .filter(char => char === "\n" || char >= " ")
-    .join("");
-}
-
-function layoutEditableText(value, cursor, width) {
-  const characters = graphemes(value);
-  const rows = [];
-  let cells = [];
-  let cursorOffset = null;
-
-  for (let index = 0; index <= characters.length; index++) {
-    if (cells.length >= width) {
-      rows.push({ cells, cursorOffset });
-      cells = [];
-      cursorOffset = null;
-    }
-    if (index === cursor) cursorOffset = cells.length;
-    if (index === characters.length) break;
-    if (characters[index] === "\n") {
-      rows.push({ cells, cursorOffset });
-      cells = [];
-      cursorOffset = null;
-      continue;
-    }
-    cells.push(characters[index]);
-  }
-  rows.push({ cells, cursorOffset });
-  return rows;
-}
+const PASTE_COMPRESSION_THRESHOLD = 160;
 
 function findSubCommands(commands, input) {
   const slashIdx = input.indexOf("/");
@@ -141,6 +46,10 @@ export function PromptInput({
   const [cmdIdx, setCmdIdx] = useState(0);
   const [optionIdx, setOptionIdx] = useState(0);
   const [fileIdx, setFileIdx] = useState(0);
+  const [pastePreview, setPastePreview] = useState(null);
+  const textBufferRef = useRef("");
+  const textTimerRef = useRef(null);
+  const pasteStartRef = useRef({ start: null, characterCount: 0, hasPasteChunk: false, timer: null });
 
   useEffect(() => setOptionIdx(0), [questionOptions]);
 
@@ -179,6 +88,64 @@ export function PromptInput({
     setFileIdx(0);
   };
 
+  const flushQueuedText = () => {
+    if (textTimerRef.current) {
+      clearTimeout(textTimerRef.current);
+      textTimerRef.current = null;
+    }
+    const text = textBufferRef.current;
+    textBufferRef.current = "";
+    if (!text) return "";
+    setInput(current => {
+      const next = insertText(current, text);
+      const characters = graphemes(next.value);
+      const characterCount = characters.length;
+      const insertionStart = pasteStartRef.current.start ?? current.cursor;
+      const compressPaste = !secret && (Boolean(pastePreview)
+        || (pasteStartRef.current.hasPasteChunk
+          && pasteStartRef.current.characterCount >= PASTE_COMPRESSION_THRESHOLD));
+      const start = pastePreview?.start ?? pasteStartRef.current.start ?? graphemes(current.value).length;
+      const hiddenLength = Math.max(0, characterCount - start);
+      if (pastePreview && insertionStart >= pastePreview.start + pastePreview.hiddenLength) {
+        setPastePreview(pastePreview);
+      } else if (pastePreview && insertionStart < pastePreview.start) {
+        setPastePreview({ ...pastePreview, start: pastePreview.start + graphemes(text).length });
+      } else {
+        setPastePreview(compressPaste && hiddenLength > 0 ? { start, hiddenLength } : null);
+      }
+      if (!next.value.startsWith("/")) setCmdIdx(-1);
+      return next;
+    });
+    setHistIdx(-1);
+    return text;
+  };
+
+  const queueText = text => {
+    if (textBufferRef.current.length === 0 && pasteStartRef.current.start === null) {
+      pasteStartRef.current.start = input.cursor;
+      pasteStartRef.current.characterCount = 0;
+      pasteStartRef.current.hasPasteChunk = false;
+    }
+    const textLength = graphemes(text).length;
+    pasteStartRef.current.characterCount += textLength;
+    pasteStartRef.current.hasPasteChunk ||= textLength >= 16;
+    textBufferRef.current += text;
+    if (textTimerRef.current) clearTimeout(textTimerRef.current);
+    textTimerRef.current = setTimeout(flushQueuedText, 35);
+    if (pasteStartRef.current.timer) clearTimeout(pasteStartRef.current.timer);
+    pasteStartRef.current.timer = setTimeout(() => {
+      pasteStartRef.current.start = null;
+      pasteStartRef.current.characterCount = 0;
+      pasteStartRef.current.hasPasteChunk = false;
+      pasteStartRef.current.timer = null;
+    }, 120);
+  };
+
+  useEffect(() => () => {
+    if (textTimerRef.current) clearTimeout(textTimerRef.current);
+    if (pasteStartRef.current.timer) clearTimeout(pasteStartRef.current.timer);
+  }, []);
+
   useInput((ch, key) => {
     if (disabled) return;
 
@@ -193,6 +160,35 @@ export function PromptInput({
         const index = Number(ch) - 1;
         if (index < questionOptions.length) onSelectOption?.(questionOptions[index]);
       }
+      return;
+    }
+
+    if (ch && !key.return && !key.shift && !key.ctrl && !key.meta) {
+      const text = printableText(ch);
+      if (text) {
+        queueText(text);
+        return;
+      }
+    }
+
+    const queuedText = flushQueuedText();
+    pasteStartRef.current.start = null;
+    pasteStartRef.current.characterCount = 0;
+    pasteStartRef.current.hasPasteChunk = false;
+    if (pastePreview && (key.backspace || key.delete || ch === "\x7f" || ch === "\b")) {
+      setInput(current => {
+        const characters = graphemes(current.value);
+        const next = [
+          ...characters.slice(0, pastePreview.start),
+          ...characters.slice(pastePreview.start + pastePreview.hiddenLength),
+        ].join("");
+        return { value: next, cursor: Math.min(current.cursor, pastePreview.start) };
+      });
+      setPastePreview(null);
+      pasteStartRef.current.start = null;
+      pasteStartRef.current.characterCount = 0;
+      pasteStartRef.current.hasPasteChunk = false;
+      setHistIdx(-1);
       return;
     }
 
@@ -229,6 +225,7 @@ export function PromptInput({
           onCommand(sel.name, "");
         }
         setInput({ value: "", cursor: 0 });
+        setPastePreview(null);
         setHistIdx(-1);
         setCmdIdx(0);
         return;
@@ -254,6 +251,7 @@ export function PromptInput({
       }
       if (ch === "\u001b" || key.escape) {
         setInput({ value: "", cursor: 0 });
+        setPastePreview(null);
         setCmdIdx(0);
         return;
       }
@@ -265,7 +263,7 @@ export function PromptInput({
         setHistIdx(-1);
         return;
       }
-      const value = input.value.trim();
+      const value = (queuedText ? insertText(input, queuedText).value : input.value).trim();
       if (value) {
         if (value.startsWith("/")) {
           const [command, ...rest] = value.split(/\s+/);
@@ -275,6 +273,7 @@ export function PromptInput({
         }
         setHistory(current => [value, ...current].slice(0, 50));
         setInput({ value: "", cursor: 0 });
+        setPastePreview(null);
         setHistIdx(-1);
       }
       return;
@@ -329,25 +328,26 @@ export function PromptInput({
       onClear?.();
       return;
     }
-    if (!key.ctrl && !key.meta && ch) {
-      const text = printableText(ch);
-      if (text) {
-        setInput(current => {
-          const next = insertText(current, text);
-          if (!next.value.startsWith("/")) setCmdIdx(-1);
-          return next;
-        });
-        setHistIdx(-1);
-      }
-    }
   });
 
   const terminalWidth = stdout?.columns || 80;
-  const panelWidth = Math.max(12, terminalWidth);
+  const panelWidth = Math.max(12, terminalWidth - 1);
   const innerWidth = Math.max(1, panelWidth - 4);
-  const visibleInput = secret && input.value ? "•".repeat(graphemes(input.value).length) : input.value;
+  const inputCharacters = graphemes(input.value);
+  const pasteLabel = pastePreview ? `[Pasted ${pastePreview.hiddenLength.toLocaleString()} chars]` : "";
+  const visibleInput = secret && input.value
+    ? "•".repeat(inputCharacters.length)
+    : pastePreview
+      ? `${inputCharacters.slice(0, pastePreview.start).join("")}${pasteLabel}${inputCharacters.slice(pastePreview.start + pastePreview.hiddenLength).join("")}`
+      : input.value;
   const displayValue = visibleInput || "";
-  const displayCursor = input.value ? input.cursor : 0;
+  const displayCursor = pastePreview
+    ? input.cursor <= pastePreview.start
+      ? input.cursor
+      : input.cursor <= pastePreview.start + pastePreview.hiddenLength
+        ? pastePreview.start + graphemes(pasteLabel).length
+        : input.cursor - pastePreview.hiddenLength + graphemes(pasteLabel).length
+    : input.value ? input.cursor : 0;
   const inputRows = layoutEditableText(displayValue, displayCursor, innerWidth);
 
   if (questionOptions.length > 0) {

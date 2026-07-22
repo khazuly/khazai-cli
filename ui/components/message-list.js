@@ -30,19 +30,19 @@ function RoleMessage({ role, content }) {
   );
 }
 
-function StreamingMessage({ content }) {
+function StreamingMessage({ content, width }) {
   const theme = useTheme();
   const lines = String(content || "").split("\n");
   return h(Box, {
     flexDirection: "column",
-    marginBottom: 1,
+    width: width || "100%",
   },
     h(Text, { bold: true, color: theme.secondary }, "KhazAI"),
     ...lines.map((line, index) => h(Text, {
       key: index,
       color: theme.assistant,
       wrap: "truncate-end",
-      width: "100%",
+      width: width || "100%",
     }, line || " ")),
     h(Text, { color: theme.metadata, dimColor: true }, "▋"),
   );
@@ -141,7 +141,7 @@ function PermissionDisplay({ message }) {
   );
 }
 
-export function MessageList({ messages }) {
+export function MessageList({ messages, streamingWidth = null }) {
   const items = messages.map(m => {
     switch (m.type) {
       case "user":
@@ -165,7 +165,7 @@ export function MessageList({ messages }) {
       case "answer":
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "streaming":
-        return h(StreamingMessage, { key: m.id, content: m.content });
+        return h(StreamingMessage, { key: m.id, content: m.content, width: streamingWidth });
       case "error":
         return h(ErrorDisplay, { key: m.id, content: m.content });
       case "summary":

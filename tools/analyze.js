@@ -258,6 +258,7 @@ function detectDuplicates(path, content) {
 
 export const analyzeTool = {
   name: "analyze",
+  timeoutMs: 180_000,
   description: "Analyze code files for syntax errors, bugs, and code quality issues.",
   parameters: {
     type: "object",

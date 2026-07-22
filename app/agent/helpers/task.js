@@ -238,6 +238,7 @@ export function resultFailed(result) {
   const text = String(result || "");
   return text.startsWith("Error")
     || text.startsWith("Syntax validation")
+    || /^Tool (?:execution )?(?:timed out|aborted)/i.test(text)
     || /^Exit:\s*(?!0\b)-?\d+/m.test(text);
 }
 

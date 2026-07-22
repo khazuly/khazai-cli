@@ -23,6 +23,12 @@ const ACTIVE_LABELS = {
   task: "Delegating",
 };
 
+export function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
 export function StatusBar({ running, plan = [], activeTool = null, startedAt = null }) {
   const [frame, setFrame] = useState(0);
   const theme = useTheme();
@@ -49,6 +55,6 @@ export function StatusBar({ running, plan = [], activeTool = null, startedAt = n
     h(Text, { color: theme.primary }, spinner),
     h(Text, { bold: true, color: theme.primary }, " ", action),
     target ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, "  ", target) : null,
-    h(Text, { color: theme.metadata }, `  ${elapsed}s · Esc cancel`),
+    h(Text, { color: theme.metadata }, `  ${formatElapsed(elapsed)} · Esc cancel`),
   );
 }

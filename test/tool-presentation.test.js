@@ -31,11 +31,13 @@ test("tool presentation exposes text labels and states without decorative icons"
   const success = presentTool({ tool: "read", args: { path: "/tmp/file.js" }, content: "File: /tmp/file.js\nLines: 2\none\ntwo", done: true, duration: 618 });
   const warning = presentTool({ tool: "bash", args: { command: "npm start" }, content: "Warning: redirected", done: true });
   const failed = presentTool({ tool: "bash", args: { command: "node missing.js" }, content: "Exit: 2\nError: module not found", done: true });
+  const timedOut = presentTool({ tool: "task", content: "Tool timed out after 60000ms.", done: true });
 
   assert.deepEqual([running.label, running.state], ["Shell", "running"]);
   assert.deepEqual([success.label, success.state, success.statusLabel, success.duration], ["Read", "success", "completed", "618 ms"]);
   assert.deepEqual([warning.label, warning.state], ["Shell", "warning"]);
   assert.deepEqual([failed.label, failed.state], ["Shell", "failed"]);
+  assert.deepEqual([timedOut.label, timedOut.state], ["Think", "failed"]);
   assert.equal("icon" in running, false);
 });
 

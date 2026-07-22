@@ -11,6 +11,23 @@ import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
 export class ToolMethods {
+  *_startPlanItem() {
+    const plan = this._plan;
+    const index = this._planIndex;
+    if (!plan || index >= plan.length) return null;
+    plan[index].status = "running";
+    yield { type: "plan-update", index, status: "running" };
+    return { plan, index };
+  }
+
+  *_finishPlanItem(tracker, succeeded) {
+    if (!tracker || this._plan !== tracker.plan) return;
+    const { plan, index } = tracker;
+    plan[index].status = succeeded ? "done" : "failed";
+    yield { type: "plan-update", index, status: plan[index].status };
+    if (succeeded) this._planIndex = index + 1;
+  }
+
   async *_runReadOnlyBatch(tools) {
     const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
     const normalized = this._filterRepeatedBatchTools(candidates);
@@ -19,6 +36,7 @@ export class ToolMethods {
       return true;
     }
     if (!normalized.every(tool => PARALLEL_READ_ONLY_TOOLS.has(tool.name))) return false;
+    const planTracker = yield* this._startPlanItem();
     const settled = [];
     const concurrency = Math.min(8, Math.max(1, Number(this._config.toolConcurrency) || 4));
     for await (const event of this._toolExecutor().executeBatch(
@@ -66,11 +84,7 @@ export class ToolMethods {
       yield { type: "tool-part", part };
     }
     this._lastToolWasExecuted = settled.length > 0;
-    if (this._plan && this._planIndex < this._plan.length && settled.some(entry => !resultFailed(entry.result))) {
-      this._plan[this._planIndex].status = "done";
-      yield { type: "plan-update", index: this._planIndex, status: "done" };
-      this._planIndex++;
-    }
+    yield* this._finishPlanItem(planTracker, settled.some(entry => !resultFailed(entry.result)));
     return true;
   }
 
@@ -95,13 +109,18 @@ export class ToolMethods {
     });
     let failed = false;
     for (const call of calls) {
+      const planTracker = call.name === "todowrite" ? null : yield* this._startPlanItem();
+      let callFailed = false;
+      let completedPart = null;
       for await (const event of this._toolExecutor().execute(call, { agent: this._agentProfile?.name })) {
         if (event.type !== "execution-result") {
           yield event;
           continue;
         }
         const result = redactSecrets(String(event.result));
+        completedPart = event.part;
         failed ||= event.failed;
+        callFailed ||= event.failed;
         const metadata = toolMetadata(event.call, result);
         this._rememberToolOutcome(event.call, result);
         this._toolEvidence.push({
@@ -120,6 +139,17 @@ export class ToolMethods {
         this._lastToolResult = result;
         this._activeTask.lastToolResult = result.slice(0, 1500);
       }
+      if (call.name === "todowrite" && completedPart?.state.status === "completed") {
+        const todos = Array.isArray(completedPart.state.metadata?.todos) ? completedPart.state.metadata.todos : [];
+        this._plan = todos.map(todo => ({
+          description: todo.content,
+          status: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending",
+        }));
+        const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
+        this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
+        yield { type: "plan", items: this._plan.map(item => ({ ...item })) };
+      }
+      yield* this._finishPlanItem(planTracker, !callFailed);
     }
     for (const part of this._lifecycle.finishStep(failed ? "tool-error" : "tool-calls")) {
       yield { type: "tool-part", part };

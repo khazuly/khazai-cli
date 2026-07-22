@@ -217,10 +217,22 @@ export class ToolExecutor {
           metadata: {},
         };
       } else {
-        const execution = Promise.resolve(tool.execute(call.args, { ...context, args: call.args }));
+        const executionController = new AbortController();
+        const timeoutMs = Math.max(250, Number(tool.timeoutMs) || this.timeoutMs);
+        const abortExecution = () => executionController.abort();
+        this.signal?.addEventListener("abort", abortExecution, { once: true });
+        const execution = Promise.resolve(tool.execute(call.args, {
+          ...context,
+          args: call.args,
+          abortSignal: executionController.signal,
+          signal: executionController.signal,
+        }));
         let timeout;
         const bounded = new Promise((resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error(`Tool timed out after ${this.timeoutMs}ms.`)), this.timeoutMs);
+          timeout = setTimeout(() => {
+            executionController.abort();
+            reject(new Error(`Tool timed out after ${timeoutMs}ms.`));
+          }, timeoutMs);
           if (this.signal?.aborted) reject(new Error("Tool execution aborted."));
           else this.signal?.addEventListener("abort", () => reject(new Error("Tool execution aborted.")), { once: true });
           execution.then(resolve, reject);
@@ -229,6 +241,7 @@ export class ToolExecutor {
           raw = await bounded;
         } finally {
           clearTimeout(timeout);
+          this.signal?.removeEventListener("abort", abortExecution);
         }
       }
       let output = normalizeToolOutput(raw, call.name);
@@ -265,18 +278,32 @@ export class ToolExecutor {
   }
 
   async *executeBatch(inputs, extraContext = {}, concurrency = 4) {
-    const results = [];
-    const collect = async input => {
-      const events = [];
-      for await (const event of this.execute(input, extraContext)) events.push(event);
-      return events;
-    };
     const limit = Math.max(1, Math.min(8, Number(concurrency) || 4));
     for (let index = 0; index < inputs.length; index += limit) {
-      results.push(...await Promise.all(inputs.slice(index, index + limit).map(collect)));
-    }
-    for (const events of results) {
-      for (const event of events) yield event;
+      const events = [];
+      let wake = null;
+      let remaining = Math.min(limit, inputs.length - index);
+      const push = event => {
+        events.push(event);
+        const resolve = wake;
+        wake = null;
+        resolve?.();
+      };
+      const workers = inputs.slice(index, index + limit).map(async input => {
+        try {
+          for await (const event of this.execute(input, extraContext)) push(event);
+        } finally {
+          remaining--;
+          const resolve = wake;
+          wake = null;
+          resolve?.();
+        }
+      });
+      while (remaining > 0 || events.length > 0) {
+        if (events.length === 0) await new Promise(resolve => { wake = resolve; });
+        while (events.length > 0) yield events.shift();
+      }
+      await Promise.all(workers);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { createElement as h } from "react";
 import { useState, useRef, useCallback } from "react";
-import { Box, Static, useStdout } from "ink";
+import { Box, Static } from "ink";
+import stringWidth from "string-width";
 import { resolve } from "node:path";
 import { Agent } from "../app/agent.js";
 import { validationCommand } from "../app/execution-policy.js";
@@ -53,19 +54,33 @@ export function streamViewportText(text, columns, maximumRows) {
   const rowLimit = Math.max(1, Math.trunc(Number(maximumRows) || 1));
   const physicalRows = [];
   for (const line of source.split("\n")) {
-    const characters = Array.from(line);
-    if (characters.length === 0) {
+    if (!line) {
       physicalRows.push("");
       continue;
     }
-    for (let offset = 0; offset < characters.length; offset += width) {
-      physicalRows.push(characters.slice(offset, offset + width).join(""));
+    let row = "";
+    let rowWidth = 0;
+    for (const character of Array.from(line)) {
+      const characterWidth = stringWidth(character);
+      if (row && rowWidth + characterWidth > width) {
+        physicalRows.push(row);
+        row = "";
+        rowWidth = 0;
+      }
+      row += character;
+      rowWidth += characterWidth;
     }
+    physicalRows.push(row);
   }
-  if (physicalRows.length <= rowLimit) return source;
+  if (physicalRows.length <= rowLimit) return physicalRows.join("\n");
   if (rowLimit === 1) {
     const tail = physicalRows.at(-1) || "";
-    return `… ${tail}`.slice(0, width);
+    let visible = "… ";
+    for (const character of Array.from(tail)) {
+      if (stringWidth(visible) + stringWidth(character) > width) break;
+      visible += character;
+    }
+    return visible;
   }
   return ["…", ...physicalRows.slice(-(rowLimit - 1))].join("\n");
 }
@@ -89,7 +104,6 @@ export function formatInteractiveQuestion(question, options = []) {
 }
 
 export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) {
-  const { stdout } = useStdout();
   const initialConfig = useRef(loadConfig());
   const sessionStoreRef = useRef(null);
   const currentSessionRef = useRef(null);
@@ -177,6 +191,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setPlan([]);
     setExpandedTool(null);
     setCurrentModel(session.model);
+    structuredCallsRef.current.clear();
     setSessionKey(key => key + 1);
   }, [workspace.path]);
 
@@ -447,10 +462,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
 
   const submit = useCallback(async (input) => {
-    // React state updates are asynchronous; the ref closes the gap before the
-    // disabled prop is rendered and prevents two loops mutating one Agent.
     if (!input.trim() || submittingRef.current) return;
     setExpandedTool(null);
+    structuredCallsRef.current.clear();
     submittingRef.current = true;
     const startedAt = Date.now();
     setRunning(true);
@@ -547,7 +561,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "plan") {
         discardStreaming();
         clearActive();
-        setPlan(ev.items.map(item => ({ ...item, status: "pending" })));
+        setPlan(ev.items.map(item => ({ ...item, status: item.status || "pending" })));
         continue;
       }
 
@@ -723,9 +737,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     } catch (error) {
       completeStreaming();
       clearActive();
-      // Agent recovery is represented by internal steering and persisted task
-      // state. Do not turn an unexpected loop exception into a user-facing
-      // failure card; the next continuation resumes the pending task.
+      const content = removeAssistantProtocolText(redactSecrets(error?.message || String(error))).trim();
+      if (content) appendArchived({ id: nextId(), type: "error", content: `Unexpected error: ${content}` });
     } finally {
       agentSessionRef.current = agent.exportSessionState?.() || null;
       completeStreaming();
@@ -782,6 +795,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setActiveMessage(null);
     setPlan([]);
     setExpandedTool(null);
+    structuredCallsRef.current.clear();
     setSessionKey(key => key + 1);
   }, []);
 
@@ -789,20 +803,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     { id: `banner-${sessionKey}`, type: "banner" },
     ...completedMessages,
   ];
-  const terminalColumns = Math.max(12, Number(stdout?.columns) || 80);
-  const terminalRows = Math.max(8, Number(stdout?.actualRows || stdout?.rows) || 24);
-  const planFinished = plan.length > 0
-    && plan.every(item => ["done", "failed", "skipped"].includes(item.status));
-  const visiblePlan = activeMessage?.type === "streaming" && planFinished ? [] : plan;
-  const reservedRows = 9 + (visiblePlan.length ? visiblePlan.length + 3 : 0);
-  const streamingRows = Math.max(1, terminalRows - reservedRows);
-  const displayedActiveMessage = activeMessage?.type === "streaming"
-    ? {
-        ...activeMessage,
-        content: streamViewportText(activeMessage.content, terminalColumns, streamingRows),
-      }
-    : activeMessage;
-  const showWorking = running && activeMessage?.type !== "streaming";
+  const visiblePlan = plan;
+  const displayedActiveMessage = activeMessage?.type === "streaming" ? null : activeMessage;
+  const showWorking = running;
 
   return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {

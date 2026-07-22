@@ -111,8 +111,11 @@ export class StateMethods {
   }
 
   _rememberToolOutcome(tool, result) {
-    if (resultFailed(result)) return;
     const signature = toolSignature(tool, this._workspace);
+    const failed = resultFailed(result);
+    this._toolCallHistory.push({ signature, failed });
+    if (this._toolCallHistory.length > 24) this._toolCallHistory.shift();
+    if (failed) return;
     if (IDEMPOTENT_MUTATION_TOOLS.has(tool.name)) {
       this._invalidateInspectionCache();
       this._completedToolResults.set(signature, String(result));
@@ -123,6 +126,11 @@ export class StateMethods {
   }
 
   _toolLoopRecovery(tool) {
+    const signature = toolSignature(tool, this._workspace);
+    const repeatedFailures = this._toolCallHistory
+      .filter(entry => entry.signature === signature && entry.failed)
+      .length;
+    if (repeatedFailures >= 2) return { exhausted: true };
     return null;
   }
 

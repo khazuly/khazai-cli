@@ -12,7 +12,7 @@ function readOnlyRegistry() {
   return registry;
 }
 
-async function runTask(task, workspace, permissionService) {
+async function runTask(task, workspace, permissionService, signal) {
   const profile = getAgentProfile(workspace, task.agent || "explore");
   const subagent = new Agent(readOnlyRegistry(), {
     workspace,
@@ -20,7 +20,7 @@ async function runTask(task, workspace, permissionService) {
     permissionService,
   });
   let result = "";
-  for await (const event of subagent.loop(String(task.prompt || task.description || ""))) {
+  for await (const event of subagent.loop(String(task.prompt || task.description || ""), signal)) {
     if (event.type === "answer") result = event.content;
     else if (event.type === "stream") result += event.token;
   }
@@ -41,6 +41,7 @@ async function pool(tasks, concurrency, worker) {
 
 export const taskTool = {
   name: "task",
+  timeoutMs: 300_000,
   description: "Delegate one or more independent read-only investigations to safe subagents.",
   parameters: {
     type: "object",
@@ -55,7 +56,7 @@ export const taskTool = {
     const workspace = _agentWorkspace || process.cwd();
     const work = Array.isArray(tasks) && tasks.length ? tasks : [{ description, prompt, agent }];
     const concurrency = Math.max(1, Math.min(8, Number(loadConfig().subagentConcurrency) || 3));
-    const results = await pool(work, concurrency, task => runTask(task, workspace, context.permissionService));
+    const results = await pool(work, concurrency, task => runTask(task, workspace, context.permissionService, context.signal));
     return results.join("\n\n");
   },
 };

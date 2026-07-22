@@ -3,7 +3,7 @@ import { Box, render, Text } from "ink";
 import { useEffect, useState } from "react";
 import { TrustPrompt } from "./components/trust-prompt.js";
 import { Session } from "./session.js";
-import { createScrollbackOutput, prepareScrollableTerminal } from "./scrollback-output.js";
+import { prepareScrollableTerminal } from "./scrollback-output.js";
 import { getWorkspace, markTrusted } from "../config/workspace.js";
 import { shutdownAllLsp } from "../app/lsp.js";
 import { getMcpManager, shutdownAllMcp } from "../app/mcp.js";
@@ -50,9 +50,8 @@ function App() {
 
 export async function startUI() {
   prepareScrollableTerminal(process.stdout);
-  const stdout = createScrollbackOutput(process.stdout);
   try {
-    await render(h(App), { stdout }).waitUntilExit();
+    await render(h(App), { stdout: process.stdout }).waitUntilExit();
   } finally {
     await Promise.all([shutdownAllLsp(), shutdownAllMcp(), shutdownWebSearch()]);
   }
