@@ -34,6 +34,7 @@ export const COMMANDS = [
   { name: "/model", description: "Change the active model", group: "view", sub: MODELS },
   { name: "/models", description: "Select a configured model", group: "view" },
   { name: "/theme", description: "Change the interface theme", group: "view", sub: THEMES },
+  { name: "/reasoning", description: "Set Codex reasoning effort", group: "view" },
   { name: "/details", description: "Toggle tool result details", group: "view" },
   { name: "/expand", description: "Expand the latest tool result", group: "view" },
   { name: "/collapse", description: "Collapse tool details", group: "view" },

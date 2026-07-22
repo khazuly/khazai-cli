@@ -589,6 +589,28 @@ test("interactive options use keyboard selection instead of free-text input", as
   stdin.destroy();
 });
 
+test("interactive option lists close with Escape", async () => {
+  const stdout = new TerminalOutput(50, 14);
+  const stdin = new TerminalInput();
+  let cancelled = 0;
+  const instance = render(h(PromptInput, {
+    onSubmit() {}, onCommand() {}, commands: [], disabled: false,
+    questionOptions: ["Session one", "Session two"],
+    onCancelOption: () => { cancelled++; },
+  }), {
+    stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false,
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 30));
+  stdin.push("\u001b");
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  assert.equal(cancelled, 1);
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
 test("long pasted prompts are compressed without changing submitted content", async () => {
   const stdout = new TerminalOutput(60, 18);
   const stdin = new TerminalInput();

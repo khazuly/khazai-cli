@@ -258,10 +258,8 @@ export class StateMethods {
       "",
     ].join("\n");
 
-    const parts = [
-      getProviderPrompt(this._model, this._workspace, instructionBlock),
-      envInfo,
-    ];
+    const parts = [getProviderPrompt(descriptor.exactID), envInfo];
+    if (instructionBlock) parts.push(instructionBlock, "");
     if (this._agentProfile?.instructions) {
       parts.push("ACTIVE AGENT PROFILE:", this._agentProfile.instructions, "");
     }

@@ -12,8 +12,9 @@ import { builtinTools } from "../app/builtin-tools.js";
 import { loadAgentProfiles } from "../app/agent-profiles.js";
 import { listSkills } from "../app/skills.js";
 import { lspStatus } from "../app/lsp.js";
-import { configuredModels, loadConfig, saveModel, saveProvider, saveTheme } from "../config/index.js";
+import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveTheme } from "../config/index.js";
 import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
+import { loginCodex } from "../lib/codex-auth.js";
 import { listModels } from "../lib/llm.js";
 import { COMMANDS, formatCommandHelp } from "./commands.js";
 import { Banner } from "./components/banner.js";
@@ -239,27 +240,63 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       await chooseModel(arg);
       return;
     }
+    if (cmd === "/reasoning") {
+      if (!String(currentModel).startsWith("codex/")) {
+        appendArchived({ id: nextId(), type: "error", content: "Reasoning selection is available only for Codex models." });
+        return;
+      }
+      const effort = arg || await requestValue("Select Codex reasoning effort", ["low", "medium", "high", "xhigh"]);
+      if (!effort) return;
+      const value = saveReasoningEffort(effort);
+      agentRef.current?.setReasoningEffort(value);
+      appendArchived({ id: nextId(), type: "answer", content: `Codex reasoning set to ${value}.` });
+      return;
+    }
     if (cmd === "/connect") {
       try {
-        const provider = arg || await requestValue("Provider ID");
+        const provider = String(arg || await requestValue(
+          "Select a provider",
+          ["Codex · ChatGPT OAuth", "Custom OpenAI-compatible"],
+          { values: [{ label: "Codex · ChatGPT OAuth", value: "codex" }, { label: "Custom OpenAI-compatible", value: "custom" }] },
+        )).toLowerCase();
         if (!provider) return;
+        if (provider === "codex") {
+          await loginCodex({
+            onAuthorize: url => appendArchived({
+              id: nextId(),
+              type: "answer",
+              content: `Open this URL to connect Codex:\n${url}`,
+            }),
+          });
+          const models = await listModels("codex");
+          if (models.length === 0) throw new Error("Codex did not return any models for this account.");
+          saveProvider("codex", { type: "codex-responses", models });
+          const selected = await requestValue("Select a Codex model", models, {
+            values: models.map(model => ({ label: model, value: model })),
+          });
+          if (selected) await chooseModel(`codex/${selected}`);
+          return;
+        }
+        if (provider !== "custom") throw new Error(`Unknown provider "${provider}".`);
+        const customID = await requestValue("Provider ID");
+        if (!customID) return;
         const baseURL = await requestValue("OpenAI-compatible base URL");
         if (!/^https?:\/\//i.test(baseURL)) throw new Error("The provider base URL must use HTTP or HTTPS.");
-        const env = `${provider.replace(/[^a-z0-9]/gi, "_").toUpperCase()}_API_KEY`;
+        const env = `${customID.replace(/[^a-z0-9]/gi, "_").toUpperCase()}_API_KEY`;
         const apiKey = await requestValue("API key", [], { secret: true });
-        saveProvider(provider, { type: "openai-compatible", baseURL, env: env || undefined, models: [] });
-        if (apiKey) saveProviderCredential(provider, apiKey);
+        saveProvider(customID, { type: "openai-compatible", baseURL, env: env || undefined, models: [] });
+        if (apiKey) saveProviderCredential(customID, apiKey);
         let models = [];
-        try { models = await listModels(provider); } catch {}
+        try { models = await listModels(customID); } catch {}
         if (models.length === 0) {
           const manual = await requestValue("Model ID");
           if (manual) models = [manual];
         }
-        saveProvider(provider, { type: "openai-compatible", baseURL, env: env || undefined, models });
+        saveProvider(customID, { type: "openai-compatible", baseURL, env: env || undefined, models });
         appendArchived({
           id: nextId(),
           type: "answer",
-          content: `Connected provider ${provider}${models.length ? ` with ${models.length} model${models.length === 1 ? "" : "s"}` : ""}.`,
+          content: `Connected provider ${customID}${models.length ? ` with ${models.length} model${models.length === 1 ? "" : "s"}` : ""}.`,
         });
       } catch (error) {
         appendArchived({ id: nextId(), type: "error", content: error.message });
@@ -286,6 +323,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         value: session.id,
       }));
       const id = arg || await requestValue("Select a session", values.map(entry => entry.label), { values });
+      if (!id) return;
       try { loadStoredSession(sessionStoreRef.current.load(id)); }
       catch { appendArchived({ id: nextId(), type: "error", content: `Session "${id}" was not found.` }); }
       return;
@@ -787,6 +825,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     resolve(value);
   }, [appendArchived, pendingQuestion]);
 
+  const cancelQuestion = useCallback(() => {
+    const resolve = questionResolverRef.current;
+    if (!resolve) return;
+    questionResolverRef.current = null;
+    setPendingQuestion(null);
+    resolve("");
+  }, []);
+
   const clearDisplay = useCallback(() => {
     process.stdout.write("\u001b[2J\u001b[H");
     completedRef.current = [];
@@ -846,6 +892,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           activeModel: currentModel,
           questionOptions: pendingQuestion?.options || [],
           onSelectOption: answerQuestion,
+          onCancelOption: cancelQuestion,
           secret: Boolean(pendingQuestion?.secret),
           fileItems: workspaceFiles,
         },

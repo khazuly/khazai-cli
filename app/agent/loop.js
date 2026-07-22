@@ -133,6 +133,7 @@ export class LoopMethods {
           onEvent,
           signal,
           timeoutMs: this._config.providerTimeout,
+          reasoningEffort: this._config.reasoningEffort,
           tools: nativeTools,
         })
           .then(result => {
@@ -241,6 +242,20 @@ export class LoopMethods {
       this._transportFailures = 0;
 
       if (!reply || !reply.trim() || reply.trim() === "{}" || reply.trim() === "[]") {
+        this._emptyResponses++;
+        if (this._emptyResponses < 3) {
+          if (streamStarted && streamMode === "text") yield { type: "stream-discard" };
+          this._debugToolRecovery("empty_response", "Provider returned no usable content.");
+          for (const lifecyclePart of this._lifecycle.finishStep("error")) {
+            yield { type: "tool-part", part: lifecyclePart };
+          }
+          try {
+            await this._resetSession({ signal });
+            continue;
+          } catch (resetError) {
+            this._debugToolRecovery("empty_response_reset", resetError?.message || String(resetError));
+          }
+        }
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
           yield { type: "tool-part", part: lifecyclePart };
         }

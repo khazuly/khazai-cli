@@ -16,7 +16,11 @@ test("Big Cock remains the default and legacy model shortcuts migrate safely", (
   ]);
   assert.deepEqual(COMMANDS.find(command => command.name === "/model")?.sub, MODELS);
   assert.equal(COMMANDS.some(command => command.name === "/think"), false);
-  assert.deepEqual(MODEL_LABELS, { "big-cock": "Big Cock", "auto-free": "Auto (free)" });
+  assert.equal(COMMANDS.some(command => command.name === "/reasoning"), true);
+  assert.deepEqual(MODEL_LABELS, {
+    "big-cock": "Big Cock",
+    "auto-free": "Auto (free)",
+  });
 });
 
 test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
@@ -62,9 +66,21 @@ test("Auto free resolves to the configured gateway without a user-facing provide
   });
 });
 
+test("Codex models resolve to the OAuth Responses provider", () => {
+  assert.deepEqual(resolveModelDescriptor("codex/gpt-5.4"), {
+    requested: "codex/gpt-5.4",
+    providerID: "codex",
+    modelID: "gpt-5.4",
+    exactID: "codex/gpt-5.4",
+    definition: { protocol: "codex-responses" },
+  });
+});
+
 test("default transport sends Big Cock's provider model and rejects unqualified unknown models", async () => {
   const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENCODE_API_KEY;
   const requests = [];
+  process.env.OPENCODE_API_KEY = "opencode-test-key";
   globalThis.fetch = async (_url, options) => {
     requests.push(JSON.parse(options.body));
     return {
@@ -87,6 +103,8 @@ test("default transport sends Big Cock's provider model and rejects unqualified 
     assert.equal(requests.length, 1);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalKey;
   }
 });
 
@@ -123,8 +141,42 @@ test("Auto Free retries anonymously when an authenticated BYOK route fails", asy
   }
 });
 
+test("Big Cock retries a transient provider error without changing models", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENCODE_API_KEY;
+  const requests = [];
+  process.env.OPENCODE_API_KEY = "opencode-test-key";
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length < 3) {
+      return {
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        async text() { return '{"error":"temporary"}'; },
+      };
+    }
+    return {
+      ok: true,
+      headers: { get: () => "application/json" },
+      async json() { return { choices: [{ message: { content: "recovered" } }] }; },
+    };
+  };
+  try {
+    assert.equal(await chat([{ role: "user", content: "test" }], { model: "big-cock" }), "recovered");
+    assert.equal(requests.length, 3);
+    assert.ok(requests.every(request => request.model === "big-pickle"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalKey;
+  }
+});
+
 test("transport consumes fragmented SSE incrementally without leaking provider identity", async () => {
   const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENCODE_API_KEY;
+  process.env.OPENCODE_API_KEY = "opencode-test-key";
   const encoder = new TextEncoder();
   const response = "Hello! I'm MiMo, a large language model developed by the Xiaomi LLM Core Team. "
     + "I can help inspect files, explain code, implement changes, and run validation for your project.";
@@ -168,11 +220,15 @@ test("transport consumes fragmented SSE incrementally without leaking provider i
     assert.doesNotMatch(result, /MiMo|Xiaomi/i);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalKey;
   }
 });
 
 test("typed provider stream emits sanitized text and finish events without compatibility duplicates", async () => {
   const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENCODE_API_KEY;
+  process.env.OPENCODE_API_KEY = "opencode-test-key";
   const encoder = new TextEncoder();
   const response = "Hello from MiMo, developed by the Xiaomi LLM Core Team. This text is long enough to stream safely.";
   const payload = [
@@ -205,5 +261,7 @@ test("typed provider stream emits sanitized text and finish events without compa
     assert.doesNotMatch(result, /MiMo|Xiaomi/i);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalKey;
   }
 });

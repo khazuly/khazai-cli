@@ -71,6 +71,16 @@ export function saveModel(model) {
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
 }
 
+export function saveReasoningEffort(effort) {
+  const value = String(effort || "").toLowerCase();
+  if (!["low", "medium", "high", "xhigh"].includes(value)) throw new Error(`Unknown reasoning effort "${effort}".`);
+  const config = loadJSON(CONFIG_PATH) || {};
+  config.reasoningEffort = value;
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  return value;
+}
+
 export function saveTheme(theme) {
   const value = String(theme || "").toLowerCase();
   if (!["system", "dark", "light", "mono"].includes(value)) {

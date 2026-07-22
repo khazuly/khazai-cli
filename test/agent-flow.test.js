@@ -73,6 +73,25 @@ test("normal model prose remains streamed", async () => {
   assert.equal(visible.join(""), response);
 });
 
+test("empty provider responses are retried before surfacing an error", async () => {
+  let calls = 0;
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-empty-response-")),
+    intentResolver: intent(),
+    chat: async (_messages, options) => {
+      calls++;
+      if (calls === 1) return "";
+      options.onToken?.("Recovered response.");
+      return "Recovered response.";
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("answer this")) events.push(event);
+  assert.equal(calls, 2);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /Recovered response/);
+});
+
 test("provider timeout is configurable per workspace", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-provider-timeout-"));
   writeFileSync(join(workspace, ".khazai-ai.json"), JSON.stringify({ providerTimeout: 180_000 }));

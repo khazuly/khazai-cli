@@ -110,6 +110,7 @@ export class Agent {
 
   abort() { this._aborted = true; this._abortController?.abort(); }
   setModel(model) { this._model = model; this._systemCache = null; }
+  setReasoningEffort(effort) { this._config.reasoningEffort = effort; }
   setQuestionHandler(handler) { this._questionHandler = handler; }
   setPermissionHandler(handler) { this._permissionHandler = handler; }
   setAutoApprove(value) { this._permissionService.setAuto(value); }

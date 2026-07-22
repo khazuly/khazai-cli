@@ -10,6 +10,7 @@ export const DEFAULTS = {
   toolConcurrency: 4,
   toolTimeout: 60000,
   providerTimeout: 300000,
+  reasoningEffort: "medium",
   permission: {},
   lsp: false,
   defaultAgent: "build",

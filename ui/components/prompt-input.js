@@ -35,6 +35,7 @@ export function PromptInput({
   activeModel,
   questionOptions = [],
   onSelectOption,
+  onCancelOption,
   secret = false,
   fileItems = [],
 }) {
@@ -159,6 +160,8 @@ export function PromptInput({
       } else if (/^[1-9]$/.test(ch)) {
         const index = Number(ch) - 1;
         if (index < questionOptions.length) onSelectOption?.(questionOptions[index]);
+      } else if (ch === "\u001b" || key.escape) {
+        onCancelOption?.();
       }
       return;
     }
@@ -360,7 +363,7 @@ export function PromptInput({
         wrap: "truncate-end",
         width: optionWidth,
       }, index === optionIdx ? "> " : "  ", `${index + 1}. ${option}`)),
-      h(Text, { dimColor: true, wrap: "truncate-end", width: optionWidth }, "↑↓ select · Enter confirm · 1-9 quick select"),
+      h(Text, { dimColor: true, wrap: "truncate-end", width: optionWidth }, "↑↓ select · Enter confirm · 1-9 quick select · Esc cancel"),
     );
   }
 

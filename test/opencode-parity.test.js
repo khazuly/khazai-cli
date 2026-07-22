@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSyn
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getProviderCredential, saveProviderCredential } from "../lib/auth.js";
+import { getOpenCodeCredential, getProviderCredential, saveProviderCredential } from "../lib/auth.js";
 import { OpenAICompatibleProvider } from "../lib/providers.js";
 import { PermissionService } from "../app/permission.js";
 import { SessionStore, migrateSessionV2 } from "../app/session-store.js";
@@ -22,6 +22,13 @@ test("provider credentials use mode 0600 and environment variables take preceden
   } finally {
     delete process.env.KHAZAI_TEST_KEY;
   }
+});
+
+test("Big Cock reuses the OpenCode Zen credential when it exists", () => {
+  const root = mkdtempSync(join(tmpdir(), "khazai-opencode-auth-"));
+  const path = join(root, "auth.json");
+  writeFileSync(path, JSON.stringify({ opencode: { type: "api", key: "zen-key" } }));
+  assert.equal(getOpenCodeCredential(path), "zen-key");
 });
 
 test("session lists only include sessions from the current workspace", () => {

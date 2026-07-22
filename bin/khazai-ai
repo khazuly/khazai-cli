@@ -24,7 +24,16 @@ Usage:
   khazai-ai --session ID "prompt"   Continue a specific session
   khazai-ai --fork ID "prompt"      Fork a session before running
   khazai-ai run --auto "prompt"     Auto-approve permission prompts
+  khazai-ai auth login codex         Sign in with ChatGPT for Codex models
 `);
+  process.exit(0);
+}
+
+if (rawArgs[0] === "auth" && rawArgs[1] === "login" && rawArgs[2] === "codex") {
+  const { loginCodex } = await import("../lib/codex-auth.js");
+  console.log("Opening ChatGPT authorization in your browser…");
+  await loginCodex({ onAuthorize: url => console.log(`Open this URL if the browser does not open:\n${url}`) });
+  console.log("Codex connected. Use --model codex/gpt-5.4.");
   process.exit(0);
 }
 
