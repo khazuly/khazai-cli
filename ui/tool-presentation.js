@@ -1,6 +1,4 @@
 import { normalizeVerticalWhitespace } from "./text-layout.js";
-import { PASTEL } from "./palette.js";
-
 export const TOOL_LABELS = {
   web: "Shell",
   webfetch: "Fetch",
@@ -18,26 +16,26 @@ export const TOOL_LABELS = {
 };
 
 export const TOOL_ACCENTS = {
-  web: PASTEL.blue,
-  webfetch: PASTEL.blue,
-  websearch: PASTEL.lavender,
-  repo: PASTEL.sage,
-  read: "#8297a6",
-  write: PASTEL.violet,
-  edit: PASTEL.mauve,
-  apply_patch: PASTEL.mauve,
-  bash: "#b09572",
-  analyze: "#8b86a8",
-  task: "#9385a5",
-  glob: "#7f96aa",
-  grep: "#9b819d",
+  web: "toolRead",
+  webfetch: "toolRead",
+  websearch: "toolSearch",
+  repo: "toolRepo",
+  read: "toolRead",
+  write: "toolWrite",
+  edit: "toolWrite",
+  apply_patch: "toolWrite",
+  bash: "toolShell",
+  analyze: "toolThink",
+  task: "toolThink",
+  glob: "toolSearch",
+  grep: "toolSearch",
 };
 
 export const TOOL_STATE_COLORS = {
-  running: "#8c839f",
-  success: PASTEL.slate,
-  warning: PASTEL.amber,
-  failed: PASTEL.rose,
+  running: "info",
+  success: "success",
+  warning: "warning",
+  failed: "error",
 };
 
 export function formatDuration(ms) {
@@ -207,13 +205,17 @@ export function presentTool({ tool, args = {}, content = "", done = false, durat
 
   return {
     label: TOOL_LABELS[tool] || tool.charAt(0).toUpperCase() + tool.slice(1),
-    accent: TOOL_ACCENTS[tool] || "#89929d",
+    accentRole: TOOL_ACCENTS[tool] || "toolRead",
+    stateRole: TOOL_STATE_COLORS[state],
     state,
     statusLabel: state === "success" ? "completed" : state,
     duration: done ? formatDuration(duration) : null,
+    target: toolTarget(tool, args),
     summary: toolSummary(tool, args, state),
     metadata: metadata.filter(Boolean),
     details: tool === "bash" && args.command ? [`Command  ${args.command}`] : [],
+    marker: state === "success" ? "✓" : state === "failed" ? "×" : state === "warning" ? "!" : "•",
+    monoMarker: state === "success" ? "[ok]" : state === "failed" ? "[error]" : state === "warning" ? "[warning]" : "[running]",
     preview,
     searchResults,
     collapsible: Boolean(searchResults?.hidden || preview.hiddenLines || preview.hiddenChars),

@@ -122,7 +122,6 @@ export class ToolExecutor {
     yield { type: "tool-part", part: { ...part, state: { ...part.state } } };
     this.lifecycle.running(part, call.args);
     yield { type: "tool-part", part: { ...part } };
-    yield { type: "tool-call", tool: call.name, args: call.args, callId: call.id };
 
     const invalid = schemaError(tool, call.args);
     if (invalid) {

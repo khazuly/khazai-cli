@@ -402,6 +402,7 @@ export class LoopMethods {
         }
         continue;
       }
+      yield { type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id };
       this._messages.push({
         role: "assistant",
         content: null,

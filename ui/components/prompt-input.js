@@ -3,6 +3,7 @@ import { Text, Box, useInput, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { PANEL_SPACE } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
+import { Panel } from "./surface.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
 
 const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
@@ -434,12 +435,11 @@ export function PromptInput({
 
   return h(Box, { flexDirection: "column", width: "100%" },
     fileDropdown || cmdDropdown,
-    h(Box, {
+    h(Panel, {
       flexDirection: "column",
       width: panelWidth,
       backgroundColor: disabled ? theme.panel : undefined,
-      borderStyle: "round",
-      borderColor: disabled ? theme.border : theme.primary,
+      tone: disabled ? "border" : "primary",
       paddingX: 1,
     },
       h(Box, { flexDirection: "row" },

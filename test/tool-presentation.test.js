@@ -6,24 +6,23 @@ import {
   TOOL_ACCENTS,
   TOOL_STATE_COLORS,
 } from "../ui/tool-presentation.js";
-import { PASTEL } from "../ui/palette.js";
+import { THEMES } from "../ui/theme.js";
 
-test("tool palette is varied, muted, and avoids bright semantic colors", () => {
-  assert.ok(new Set(Object.values(TOOL_ACCENTS)).size >= 8);
+test("tool presentation uses semantic theme roles", () => {
+  assert.ok(new Set(Object.values(TOOL_ACCENTS)).size >= 6);
   assert.notEqual(TOOL_ACCENTS.web, TOOL_ACCENTS.websearch);
-  assert.notEqual(TOOL_ACCENTS.write, TOOL_ACCENTS.edit);
-  for (const color of [...Object.values(TOOL_ACCENTS), ...Object.values(TOOL_STATE_COLORS)]) {
-    assert.match(color, /^#[0-9a-f]{6}$/i);
-    assert.doesNotMatch(color, /^(?:#00ffff|#00ff00|#ffff00|#00bfff)$/i);
+  assert.notEqual(TOOL_ACCENTS.read, TOOL_ACCENTS.write);
+  for (const role of [...Object.values(TOOL_ACCENTS), ...Object.values(TOOL_STATE_COLORS)]) {
+    assert.ok(role in THEMES.dark, `missing dark token ${role}`);
+    assert.ok(role in THEMES.light, `missing light token ${role}`);
+    assert.equal(THEMES.mono[role], undefined);
   }
 });
 
-test("tool evidence uses a lower-contrast tier than assistant answers", () => {
-  assert.notEqual(PASTEL.assistant, PASTEL.toolResult);
-  assert.notEqual(PASTEL.toolResult, PASTEL.metadata);
-  assert.equal(PASTEL.assistant, "#c9d1d9");
-  assert.equal(PASTEL.toolResult, "#929ba6");
-  assert.equal(PASTEL.metadata, "#707985");
+test("theme keeps assistant content brighter than tool evidence", () => {
+  assert.notEqual(THEMES.dark.assistant, THEMES.dark.toolResult);
+  assert.notEqual(THEMES.dark.toolResult, THEMES.dark.metadata);
+  assert.notEqual(THEMES.light.assistant, THEMES.light.toolResult);
 });
 
 test("tool presentation exposes text labels and states without decorative icons", () => {
@@ -34,6 +33,8 @@ test("tool presentation exposes text labels and states without decorative icons"
   const timedOut = presentTool({ tool: "task", content: "Tool timed out after 60000ms.", done: true });
 
   assert.deepEqual([running.label, running.state], ["Shell", "running"]);
+  assert.equal(running.accentRole, "toolRead");
+  assert.equal(running.stateRole, "info");
   assert.deepEqual([success.label, success.state, success.statusLabel, success.duration], ["Read", "success", "completed", "618 ms"]);
   assert.deepEqual([warning.label, warning.state], ["Shell", "warning"]);
   assert.deepEqual([failed.label, failed.state], ["Shell", "failed"]);

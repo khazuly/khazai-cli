@@ -1,3 +1,5 @@
+import { SYNTAX_THEMES } from "./syntax-theme.js";
+
 const MODELS = [
   { name: "big-cock", description: "Big Cock (default)" },
   { name: "auto-free", description: "Auto (free)" },
@@ -9,6 +11,7 @@ const THEMES = [
   { name: "light", description: "Light theme" },
   { name: "mono", description: "Monochrome (no colors)" },
 ];
+const SYNTAX_THEME_COMMANDS = SYNTAX_THEMES.map(([name, description]) => ({ name, description }));
 
 export const COMMAND_GROUPS = [
   { id: "session", label: "Session" },
@@ -34,6 +37,7 @@ export const COMMANDS = [
   { name: "/model", description: "Change the active model", group: "view", sub: MODELS },
   { name: "/models", description: "Select a configured model", group: "view" },
   { name: "/theme", description: "Change the interface theme", group: "view", sub: THEMES },
+  { name: "/syntax-theme", description: "Change the code syntax theme", group: "view", sub: SYNTAX_THEME_COMMANDS },
   { name: "/reasoning", description: "Set Codex reasoning effort", group: "view" },
   { name: "/details", description: "Toggle tool result details", group: "view" },
   { name: "/expand", description: "Expand the latest tool result", group: "view" },

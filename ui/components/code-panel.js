@@ -1,25 +1,8 @@
 import { createElement as h } from "react";
 import { Box, Text, useStdout } from "ink";
 import stringWidth from "string-width";
-import { highlightLine } from "../../lib/syntax-highlighter.js";
+import { highlightBlock } from "../../lib/syntax-highlighter.js";
 import { useTheme } from "../theme.js";
-
-export const GITHUB_DARK = {
-  text: "#c9d1d9",
-  muted: "#8b949e",
-  comment: "#8b949e",
-  keyword: "#ff7b72",
-  type: "#ffa657",
-  function: "#d2a8ff",
-  string: "#a5d6ff",
-  number: "#79c0ff",
-  property: "#79c0ff",
-  operator: "#ff7b72",
-  tag: "#7ee787",
-  added: "#7ee787",
-  deleted: "#ffa198",
-  hunk: "#79c0ff",
-};
 
 function fit(value, width) {
   const source = String(value || "");
@@ -76,14 +59,16 @@ function codeGutter(row, gutterWidth, diffGutter) {
   return `${oldLine.padStart(gutterWidth)} ${newLine.padStart(gutterWidth)}`;
 }
 
-function CodeRow({ row, language, gutterWidth, codeWidth, colors, colorEnabled, diffGutter }) {
+function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, diffGutter }) {
   if (!["context", "add", "delete"].includes(row.type)) {
     const text = fit(row.text, gutterWidth + 2 + codeWidth);
     return h(Text, { color: colorForRow(row.type, colors) }, ` ${text}`);
   }
-  const parts = colorEnabled ? highlightLine(row.text, language) : [{ text: row.text, color: "text" }];
-  const visible = truncateParts(parts, codeWidth);
-  return h(Box, null,
+  const visible = truncateParts(parts || [{ text: row.text, color: "text" }], codeWidth);
+  const backgroundColor = colorEnabled && row.type === "add"
+    ? colors.addedBackground
+    : colorEnabled && row.type === "delete" ? colors.deletedBackground : undefined;
+  return h(Box, { backgroundColor },
       h(Text, { color: colors.muted }, `${codeGutter(row, gutterWidth, diffGutter)} `),
       h(Text, { color: colorForRow(row.type, colors) }, `${marker(row.type)} `),
       h(Text, null, ...visible.map((part, partIndex) => h(Text, {
@@ -97,7 +82,7 @@ export function CodePanel({ title, language, rows, maximumRows = 20 }) {
   const { stdout } = useStdout();
   const theme = useTheme();
   const colorEnabled = theme.colorEnabled;
-  const colors = colorEnabled ? GITHUB_DARK : Object.fromEntries(Object.keys(GITHUB_DARK).map(key => [key, undefined]));
+  const colors = colorEnabled ? theme.syntax : {};
   const width = Math.max(16, stdout?.columns || 80);
   const numbered = rowNumbers(rows);
   const visible = numbered.length > maximumRows
@@ -108,13 +93,16 @@ export function CodePanel({ title, language, rows, maximumRows = 20 }) {
   const diffGutter = numbered.some(row => row.type === "add" || row.type === "delete");
   const codeWidth = Math.max(4, width - (diffGutter ? gutterWidth * 2 : gutterWidth) - 4);
   const heading = fit(title, width);
+  const highlightedRows = colorEnabled
+    ? highlightBlock(visible.map(row => row.text).join("\n"), language)
+    : visible.map(row => [{ text: row.text, color: "text" }]);
 
   return h(Box, { flexDirection: "column", width: "100%" },
     h(Text, { bold: true, color: colors.text }, heading),
     h(Box, { flexDirection: "column" }, ...visible.map((row, index) => h(CodeRow, {
       key: `${row.type}-${index}`,
       row,
-      language,
+      parts: highlightedRows[index],
       gutterWidth,
       codeWidth,
       colors,

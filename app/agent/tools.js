@@ -37,6 +37,9 @@ export class ToolMethods {
     }
     if (!normalized.every(tool => PARALLEL_READ_ONLY_TOOLS.has(tool.name))) return false;
     const planTracker = yield* this._startPlanItem();
+    for (const call of normalized) {
+      yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
+    }
     const settled = [];
     const concurrency = Math.min(8, Math.max(1, Number(this._config.toolConcurrency) || 4));
     for await (const event of this._toolExecutor().executeBatch(
@@ -109,6 +112,7 @@ export class ToolMethods {
     });
     let failed = false;
     for (const call of calls) {
+      yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
       const planTracker = call.name === "todowrite" ? null : yield* this._startPlanItem();
       let callFailed = false;
       let completedPart = null;
@@ -270,6 +274,7 @@ export class ToolMethods {
       name: "bash",
       args: { command, workdir: this._workspace },
     };
+    yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
     this._messages.push({
       role: "assistant",
       content: null,

@@ -2,6 +2,7 @@ import { createElement as h } from "react";
 import { Box, Text } from "ink";
 import { presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
+import { StatusRail } from "./surface.js";
 
 function resultColor(state, theme) {
   if (state === "failed") return theme.error;
@@ -14,7 +15,7 @@ function ResultPreview({ presentation, theme }) {
   if (presentation.searchResults) {
     for (const item of presentation.searchResults.items) {
       rows.push(h(Box, { key: `result-${item.index}`, width: "100%", alignItems: "flex-start" },
-        h(Text, { color: presentation.accent, dimColor: true }, `${item.index}. `),
+        h(Text, { color: theme[presentation.accentRole], dimColor: true }, `${item.index}. `),
         h(Box, { flexDirection: "column", flexGrow: 1 },
           h(Text, { color: theme.toolResult, wrap: "wrap" }, item.title),
           item.description
@@ -47,15 +48,19 @@ function ResultPreview({ presentation, theme }) {
 export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false }) {
   const theme = useTheme();
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
-  const accent = theme.colorEnabled ? presentation.accent : undefined;
+  const accent = theme.colorEnabled ? theme[presentation.accentRole] : undefined;
   const stateLabel = presentation.state === "running"
     ? "running"
     : presentation.statusLabel;
 
-  return h(Box, {
-    flexDirection: "column",
+  const tone = presentation.state === "failed" || presentation.state === "warning"
+    ? presentation.stateRole
+    : "muted";
+
+  return h(StatusRail, {
     flexShrink: 0,
     width: "100%",
+    tone,
   },
     h(Text, { bold: true, color: accent, wrap: "wrap" },
       presentation.label,

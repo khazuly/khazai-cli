@@ -418,6 +418,15 @@ export class SessionStore {
     };
   }
 
+  deleteAll() {
+    if (!existsSync(this.directory)) return 0;
+    const files = readdirSync(this.directory).filter(name => name.endsWith(".json"));
+    for (const file of files) {
+      rmSync(join(this.directory, file), { force: true });
+    }
+    return files.length;
+  }
+
   exportMarkdown(session, path) {
     const lines = [`# ${session.title}`, ""];
     for (const message of session.messages || []) {

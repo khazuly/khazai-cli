@@ -1,7 +1,6 @@
 import { createElement as h } from "react";
 import { useState, useRef, useCallback } from "react";
 import { Box, Static } from "ink";
-import stringWidth from "string-width";
 import { resolve } from "node:path";
 import { Agent } from "../app/agent.js";
 import { validationCommand } from "../app/execution-policy.js";
@@ -12,7 +11,7 @@ import { builtinTools } from "../app/builtin-tools.js";
 import { loadAgentProfiles } from "../app/agent-profiles.js";
 import { listSkills } from "../app/skills.js";
 import { lspStatus } from "../app/lsp.js";
-import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveTheme } from "../config/index.js";
+import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveSyntaxTheme, saveTheme } from "../config/index.js";
 import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
 import { loginCodex } from "../lib/codex-auth.js";
 import { listModels } from "../lib/llm.js";
@@ -27,7 +26,9 @@ import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
 import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
+import { SYNTAX_THEMES } from "./syntax-theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
+export { streamViewportText } from "./stream-viewport.js";
 
 const MODEL_LABELS = { "auto-free": "Auto (free)" };
 const displayModel = model => MODEL_LABELS[model] || model;
@@ -47,43 +48,6 @@ export function normalizeStreamText(text) {
 
 export function shouldShowCompletionSummary({ mutatedFiles, failedTools }) {
   return Number(failedTools) > 0 || Number(mutatedFiles?.size || mutatedFiles?.length || 0) > 0;
-}
-
-export function streamViewportText(text, columns, maximumRows) {
-  const source = String(text || "");
-  const width = Math.max(8, Math.trunc(Number(columns) || 80) - 1);
-  const rowLimit = Math.max(1, Math.trunc(Number(maximumRows) || 1));
-  const physicalRows = [];
-  for (const line of source.split("\n")) {
-    if (!line) {
-      physicalRows.push("");
-      continue;
-    }
-    let row = "";
-    let rowWidth = 0;
-    for (const character of Array.from(line)) {
-      const characterWidth = stringWidth(character);
-      if (row && rowWidth + characterWidth > width) {
-        physicalRows.push(row);
-        row = "";
-        rowWidth = 0;
-      }
-      row += character;
-      rowWidth += characterWidth;
-    }
-    physicalRows.push(row);
-  }
-  if (physicalRows.length <= rowLimit) return physicalRows.join("\n");
-  if (rowLimit === 1) {
-    const tail = physicalRows.at(-1) || "";
-    let visible = "… ";
-    for (const character of Array.from(tail)) {
-      if (stringWidth(visible) + stringWidth(character) > width) break;
-      visible += character;
-    }
-    return visible;
-  }
-  return ["…", ...physicalRows.slice(-(rowLimit - 1))].join("\n");
 }
 
 export function toolResultFailed(result) {
@@ -122,6 +86,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [runningStartedAt, setRunningStartedAt] = useState(null);
   const [currentModel, setCurrentModel] = useState(currentSessionRef.current.model);
   const [themeName, setThemeName] = useState(initialConfig.current.theme || "system");
+  const [syntaxThemeName, setSyntaxThemeName] = useState(initialConfig.current.syntaxTheme || "catppuccin-mocha");
   const [workspaceFiles, setWorkspaceFiles] = useState(() => listWorkspaceFiles(workspace.path));
   const [sessionKey, setSessionKey] = useState(0);
   const [pendingQuestion, setPendingQuestion] = useState(null);
@@ -489,6 +454,23 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
       return;
     }
+    if (cmd === "/syntax-theme") {
+      try {
+        const choices = SYNTAX_THEMES.map(([value, label]) => ({ label, value }));
+        const selected = arg || await requestValue(
+          "Select syntax theme",
+          choices.map(choice => choice.label),
+          { values: choices },
+        );
+        if (!selected) return;
+        const value = saveSyntaxTheme(selected);
+        setSyntaxThemeName(value);
+        appendArchived({ id: nextId(), type: "answer", content: `Syntax theme changed to **${value}**.` });
+      } catch (error) {
+        appendArchived({ id: nextId(), type: "error", content: error.message });
+      }
+      return;
+    }
     if (cmd === "/help") {
       appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     }
@@ -532,7 +514,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       streamBufferRef.current = "";
       const current = activeRef.current;
       if (!buffered || current?.type !== "streaming") return;
-      const next = { ...current, content: normalizeStreamText(current.content + buffered) };
+      const next = { ...current, content: current.content + buffered };
       activeRef.current = next;
       setActiveMessage(next);
     };
@@ -541,7 +523,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const current = activeRef.current;
       if (current?.type === "streaming") {
         clearActive();
-        appendArchived({ id: nextId(), type: "answer", content: current.content });
+        appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(current.content) });
         return true;
       }
       return false;
@@ -701,7 +683,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             streamTimerRef.current = setTimeout(() => flushStream(), 40);
           }
         } else {
-          const initial = normalizeStreamText(ev.token);
+          const initial = ev.token;
           if (!initial) continue;
           clearActive();
           activate({ id: nextId(), type: "streaming", content: initial });
@@ -765,7 +747,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         const current = activeRef.current;
         if (current?.type === "streaming") {
           clearActive();
-          appendArchived({ id: nextId(), type: "answer", content: current.content });
+          appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(current.content) });
         }
         setPlan([]);
         finishedNormally = true;
@@ -850,10 +832,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     ...completedMessages,
   ];
   const visiblePlan = plan;
-  const displayedActiveMessage = activeMessage?.type === "streaming" ? null : activeMessage;
+  const displayedActiveMessage = activeMessage;
   const showWorking = running;
 
-  return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
+  return h(ThemeProvider, { name: themeName, syntaxTheme: syntaxThemeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {
       key: `history-${sessionKey}`,
       items: staticItems,

@@ -156,6 +156,25 @@ test("MCP config enforces secure remote URLs, workspace cwd, expansion, and disa
   }
 });
 
+test("MCP definitions accept OpenCode local server format", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-opencode-mcp-"));
+  const { definitions, errors } = resolveMcpDefinitions(workspace, {
+    mcp: {
+      opencode: {
+        type: "local",
+        command: [process.execPath, fixture],
+        environment: { OPENCODE_MCP_VALUE: "available" },
+        timeout: 750,
+      },
+    },
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(definitions[0].command, process.execPath);
+  assert.deepEqual(definitions[0].args, [fixture]);
+  assert.equal(definitions[0].env.OPENCODE_MCP_VALUE, "available");
+  assert.equal(definitions[0].discoveryTimeout, 750);
+});
+
 test("MCP results redact secrets, retain text layout, cap output, and omit binary bodies", () => {
   const secret = "mcp-secret-value";
   const output = normalizeMcpResult({

@@ -19,9 +19,14 @@ const EXTENSIONS = {
   ".rs": "rust",
   ".go": "go",
   ".rb": "ruby",
+  ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+  ".java": "java", ".cs": "csharp", ".php": "php", ".phtml": "php",
+  ".toml": "toml", ".lua": "lua", ".kt": "kotlin", ".kts": "kotlin",
+  ".tf": "hcl", ".tfvars": "hcl",
 };
 
 function languageForPath(path) {
+  if (basename(path).toLowerCase() === "dockerfile") return "docker";
   const key = EXTENSIONS[extname(path)];
   return resolveLanguage(key) || "plain";
 }

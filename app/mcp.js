@@ -84,7 +84,7 @@ function normalizeDefinition(id, value, workspace) {
   const auth = getCredential(`mcp:${id}`, entry.authEnv);
   const secrets = new Set(auth ? [auth] : []);
   const enabled = entry.enabled !== false;
-  const discoveryTimeout = Math.max(250, Number(entry.discoveryTimeout) || DEFAULT_DISCOVERY_TIMEOUT);
+  const discoveryTimeout = Math.max(250, Number(entry.discoveryTimeout || entry.timeout) || DEFAULT_DISCOVERY_TIMEOUT);
   const callTimeout = Math.max(250, Number(entry.callTimeout) || DEFAULT_CALL_TIMEOUT);
   const common = {
     id, enabled, discoveryTimeout, callTimeout, secrets,
@@ -106,13 +106,15 @@ function normalizeDefinition(id, value, workspace) {
     return { ...common, type: "http", url, headers };
   }
 
-  if (!entry.command || typeof entry.command !== "string") {
+  const command = Array.isArray(entry.command) ? entry.command[0] : entry.command;
+  const commandArgs = Array.isArray(entry.command) ? entry.command.slice(1) : entry.args;
+  if (!command || typeof command !== "string") {
     throw new Error(`MCP server "${id}" requires a command or URL.`);
   }
   const cwd = resolve(workspace, entry.cwd || ".");
   if (!insideWorkspace(cwd, workspace)) throw new Error(`MCP server "${id}" workdir must be inside the workspace.`);
   const env = {};
-  for (const [name, envValue] of Object.entries(object(entry.env))) {
+  for (const [name, envValue] of Object.entries(object(entry.env || entry.environment))) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid environment name for MCP server "${id}".`);
     env[name] = expand(envValue, auth, secrets);
     if (sensitiveName(name) && env[name]) secrets.add(env[name]);
@@ -120,8 +122,8 @@ function normalizeDefinition(id, value, workspace) {
   return {
     ...common,
     type: "stdio",
-    command: expand(entry.command, auth, secrets),
-    args: Array.isArray(entry.args) ? entry.args.map(arg => expand(arg, auth, secrets)) : [],
+    command: expand(command, auth, secrets),
+    args: Array.isArray(commandArgs) ? commandArgs.map(arg => expand(arg, auth, secrets)) : [],
     cwd,
     env,
   };

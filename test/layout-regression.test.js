@@ -102,6 +102,20 @@ test("streaming answer never adds a viewport-overflow cursor marker", async () =
   }
 });
 
+test("live streaming renders a bounded tail before the response is committed", async () => {
+  const content = Array.from({ length: 12 }, (_, index) => `stream line ${index + 1}`).join("\n");
+  const frame = await renderFrame([{
+    id: "bounded-live-stream",
+    type: "streaming",
+    content,
+  }], 40, 20);
+
+  assert.match(frame, /KhazAI/);
+  assert.match(frame, /stream line 12/);
+  assert.doesNotMatch(frame, /stream line 1\n/);
+  assert.match(frame, /…/);
+});
+
 test("streaming preview stays within the real viewport while retaining the full tail", () => {
   const complete = Array.from({ length: 20 }, (_, index) => `response line ${index + 1}`).join("\n");
   const preview = streamViewportText(complete, 40, 4);

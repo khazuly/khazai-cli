@@ -33,6 +33,12 @@ Configure servers in `~/.config/khazai-ai/config.json` or the workspace
 }
 ```
 
+KhazAI also imports MCP servers from OpenCode configuration automatically:
+`~/.config/opencode/opencode.json{,c}` and `opencode.json{,c}` in the
+workspace. KhazAI configuration takes precedence for duplicate server IDs.
+OpenCode local-server fields (`command` arrays, `environment`, and `timeout`)
+are supported.
+
 Local `cwd` values must remain inside the trusted workspace. Non-loopback
 remote servers must use HTTPS. Environment placeholders use `{env:NAME}`.
 The `{auth}` placeholder uses the credential stored by `/mcp auth <server>`.

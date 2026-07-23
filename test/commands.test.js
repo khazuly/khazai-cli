@@ -10,6 +10,7 @@ test("command reference and palette use the same grouped metadata", () => {
   assert.match(help, /\*\*Session\*\*[\s\S]*`\/sessions`/);
   assert.match(help, /\*\*Workspace\*\*[\s\S]*`\/mcp`/);
   assert.match(help, /\*\*View\*\*[\s\S]*`\/theme`/);
+  assert.match(help, /\*\*View\*\*[\s\S]*`\/syntax-theme`/);
   assert.match(help, /\*\*Settings\*\*[\s\S]*`\/help`/);
   assert.equal(groups.flatMap(group => group.commands).length, COMMANDS.length);
 });

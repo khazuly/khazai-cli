@@ -1,6 +1,7 @@
 import { createElement as h } from "react";
 import { Box, Text, useStdout } from "ink";
 import { useTheme } from "../theme.js";
+import { Panel } from "./surface.js";
 
 const EXAMPLES = [
   "explain this repository",
@@ -21,11 +22,9 @@ export function EmptyState() {
     marginBottom: 1,
     marginTop: 1,
   },
-    h(Box, {
+    h(Panel, {
       flexDirection: "column",
       alignItems: "center",
-      borderStyle: "single",
-      borderColor: theme.border,
       paddingX: 3,
       paddingY: 1,
       width: Math.max(12, Math.min(60, terminalWidth - 4)),

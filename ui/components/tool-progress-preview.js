@@ -14,9 +14,14 @@ const EXTENSIONS = {
   ".css": "css", ".md": "markdown", ".mdx": "markdown",
   ".yaml": "yaml", ".yml": "yaml",
   ".sql": "sql", ".rs": "rust", ".go": "go", ".rb": "ruby",
+  ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+  ".java": "java", ".cs": "csharp", ".php": "php", ".phtml": "php",
+  ".toml": "toml", ".lua": "lua", ".kt": "kotlin", ".kts": "kotlin",
+  ".tf": "hcl", ".tfvars": "hcl",
 };
 
 function languageForPath(path) {
+  if (path.split("/").at(-1)?.toLowerCase() === "dockerfile") return "docker";
   return resolveLanguage(EXTENSIONS[extname(path)]) || "plain";
 }
 

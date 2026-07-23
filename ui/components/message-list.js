@@ -1,10 +1,12 @@
 import { createElement as h } from "react";
-import { Text, Box } from "ink";
+import { Text, Box, useStdout } from "ink";
 import { ToolCall } from "./tool-call.js";
 import { CodePreview } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
 import { normalizeVerticalWhitespace } from "../text-layout.js";
 import { useTheme } from "../theme.js";
+import { StatusRail } from "./surface.js";
+import { streamViewportText } from "../stream-viewport.js";
 
 function hasCodePreview(message) {
   if (!message.done) return false;
@@ -23,7 +25,7 @@ function RoleMessage({ role, content }) {
     flexDirection: "column",
     marginBottom: 1,
   },
-    h(Text, { bold: true, color: theme.secondary }, role),
+    h(Text, { bold: true, color: theme.primary }, role),
     h(Box, { flexDirection: "column", width: "100%" },
       h(FormattedAnswer, { content }),
     )
@@ -32,12 +34,13 @@ function RoleMessage({ role, content }) {
 
 function StreamingMessage({ content, width }) {
   const theme = useTheme();
-  const lines = String(content || "").split("\n");
+  const { stdout } = useStdout();
+  const lines = streamViewportText(content, width || stdout?.columns || 80, 5).split("\n");
   return h(Box, {
     flexDirection: "column",
     width: width || "100%",
   },
-    h(Text, { bold: true, color: theme.secondary }, "KhazAI"),
+    h(Text, { bold: true, color: theme.primary }, "KhazAI"),
     ...lines.map((line, index) => h(Text, {
       key: index,
       color: theme.assistant,
@@ -50,11 +53,12 @@ function StreamingMessage({ content, width }) {
 
 function UserMessage({ content }) {
   const theme = useTheme();
-  return h(Box, {
+  return h(StatusRail, {
     marginBottom: 1,
+    tone: "border",
   },
     h(Box, { flexDirection: "column" },
-      h(Text, { bold: true, color: theme.primary }, "You"),
+      h(Text, { bold: true, color: theme.metadata }, "You"),
       h(Text, { color: theme.inputText, wrap: "wrap" }, content),
     ),
   );
@@ -70,15 +74,9 @@ function ErrorDisplay({ content }) {
       : /timed? out/i.test(content)
         ? "Run the command manually or reduce the operation scope."
         : null;
-  return h(Box, {
-    flexDirection: "column",
+  return h(StatusRail, {
     marginBottom: 1,
-    borderStyle: "single",
-    borderTop: false,
-    borderBottom: false,
-    borderRight: false,
-    borderColor: theme.error,
-    paddingLeft: 1,
+    tone: "error",
   },
     h(Text, { color: theme.error, bold: true }, "Error"),
     h(Box, { flexDirection: "column", marginTop: 1 },
@@ -95,15 +93,9 @@ function SummaryDisplay({ message }) {
   const details = [`${message.tools} ${message.tools === 1 ? "tool" : "tools"}`, duration];
   const files = Array.isArray(message.files) ? message.files : [];
   const validations = Array.isArray(message.validations) ? message.validations.slice(0, 3) : [];
-  return h(Box, {
-    flexDirection: "column",
+  return h(StatusRail, {
     marginBottom: 1,
-    borderStyle: "single",
-    borderTop: false,
-    borderBottom: false,
-    borderRight: false,
-    borderColor: message.status === "attention" ? theme.warning : theme.success,
-    paddingLeft: 1,
+    tone: message.status === "attention" ? "warning" : "success",
   },
     h(Box, null,
       h(Text, { bold: true, color: message.status === "attention" ? theme.warning : theme.success }, headline),
@@ -125,15 +117,9 @@ function SummaryDisplay({ message }) {
 
 function PermissionDisplay({ message }) {
   const theme = useTheme();
-  return h(Box, {
-    flexDirection: "column",
+  return h(StatusRail, {
     marginBottom: 1,
-    borderStyle: "single",
-    borderTop: false,
-    borderBottom: false,
-    borderRight: false,
-    borderColor: theme.warning,
-    paddingLeft: 1,
+    tone: "warning",
   },
     h(Text, { bold: true, color: theme.warning }, "Action required"),
     h(Text, { color: theme.assistant, wrap: "wrap" }, message.reason),

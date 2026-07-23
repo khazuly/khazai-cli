@@ -1,13 +1,12 @@
 import { createElement as h } from "react";
 import { Text, Box } from "ink";
-import { PASTEL } from "../palette.js";
 import { useTheme } from "../theme.js";
 
-export function planItemPresentation(status, palette = PASTEL) {
-  if (status === "done") return { indicator: "[✓]", color: palette.success ?? palette.green };
-  if (status === "running") return { indicator: "[•]", color: palette.secondary ?? palette.lavender };
-  if (status === "failed") return { indicator: "[!]", color: palette.error ?? palette.rose };
-  return { indicator: "[] ", color: palette.muted };
+export function planItemPresentation(status) {
+  if (status === "done") return { indicator: "[✓]", colorRole: "success" };
+  if (status === "running") return { indicator: "[•]", colorRole: "secondary" };
+  if (status === "failed") return { indicator: "[!]", colorRole: "error" };
+  return { indicator: "[] ", colorRole: "muted" };
 }
 
 export function PlanList({ plan }) {
@@ -25,10 +24,10 @@ export function PlanList({ plan }) {
         const status = item.status === "running" && plan.findIndex(entry => entry.status === "running") !== index
           ? "pending"
           : item.status;
-        const { indicator, color } = planItemPresentation(status, theme);
+        const { indicator, colorRole } = planItemPresentation(status);
         return h(Box, { key: `${index}-${item.description}`, width: "100%" },
-          h(Text, { color, wrap: "truncate-end" }, `${indicator} `),
-          h(Text, { color, flexGrow: 1, wrap: "wrap" }, item.description)
+          h(Text, { color: theme[colorRole], wrap: "truncate-end" }, `${indicator} `),
+          h(Text, { color: theme.text, flexGrow: 1, wrap: "wrap" }, item.description)
         );
       })
     )
