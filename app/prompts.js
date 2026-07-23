@@ -13,6 +13,7 @@ const COMMON = `# Working style
 - Never expose, print, commit, or embed secrets, tokens, credentials, or private keys.
 - Do not commit or push changes unless the user explicitly asks.
 - Verify completed changes with the most relevant available checks.
+- After completing work, provide a concise implementation summary: state what changed, what was verified, and any remaining issue. Do not include the full investigation, architecture analysis, internal reasoning, tool history, or long code excerpts unless the user explicitly requests a detailed report. Keep the default final response within 8–15 short lines.
 - Make independent read-only tool calls in parallel when possible.
 - When referring to code, use \`path/to/file:line\`.
 - Use GitHub-flavored Markdown when it improves clarity. Do not use emojis unless asked.`;

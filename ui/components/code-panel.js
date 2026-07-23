@@ -59,7 +59,7 @@ function codeGutter(row, gutterWidth, diffGutter) {
   return `${oldLine.padStart(gutterWidth)} ${newLine.padStart(gutterWidth)}`;
 }
 
-function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, diffGutter }) {
+function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, diffGutter, showLineNumbers }) {
   if (!["context", "add", "delete"].includes(row.type)) {
     const text = fit(row.text, gutterWidth + 2 + codeWidth);
     return h(Text, { color: colorForRow(row.type, colors) }, ` ${text}`);
@@ -68,6 +68,14 @@ function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, dif
   const backgroundColor = colorEnabled && row.type === "add"
     ? colors.addedBackground
     : colorEnabled && row.type === "delete" ? colors.deletedBackground : undefined;
+  if (!showLineNumbers) {
+    return h(Box, { backgroundColor },
+      h(Text, null, ...visible.map((part, partIndex) => h(Text, {
+        key: partIndex,
+        color: colors[part.color] || colors.text,
+      }, part.text))),
+    );
+  }
   return h(Box, { backgroundColor },
       h(Text, { color: colors.muted }, `${codeGutter(row, gutterWidth, diffGutter)} `),
       h(Text, { color: colorForRow(row.type, colors) }, `${marker(row.type)} `),
@@ -78,7 +86,7 @@ function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, dif
   );
 }
 
-export function CodePanel({ title, language, rows, maximumRows = 20 }) {
+export function CodePanel({ title, language, rows, maximumRows = 20, showLineNumbers = true }) {
   const { stdout } = useStdout();
   const theme = useTheme();
   const colorEnabled = theme.colorEnabled;
@@ -91,7 +99,7 @@ export function CodePanel({ title, language, rows, maximumRows = 20 }) {
   const largest = Math.max(1, ...numbered.flatMap(row => [Number(row.oldLine) || 0, Number(row.newLine) || 0]));
   const gutterWidth = String(largest).length;
   const diffGutter = numbered.some(row => row.type === "add" || row.type === "delete");
-  const codeWidth = Math.max(4, width - (diffGutter ? gutterWidth * 2 : gutterWidth) - 4);
+  const codeWidth = Math.max(4, width - (showLineNumbers ? (diffGutter ? gutterWidth * 2 : gutterWidth) + 4 : 0));
   const heading = fit(title, width);
   const highlightedRows = colorEnabled
     ? highlightBlock(visible.map(row => row.text).join("\n"), language)
@@ -108,6 +116,7 @@ export function CodePanel({ title, language, rows, maximumRows = 20 }) {
       colors,
       colorEnabled,
       diffGutter,
+      showLineNumbers,
     }))),
   );
 }

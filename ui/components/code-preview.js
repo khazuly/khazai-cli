@@ -95,8 +95,8 @@ function collapseContext(rows) {
   return collapsed;
 }
 
-function SyntaxPanel({ title, language, rows }) {
-  return h(CodePanel, { title, language, rows, maximumRows: MAX_PREVIEW_LINES });
+function SyntaxPanel({ title, language, rows, showLineNumbers = true }) {
+  return h(CodePanel, { title, language, rows, maximumRows: MAX_PREVIEW_LINES, showLineNumbers });
 }
 
 export function MarkdownCodeBlock({ content, language }) {
@@ -106,6 +106,7 @@ export function MarkdownCodeBlock({ content, language }) {
     title: "Code",
     language: resolvedLanguage,
     rows,
+    showLineNumbers: false,
   });
 }
 

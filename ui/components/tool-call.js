@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
 import { presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
-import { StatusRail } from "./surface.js";
+import { PrefixRow, StatusRail } from "./surface.js";
 import { SPINNER_FRAMES } from "./status-bar.js";
 
 function resultColor(state, theme) {
@@ -64,7 +64,9 @@ function ReadGroupCall({ count, currentFile, done, duration, failed }) {
       ? `Read ${files} · ${duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(1)} s`}`
       : `Read ${files}${currentFile ? ` · ${currentFile}` : ""}`;
   return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
-    h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, `${icon} ${details}`),
+    h(PrefixRow, { prefix: icon, prefixColor: failed ? theme.error : done ? theme.success : theme.primary },
+      h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, details),
+    ),
   );
 }
 
@@ -80,34 +82,39 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
   const tone = presentation.state === "failed" || presentation.state === "warning"
     ? presentation.stateRole
     : "muted";
+  const prefix = presentation.state === "failed" || presentation.state === "warning"
+    ? "[×]"
+    : presentation.state === "running" ? "⠋" : "[✓]";
 
   return h(StatusRail, {
     flexShrink: 0,
     width: "100%",
     tone,
   },
-    h(Text, { bold: true, color: accent, wrap: "wrap" },
-      presentation.label,
-      stateLabel ? ` · ${stateLabel}` : "",
-      presentation.duration ? ` · ${presentation.duration}` : "",
+    h(PrefixRow, { prefix, prefixColor: accent },
+      h(Text, { bold: true, color: accent, wrap: "wrap" },
+        presentation.label,
+        stateLabel ? ` · ${stateLabel}` : "",
+        presentation.duration ? ` · ${presentation.duration}` : "",
+      ),
+      presentation.summary
+        ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, presentation.summary)
+        : null,
+      presentation.metadata.length
+        ? h(Text, { color: theme.metadata, wrap: "wrap" }, `${presentation.metadata.join(" · ")}${done && !expanded ? " · /expand" : ""}`)
+        : null,
+      expanded && presentation.details.length
+        ? h(Box, { flexDirection: "column", marginTop: 1 },
+            ...presentation.details.map((detail, index) => h(Text, {
+              key: `detail-${index}`,
+              color: theme.metadata,
+              wrap: "wrap",
+            }, detail)),
+          )
+        : null,
+      done && (expanded || presentation.state === "failed" || presentation.state === "warning")
+        ? h(ResultPreview, { presentation, theme })
+        : null,
     ),
-    presentation.summary
-      ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, presentation.summary)
-      : null,
-    presentation.metadata.length
-      ? h(Text, { color: theme.metadata, wrap: "wrap" }, `${presentation.metadata.join(" · ")}${done && !expanded ? " · /expand" : ""}`)
-      : null,
-    expanded && presentation.details.length
-      ? h(Box, { flexDirection: "column", marginTop: 1 },
-          ...presentation.details.map((detail, index) => h(Text, {
-            key: `detail-${index}`,
-            color: theme.metadata,
-            wrap: "wrap",
-          }, detail)),
-        )
-      : null,
-    done && (expanded || presentation.state === "failed" || presentation.state === "warning")
-      ? h(ResultPreview, { presentation, theme })
-      : null,
   );
 }

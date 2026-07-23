@@ -101,7 +101,7 @@ test("animated working state stays immediately above a visible disabled prompt",
   const writesAfterInitialRender = stdout.frames.length;
   await new Promise(resolve => setTimeout(resolve, 1100));
   assert.ok(stdout.frames.length > writesAfterInitialRender, "Working animation must produce visible frames");
-  assert.match(stripAnsi(stdout.frames.at(-1)), /Working\s+\d+s · Esc cancel/);
+  assert.match(stripAnsi(stdout.frames.at(-1)), /Working · \d+s · Esc cancel/);
 
   instance.unmount();
   instance.cleanup();

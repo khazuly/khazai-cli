@@ -23,28 +23,28 @@ assert.strictEqual(runningFormatted.colorRole, "secondary", "Running item should
 assert.strictEqual(runningFormatted.formatted, "[•] Create token masking utility", "Running item should format correctly");
 console.log("✓ Test 2: Running task renders with [•] and lavender");
 
-// Test 3: Pending task has [] indicator and muted color
+// Test 3: Pending task has [ ] indicator and muted color
 const pendingItem = { status: "pending", description: "Add intent resolver logic" };
 const pendingFormatted = formatPlanItem(pendingItem);
-assert.strictEqual(pendingFormatted.prefix, "[]  ", "Pending item should have [] prefix");
+assert.strictEqual(pendingFormatted.prefix, "[ ] ", "Pending item should have [ ] prefix");
 assert.strictEqual(pendingFormatted.colorRole, "muted", "Pending item should use the muted theme role");
-assert.strictEqual(pendingFormatted.formatted, "[]  Add intent resolver logic", "Pending item should format correctly");
-console.log("✓ Test 3: Pending task renders with [] and muted color");
+assert.strictEqual(pendingFormatted.formatted, "[ ] Add intent resolver logic", "Pending item should format correctly");
+console.log("✓ Test 3: Pending task renders with [ ] and muted color");
 
 // Test 4: Failed task is neutral (not active) and rose color
 const failedItem = { status: "failed", description: "Failed operation" };
 const failedFormatted = formatPlanItem(failedItem);
-assert.strictEqual(failedFormatted.prefix, "[!] ", "Failed item should have [!] prefix");
+assert.strictEqual(failedFormatted.prefix, "[×] ", "Failed item should have [×] prefix");
 assert.strictEqual(failedFormatted.colorRole, "error", "Failed item should use the error theme role");
-assert.strictEqual(failedFormatted.formatted, "[!] Failed operation", "Failed item should format correctly");
+assert.strictEqual(failedFormatted.formatted, "[×] Failed operation", "Failed item should format correctly");
 console.log("✓ Test 4: Failed task is neutral and rose color");
 
 // Test 5: Skipped task has no indicator and muted color
 const skippedItem = { status: "skipped", description: "Skipped task" };
 const skippedFormatted = formatPlanItem(skippedItem);
-assert.strictEqual(skippedFormatted.prefix, "[]  ", "Skipped item should use [] prefix");
+assert.strictEqual(skippedFormatted.prefix, "[ ] ", "Skipped item should use [ ] prefix");
 assert.strictEqual(skippedFormatted.colorRole, "muted", "Skipped item should use the muted theme role");
-assert.strictEqual(skippedFormatted.formatted, "[]  Skipped task", "Skipped item should format correctly");
+assert.strictEqual(skippedFormatted.formatted, "[ ] Skipped task", "Skipped item should format correctly");
 console.log("✓ Test 5: Skipped task renders with no indicator and muted color");
 
 // Test 6: Alignment check - all indicators/prefixes have consistent width

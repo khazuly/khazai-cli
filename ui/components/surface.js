@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import { useTheme } from "../theme.js";
 
 export function Panel({ children, tone = "border", ...props }) {
@@ -25,4 +25,17 @@ export function StatusRail({ children, tone = "muted", ...props }) {
     paddingLeft: 1,
     ...props,
   }, children);
+}
+
+export function PrefixRow({ prefix, prefixWidth = 4, prefixColor, children, ...props }) {
+  return h(Box, {
+    flexDirection: "row",
+    width: "100%",
+    ...props,
+  },
+    h(Box, { width: prefixWidth, flexShrink: 0 },
+      h(Text, { color: prefixColor, wrap: "truncate-end" }, prefix),
+    ),
+    h(Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1 }, children),
+  );
 }

@@ -87,6 +87,20 @@ test("streaming chunks normalize carriage returns and repeated blank rows", () =
   assert.ok(maximumBlankRun(content) <= 1);
 });
 
+test("markdown normalization dedents prose without changing fenced code", () => {
+  const content = normalizeVerticalWhitespace([
+    "  Perubahan:",
+    "    - parser dimemoisasi",
+    "",
+    "  ```js  ",
+    "    const value = 1;  ",
+    "  ```",
+  ].join("\r\n"));
+  assert.match(content, /^Perubahan:/);
+  assert.match(content, /^  - parser dimemoisasi/m);
+  assert.match(content, /    const value = 1;  /);
+});
+
 test("streaming answer never adds a viewport-overflow cursor marker", async () => {
   const frame = await renderFrame([{
     id: "stream-without-overflow-marker",

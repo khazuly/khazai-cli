@@ -11,6 +11,7 @@ import { StatusBar, formatElapsed } from "../ui/components/status-bar.js";
 import { SessionFooter } from "../ui/components/session-footer.js";
 import { ToolCall } from "../ui/components/tool-call.js";
 import { CodePreview } from "../ui/components/code-preview.js";
+import { PlanList } from "../ui/components/plan-list.js";
 import { COMMANDS } from "../ui/commands.js";
 import { ThemeProvider, resolveTheme } from "../ui/theme.js";
 import { formatInteractiveQuestion, streamViewportText } from "../ui/session.js";
@@ -148,7 +149,7 @@ test("conversation hierarchy and tool metadata remain compact at mobile width", 
   assert.match(frame, /https:\/\/shopee\.co\.id\/buyer\/login/);
   assert.match(frame, /text\/html · 187 B · 103 chars/);
   assert.match(frame, /\/expand/);
-  assert.doesNotMatch(frame, /URL:|Content-Type:|Total chars:|[✓✗◌]/);
+  assert.doesNotMatch(frame, /URL:|Content-Type:|Total chars:/);
   assert.ok(maximumBlankRun(frame.trimEnd()) <= 2);
 });
 
@@ -179,6 +180,42 @@ test("numbered and nested markdown lists keep consistent hanging indentation", a
   assert.ok(lines.some(line => line.startsWith("2. test.py")));
 });
 
+test("prefixed plan rows keep a fixed content column at narrow widths", async () => {
+  const plan = [
+    { status: "done", description: "Analyze rendering path" },
+    { status: "running", description: "Implement alignment for every prefixed terminal row" },
+    { status: "pending", description: "Verify a very long plan item that must wrap across several lines without changing its content column" },
+    { status: "failed", description: "Run verification" },
+  ];
+  for (const width of [40, 60, 80]) {
+    const frame = await renderComponent(h(PlanList, { plan }), width, 30);
+    const lines = frame.split("\n").filter(Boolean);
+    const markers = lines.filter(line => /^\[[ ✓•×]\]/.test(line));
+    assert.equal(markers.length, 4, frame);
+    assert.ok(markers.every(line => line.indexOf("] ") === 2), frame);
+    const continuations = lines.filter(line => !/^\[[ ✓•×]\]/.test(line) && /prefixed terminal row|content column/.test(line));
+    assert.ok(continuations.every(line => line.search(/\S/) === 4), frame);
+  }
+});
+
+test("numbered lists reserve one content column for one and two digit markers", async () => {
+  const content = [
+    "1. First item with a long description that wraps onto another line.",
+    "2. Second item.",
+    "10. Tenth item with another long description that wraps onto another line.",
+  ].join("\n");
+  const frame = await renderComponent(h(MessageList, { messages: [{
+    id: "numbered-list-columns",
+    type: "answer",
+    content,
+  }] }), 40, 20);
+  const lines = frame.split("\n");
+  assert.ok(lines.some(line => /^1\.  First/.test(line)), frame);
+  assert.ok(lines.some(line => /^10\. Tenth/.test(line)), frame);
+  const continuations = lines.filter(line => !/^\d+\./.test(line) && /another line/.test(line));
+  assert.ok(continuations.every(line => line.search(/\S/) === 4), frame);
+});
+
 test("assistant markdown renders quotes and responsive GFM tables", async () => {
   const content = [
     "> Important result",
@@ -193,6 +230,34 @@ test("assistant markdown renders quotes and responsive GFM tables", async () => 
   assert.match(wide, /File\s+│\s+State/);
   assert.match(narrow, /File:\s+app\.js/);
   assert.match(narrow, /State:\s+changed/);
+});
+
+test("final responses keep paragraphs and lists left aligned without rules", async () => {
+  const content = [
+    "  Selesai. Masalah utama ada pada markdown parser dan state spinner.",
+    "",
+    "  Perubahan:",
+    "  - Parser dimemoisasi agar tidak berjalan pada setiap render.",
+    "  - Spinner dipisahkan agar tidak merender ulang conversation.",
+    "  - Lebar markdown mengikuti ukuran terminal.",
+    "",
+    "  Verifikasi:",
+    "  - Build berhasil.",
+    "  - Alignment konsisten pada terminal mobile.",
+    "  ---",
+  ].join("\n");
+  const frame = await renderComponent(h(MessageList, { messages: [{
+    id: "final-response-layout",
+    type: "answer",
+    content,
+  }] }), 40, 24);
+  const lines = frame.split("\n").filter(line => line.trim());
+  assert.ok(lines.some(line => line.startsWith("Selesai.")), frame);
+  assert.ok(lines.some(line => line.startsWith("Perubahan:")), frame);
+  assert.ok(lines.some(line => line.startsWith("Verifikasi:")), frame);
+  assert.ok(lines.some(line => /^• Parser/.test(line)), frame);
+  assert.doesNotMatch(frame, /─{8,}/);
+  assert.ok(lines.every(line => line.trim().length !== 1), frame);
 });
 
 test("user panel keeps one external row before the first tool call", async () => {
@@ -223,7 +288,7 @@ test("tool states use words and long output is collapsed", async () => {
   assert.match(frame, /warning/);
   assert.doesNotMatch(frame, /line 12/, "successful tool output stays collapsed");
   assert.match(frame, /Error: not found/);
-  assert.doesNotMatch(frame, /[✓✗◌]/);
+  assert.match(frame, /\[✓\] Shell · completed/);
 });
 
 test("successful shell commands reveal raw details only when expanded", async () => {
@@ -518,7 +583,7 @@ test("animated working state stays immediately above a visible disabled prompt",
   const writesAfterInitialRender = stdout.frames.length;
   await new Promise(resolve => setTimeout(resolve, 1100));
   assert.ok(stdout.frames.length > writesAfterInitialRender, "Working animation must produce visible frames");
-  assert.match(stripAnsi(stdout.frames.at(-1)), /Working\s+\d+s · Esc cancel/);
+  assert.match(stripAnsi(stdout.frames.at(-1)), /Working · \d+s · Esc cancel/);
 
   instance.unmount();
   instance.cleanup();

@@ -3,6 +3,7 @@ import { Text, Box } from "ink";
 import { useEffect, useState } from "react";
 import { toolTarget } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
+import { PrefixRow } from "./surface.js";
 
 const WORKING_INTERVAL_MS = 80;
 
@@ -51,10 +52,13 @@ export function StatusBar({ running, plan = [], activeTool = null, startedAt = n
   const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : Math.floor(frame * WORKING_INTERVAL_MS / 1000);
   const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
 
-  return h(Box, { marginBottom: 0, paddingLeft: 1 },
-    h(Text, { color: theme.primary }, spinner),
-    h(Text, { bold: true, color: theme.primary }, " ", action),
-    target ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, "  ", target) : null,
-    h(Text, { color: theme.metadata }, `  ${formatElapsed(elapsed)} · Esc cancel`),
+  return h(Box, { marginBottom: 0 },
+    h(PrefixRow, { prefix: spinner, prefixColor: theme.primary },
+      h(Box, { flexDirection: "row", flexWrap: "wrap" },
+        h(Text, { bold: true, color: theme.primary }, action),
+        target ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, ` · ${target}`) : null,
+        h(Text, { color: theme.metadata }, ` · ${formatElapsed(elapsed)} · Esc cancel`),
+      ),
+    ),
   );
 }

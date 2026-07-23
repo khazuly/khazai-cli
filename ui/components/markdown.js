@@ -1,10 +1,12 @@
-import { createElement as h } from "react";
+import { createElement as h, useMemo } from "react";
 import { Box, Text, useStdout } from "ink";
 import { marked } from "marked";
 import stringWidth from "string-width";
 import wrapAnsi from "wrap-ansi";
 import { MarkdownCodeBlock } from "./code-preview.js";
 import { useTheme } from "../theme.js";
+import { normalizeVerticalWhitespace } from "../text-layout.js";
+import { PrefixRow } from "./surface.js";
 
 function inline(tokens = [], theme, key = "inline") {
   return tokens.flatMap((token, index) => {
@@ -25,24 +27,37 @@ function inline(tokens = [], theme, key = "inline") {
 
 function List({ token, depth = 0 }) {
   const theme = useTheme();
+  const markers = token.items.map((item, index) => {
+    if (!token.ordered) return "•";
+    return /^(\d+)\./.exec(item.raw || "")?.[0] || `${Number(token.start || 1) + index}.`;
+  });
+  const prefixWidth = Math.max(2, ...markers.map(marker => stringWidth(marker) + 1));
   return h(Box, { flexDirection: "column", marginLeft: Math.min(depth * 2, 6) },
     ...token.items.map((item, index) => {
-      const marker = token.ordered ? `${Number(token.start || 1) + index}.` : "•";
+      const marker = markers[index];
       const body = item.tokens || [];
       const first = body[0];
       const rest = body.slice(1);
-      return h(Box, { key: `item-${depth}-${index}`, flexDirection: "column" },
-        h(Box, { alignItems: "flex-start" },
-          h(Box, { width: Math.max(2, stringWidth(marker) + 1), flexShrink: 0 },
-            h(Text, { color: theme.metadata }, `${marker} `),
-          ),
-          h(Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1 },
-            first ? renderToken(first, `first-${index}`, depth + 1) : null,
-          ),
+      return h(PrefixRow, { key: `item-${depth}-${index}`, prefix: marker, prefixWidth, prefixColor: theme.metadata },
+        h(Box, { flexDirection: "column" },
+          first ? renderToken(first, `first-${index}`, depth + 1) : null,
+          ...rest.map((child, childIndex) => renderToken(child, `child-${index}-${childIndex}`, depth + 1)),
         ),
-        ...rest.map((child, childIndex) => renderToken(child, `child-${index}-${childIndex}`, depth + 1)),
       );
     }),
+  );
+}
+
+function Paragraph({ token, tokenKey, depth }) {
+  const { stdout } = useStdout();
+  const tokens = token.tokens || [];
+  const simple = tokens.every(item => item.type === "text" || item.type === "br");
+  if (!simple) return h(Text, { wrap: "wrap" }, ...inline(tokens, null, tokenKey));
+  const indent = depth > 0 ? Math.min(depth * 2, 6) + 2 : 0;
+  const width = Math.max(10, (Number(stdout?.columns) || 80) - indent);
+  const lines = wrapAnsi(token.text || token.raw || "", width, { hard: true, trim: true }).split("\n");
+  return h(Box, { flexDirection: "column" },
+    ...lines.map((line, index) => h(Text, { key: `${tokenKey}-${index}` }, line || " ")),
   );
 }
 
@@ -90,9 +105,9 @@ function renderToken(token, key, depth = 0) {
     );
   }
   if (token.type === "table") return h(Table, { key, token });
-  if (token.type === "hr") return h(Text, { key, dimColor: true }, "─".repeat(24));
+  if (token.type === "hr") return null;
   if (token.type === "paragraph" || token.type === "text") {
-    return h(Text, { key, wrap: "wrap" }, ...inline(token.tokens || [{ raw: token.text }], null, key));
+    return h(Paragraph, { key, token, tokenKey: key, depth });
   }
   return token.tokens
     ? h(Box, { key, flexDirection: "column" }, ...token.tokens.map((child, index) => renderToken(child, `${key}-${index}`, depth)))
@@ -101,13 +116,14 @@ function renderToken(token, key, depth = 0) {
 
 export function Markdown({ content }) {
   const theme = useTheme();
-  let tokens;
-  try {
-    tokens = marked.lexer(String(content || ""), { gfm: true, breaks: false });
-  } catch {
-    tokens = [{ type: "paragraph", tokens: [{ raw: String(content || "") }] }];
-  }
-  const visible = tokens.filter(token => token.type !== "space");
+  const visible = useMemo(() => {
+    const normalized = normalizeVerticalWhitespace(content || "");
+    try {
+      return marked.lexer(normalized, { gfm: true, breaks: false }).filter(token => token.type !== "space");
+    } catch {
+      return [{ type: "paragraph", tokens: [{ raw: normalized }] }];
+    }
+  }, [content]);
   return h(Box, { flexDirection: "column", width: "100%" },
     ...visible.map((token, index) =>
       h(Box, { key: index, flexDirection: "column", marginBottom: index === visible.length - 1 ? 0 : 1, color: theme.assistant },
