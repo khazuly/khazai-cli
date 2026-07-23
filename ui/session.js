@@ -42,6 +42,11 @@ function buildRegistry(workspace, mcpTools = []) {
 let msgId = 0;
 function nextId() { return `m${++msgId}`; }
 
+function readFileName(args) {
+  const parts = String(args?.path || "").split("/").filter(Boolean);
+  return parts.at(-1) || String(args?.path || "");
+}
+
 export function normalizeStreamText(text) {
   return normalizeVerticalWhitespace(removeAssistantProtocolText(removeEmoji(text)));
 }
@@ -505,6 +510,48 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       activeRef.current = null;
       setActiveMessage(null);
     };
+    const finishReadBatch = failed => {
+      const current = activeRef.current;
+      if (current?.type !== "read-group") return false;
+      const completedAt = Date.now();
+      clearActive();
+      appendArchived({
+        ...current,
+        done: true,
+        failed: Boolean(failed),
+        currentFile: failed ? current.currentFile : "",
+        completedAt,
+        duration: completedAt - current.startedAt,
+      });
+      return true;
+    };
+    const startRead = (callId, args, startedAt = Date.now()) => {
+      const current = activeRef.current;
+      const currentFile = readFileName(args);
+      if (current?.type === "read-group") {
+        const existing = current.callIds.includes(callId);
+        const next = {
+          ...current,
+          args,
+          currentFile,
+          callIds: existing ? current.callIds : [...current.callIds, callId],
+          count: existing ? current.count : current.count + 1,
+        };
+        activate(next);
+        return;
+      }
+      activate({
+        id: nextId(),
+        type: "read-group",
+        tool: "read",
+        args,
+        callIds: [callId],
+        count: 1,
+        currentFile,
+        startedAt,
+        done: false,
+      });
+    };
     const flushStream = () => {
       if (streamTimerRef.current) {
         clearTimeout(streamTimerRef.current);
@@ -580,6 +627,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "plan") {
         discardStreaming();
+        finishReadBatch(false);
         clearActive();
         setPlan(ev.items.map(item => ({ ...item, status: item.status || "pending" })));
         continue;
@@ -594,6 +642,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "question") {
         const questionAlreadyStreamed = completeStreaming();
+        finishReadBatch(false);
         clearActive();
         if (!questionAlreadyStreamed) {
           appendArchived({
@@ -608,6 +657,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "permission") {
         discardStreaming();
+        finishReadBatch(false);
         clearActive();
         appendArchived({
           id: nextId(),
@@ -631,6 +681,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         structuredCallsRef.current.add(part.callId);
         if (part.state.status === "pending" || part.state.status === "running") {
           discardStreaming();
+          if (part.tool === "read") {
+            startRead(part.callId, redactSerializable(part.state.input || {}), part.state.time?.start || Date.now());
+            continue;
+          }
+          finishReadBatch(false);
           if (activeRef.current?.type !== "tool") {
             toolStartRef.current = part.state.time?.start || Date.now();
             activate({
@@ -652,6 +707,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           ? part.state.time.end - part.state.time.start
           : null;
         recordToolEvidence(part.tool, part.state.input || {}, safeResult, failed, duration);
+        if (part.tool === "read") {
+          if (failed) finishReadBatch(true);
+          continue;
+        }
         const current = activeRef.current?.callId === part.callId ? activeRef.current : null;
         if (current) clearActive();
         appendArchived({
@@ -670,12 +729,18 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "tool-call") {
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         discardStreaming();
+        if (ev.tool === "read") {
+          startRead(ev.callId, redactSerializable(ev.args || {}));
+          continue;
+        }
+        finishReadBatch(false);
         toolStartRef.current = Date.now();
         activate({ id: nextId(), type: "tool", tool: ev.tool, args: redactSerializable(ev.args || {}), done: false });
         continue;
       }
 
       if (ev.type === "stream") {
+        finishReadBatch(false);
         const current = activeRef.current;
         if (current?.type === "streaming") {
           streamBufferRef.current += ev.token;
@@ -697,6 +762,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "stream-commit") {
+        finishReadBatch(false);
         completeStreaming();
         continue;
       }
@@ -717,6 +783,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         const resultSize = Buffer.byteLength(safeResult || "");
         const failed = toolResultFailed(safeResult);
         recordToolEvidence(ev.tool, current?.args || {}, ev.result, failed, duration);
+        if (ev.tool === "read") {
+          if (failed) finishReadBatch(true);
+          continue;
+        }
         clearActive();
         appendArchived(
           current?.type === "tool"
@@ -733,6 +803,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "answer" || ev.type === "error") {
         if (isInternalAgentFailure(ev.content)) continue;
         discardStreaming();
+        finishReadBatch(false);
         if (ev.type === "answer") {
           finishedNormally = true;
           setPlan([]);
@@ -744,6 +815,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "stream-end") {
         flushStream();
+        finishReadBatch(false);
         const current = activeRef.current;
         if (current?.type === "streaming") {
           clearActive();
@@ -756,12 +828,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     } catch (error) {
       completeStreaming();
+      finishReadBatch(true);
       clearActive();
       const content = removeAssistantProtocolText(redactSecrets(error?.message || String(error))).trim();
       if (content) appendArchived({ id: nextId(), type: "error", content: `Unexpected error: ${content}` });
     } finally {
       agentSessionRef.current = agent.exportSessionState?.() || null;
       completeStreaming();
+      finishReadBatch(false);
       clearActive();
       questionResolverRef.current = null;
       setPendingQuestion(null);
@@ -833,7 +907,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   ];
   const visiblePlan = plan;
   const displayedActiveMessage = activeMessage;
-  const showWorking = running;
+  const showWorking = running && activeMessage?.type !== "read-group";
 
   return h(ThemeProvider, { name: themeName, syntaxTheme: syntaxThemeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {

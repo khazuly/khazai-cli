@@ -114,6 +114,30 @@ test("working duration switches to minutes after sixty seconds", () => {
   assert.equal(formatElapsed(125), "2m 5s");
 });
 
+test("read groups keep one live row and finalize without a file name", async () => {
+  const running = await renderComponent(h(MessageList, { messages: [{
+    id: "read-group-active",
+    type: "read-group",
+    count: 3,
+    currentFile: "status-bar.js",
+    done: false,
+  }] }), 60, 12);
+  assert.match(running, /Read 3 files · status-bar\.js/);
+  assert.doesNotMatch(running, /\d+ ms/);
+
+  const completed = await renderComponent(h(MessageList, { messages: [{
+    id: "read-group-finished",
+    type: "read-group",
+    count: 3,
+    currentFile: "",
+    done: true,
+    duration: 287,
+    failed: false,
+  }] }), 60, 12);
+  assert.match(completed, /\[✓\] Read 3 files · 287 ms/);
+  assert.doesNotMatch(completed, /status-bar\.js/);
+});
+
 test("interactive question reuses the built-in CLI prompt without a second input", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,

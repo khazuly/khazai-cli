@@ -148,6 +148,13 @@ export function MessageList({ messages, streamingWidth = null }) {
               )
             : null,
         );
+      case "read-group":
+        return h(Box, { key: m.id, flexDirection: "column", marginBottom: 1 },
+          h(ToolCall, {
+            readGroup: true, count: m.count, currentFile: m.currentFile,
+            done: m.done, duration: m.duration, failed: m.failed,
+          }),
+        );
       case "answer":
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "streaming":

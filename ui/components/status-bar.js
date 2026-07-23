@@ -6,7 +6,7 @@ import { useTheme } from "../theme.js";
 
 const WORKING_INTERVAL_MS = 80;
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 const ACTIVE_LABELS = {
   read: "Reading",

@@ -1,8 +1,10 @@
 import { createElement as h } from "react";
 import { Box, Text } from "ink";
+import { useEffect, useState } from "react";
 import { presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
 import { StatusRail } from "./surface.js";
+import { SPINNER_FRAMES } from "./status-bar.js";
 
 function resultColor(state, theme) {
   if (state === "failed") return theme.error;
@@ -45,7 +47,29 @@ function ResultPreview({ presentation, theme }) {
   return rows.length ? h(Box, { flexDirection: "column" }, ...rows) : null;
 }
 
-export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false }) {
+function ReadGroupCall({ count, currentFile, done, duration, failed }) {
+  const [frame, setFrame] = useState(0);
+  const theme = useTheme();
+  useEffect(() => {
+    if (done) return undefined;
+    const timer = setInterval(() => setFrame(value => value + 1), 80);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [done]);
+  const files = `${count} ${count === 1 ? "file" : "files"}`;
+  const icon = failed ? "[×]" : done ? "[✓]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+  const details = failed
+    ? `Read ${files} · failed${currentFile ? ` · ${currentFile}` : ""}`
+    : done
+      ? `Read ${files} · ${duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(1)} s`}`
+      : `Read ${files}${currentFile ? ` · ${currentFile}` : ""}`;
+  return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
+    h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, `${icon} ${details}`),
+  );
+}
+
+export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false, readGroup = false, count, currentFile, failed }) {
+  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed });
   const theme = useTheme();
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
   const accent = theme.colorEnabled ? theme[presentation.accentRole] : undefined;
