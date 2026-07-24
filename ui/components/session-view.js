@@ -35,6 +35,7 @@ export function SessionView({
   return h(ThemeProvider, { name: themeName }, h(Box, {
     flexDirection: "column",
     width: "100%",
+    paddingLeft: 1,
   },
     h(Static, {
       key: `history-${sessionKey}`,

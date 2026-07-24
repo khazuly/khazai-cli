@@ -1,4 +1,9 @@
-const version = BUILD_VERSION;
+let version;
+try { version = BUILD_VERSION; } catch { version = undefined; }
+if (!version) {
+  const { readFileSync } = await import("node:fs");
+  version = readFileSync(new URL("../package.json", import.meta.url), "utf-8").match(/"version":\s*"([^"]+)"/)?.[1] || "0.0.0";
+}
 const args = process.argv.slice(process.argv[1]?.startsWith("-") ? 1 : 2);
 
 if (args.includes("--version") || args.includes("-v")) {

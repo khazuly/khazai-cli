@@ -322,7 +322,11 @@ export class ToolMethods {
   }
 
   _buildContext() {
-    const sys = this._buildSystem();
+    let sys = this._buildSystem();
+    if (this._executionPolicy) {
+      const contextBlock = this._executionPolicy.contextBlock();
+      if (contextBlock) sys += `\n\n<execution>\n${contextBlock}\n</execution>`;
+    }
     const summary = this._summary
       ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
       : [];

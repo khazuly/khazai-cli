@@ -73,6 +73,15 @@ export class ExecutionPolicy {
     this.phase = planning ? "planning" : "executing";
     this.evidence = [];
     this.answerAttempts = 0;
+
+    // Task-aware state tracking
+    this.mutatedWorkspace = false;
+    this.ranValidation = false;
+    this.ranInspection = false;
+    this.ranResearch = false;
+    this.ranDeletion = false;
+    this.ranGit = false;
+    this.toolHistory = [];
   }
 
   setPhase(phase) {
@@ -80,14 +89,24 @@ export class ExecutionPolicy {
   }
 
   record(tool, args, result, failed = false, extraKinds = []) {
+    const computedKinds = [...new Set([...evidenceKinds(tool, args), ...extraKinds])];
     const entry = {
       tool,
       args: { ...(args || {}) },
       result: String(result || ""),
       failed: Boolean(failed),
-      kinds: [],
+      kinds: computedKinds,
     };
     this.evidence.push(entry);
+    this.toolHistory.push({ tool, failed: entry.failed, kinds: computedKinds });
+    if (!failed) {
+      if (computedKinds.includes("mutation")) this.mutatedWorkspace = true;
+      if (computedKinds.includes("validation")) this.ranValidation = true;
+      if (computedKinds.includes("inspection")) this.ranInspection = true;
+      if (computedKinds.includes("research")) this.ranResearch = true;
+      if (computedKinds.includes("deletion")) this.ranDeletion = true;
+      if (computedKinds.includes("git")) this.ranGit = true;
+    }
     this.phase = failed ? "recovering" : "ready";
     return entry;
   }
@@ -97,7 +116,16 @@ export class ExecutionPolicy {
   }
 
   completionGaps() {
-    return [];
+    const contract = this.contract;
+    if (!contract?.requiredEvidence?.length) return [];
+    const successful = this.successfulKinds();
+    const gaps = [];
+    for (const required of contract.requiredEvidence) {
+      if (!successful.has(required)) {
+        gaps.push({ kind: required, description: `Missing required evidence: ${required}` });
+      }
+    }
+    return gaps;
   }
 
   canComplete() {
@@ -112,15 +140,103 @@ export class ExecutionPolicy {
   }
 
   completionSteering() {
-    return null;
+    const gaps = this.completionGaps();
+    if (gaps.length === 0) return null;
+
+    const category = this.contract.category;
+    const gapKinds = gaps.map(g => g.kind);
+
+    const categoryGuidance = {
+      MODIFICATION: {
+        missingMutation: {
+          recommendedAction: "inspect the target and apply the smallest targeted edit or patch",
+          guidance: "Continue the requested code change. Preserve unrelated code and run requested validation after the patch.",
+        },
+        missingValidation: {
+          recommendedAction: "run the relevant test or validation command and address failures",
+          guidance: "Run the appropriate validation (test, lint, typecheck) after the code change to verify correctness.",
+        },
+        missingInspection: {
+          recommendedAction: "inspect the relevant files or directories before making changes",
+          guidance: "Read the relevant source files to understand the current structure before editing.",
+        },
+      },
+      TESTING: {
+        missingValidation: {
+          recommendedAction: "run the relevant test or validation and recover from its result",
+          guidance: "Continue the active testing task with the relevant command, then address any observed failure.",
+        },
+        missingMutation: {
+          recommendedAction: "apply the necessary fix and then re-run the validation",
+          guidance: "After applying a fix, re-run the test suite to confirm the issue is resolved.",
+        },
+      },
+      GIT_OPERATION: {
+        missingGit: {
+          recommendedAction: "resume the pending Git command or resolve remote, branch, upstream, or authentication",
+          guidance: "Continue the pending Git operation from its last result. Ask cleanly for credentials only when authentication is required.",
+        },
+      },
+      INSPECTION: {
+        missingInspection: {
+          recommendedAction: "perform the relevant read or search",
+          guidance: "Continue the inspection until there is enough relevant information to answer the user.",
+        },
+      },
+      RESEARCH: {
+        missingResearch: {
+          recommendedAction: "retry the relevant fetch or use a safe fallback",
+          guidance: "Continue the active web analysis from the last fetch result instead of ending the task early.",
+        },
+      },
+      DESTRUCTIVE_OPERATION: {
+        missingDeletion: {
+          recommendedAction: "confirm and execute the deletion",
+          guidance: "Execute the requested deletion after confirming scope. Only delete what was requested.",
+        },
+      },
+    };
+
+    const categoryGuidanceMap = categoryGuidance[category] || {};
+    for (const kind of gapKinds) {
+      const guidance = categoryGuidanceMap[kind];
+      if (guidance) {
+        return {
+          detectedIntent: this.contract.intent,
+          proposedAction: `early completion with missing ${kind} evidence`,
+          recommendedAction: guidance.recommendedAction,
+          guidance: guidance.guidance,
+        };
+      }
+    }
+
+    // Fallback: generic guidance for any remaining gap
+    return {
+      detectedIntent: this.contract.intent,
+      proposedAction: `early completion with missing evidence: ${gapKinds.join(", ")}`,
+      recommendedAction: `continue gathering the required ${gapKinds[0]} evidence`,
+      guidance: `Continue the task to collect the missing evidence (${gapKinds.join(", ")}) before providing a final answer.`,
+    };
   }
 
   contextBlock() {
+    const gaps = this.completionGaps();
     const steering = this.completionSteering();
+    const flags = [
+      this.mutatedWorkspace ? "mutated" : null,
+      this.ranValidation ? "validated" : null,
+      this.ranInspection ? "inspected" : null,
+      this.ranResearch ? "researched" : null,
+    ].filter(Boolean);
+
     return [
       `Intent: ${this.contract.intent}`,
+      `Category: ${this.contract.category}`,
       `Phase: ${this.phase}`,
+      `Required evidence: ${this.contract.requiredEvidence?.join(", ") || "none"}`,
+      `Collected: ${flags.join(", ") || "none"}`,
+      gaps.length ? `Missing: ${gaps.map(g => g.kind).join(", ")}` : null,
       `Next action: ${steering?.recommendedAction || "the task may be answered"}`,
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
 }

@@ -171,6 +171,10 @@ export class StateMethods {
   }
 
   _missingCompletionEvidence() {
+    const gaps = this._executionPolicy?.completionGaps?.();
+    if (gaps?.length > 0) {
+      return gaps.map(g => g.description).join("; ");
+    }
     return null;
   }
 
@@ -473,6 +477,7 @@ export class StateMethods {
       resultFailed,
       timeoutMs: this._config.toolTimeout,
       signal: this._abortController?.signal,
+      taskContext: this._executionPolicy,
     });
   }
 

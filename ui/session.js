@@ -47,6 +47,25 @@ function readFileName(args) {
   return parts.at(-1) || String(args?.path || "");
 }
 
+function thinkActivityFromPlan(plan) {
+  const items = Array.isArray(plan) ? plan : [];
+  const activeIndex = items.findIndex(item => item.status === "in_progress" || item.status === "running" || item.status === "active");
+  if (activeIndex >= 0) {
+    return {
+      text: removeEmoji(items[activeIndex].text || items[activeIndex].content || items[activeIndex].title || "Analyzing the execution context").trim(),
+      step: items.length > 1 ? `Step ${activeIndex + 1} of ${items.length}` : null,
+    };
+  }
+  const pendingIndex = items.findIndex(item => !item.status || item.status === "pending");
+  if (pendingIndex >= 0) {
+    return {
+      text: removeEmoji(items[pendingIndex].text || items[pendingIndex].content || items[pendingIndex].title || "Analyzing the execution context").trim(),
+      step: items.length > 1 ? `Step ${pendingIndex + 1} of ${items.length}` : null,
+    };
+  }
+  return { text: "Analyzing the execution context", step: null };
+}
+
 export function normalizeStreamText(text) {
   return normalizeVerticalWhitespace(removeAssistantProtocolText(removeEmoji(text)));
 }
@@ -86,7 +105,15 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   }
   const [completedMessages, setCompletedMessages] = useState([]);
   const [activeMessage, setActiveMessage] = useState(null);
-  const [plan, setPlan] = useState([]);
+  const [plan, setPlanState] = useState([]);
+  const planRef = useRef([]);
+  const setPlan = useCallback(next => {
+    setPlanState(prev => {
+      const value = typeof next === "function" ? next(prev) : next;
+      planRef.current = value;
+      return value;
+    });
+  }, []);
   const [running, setRunning] = useState(false);
   const [runningStartedAt, setRunningStartedAt] = useState(null);
   const [currentModel, setCurrentModel] = useState(currentSessionRef.current.model);
@@ -510,6 +537,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       activeRef.current = null;
       setActiveMessage(null);
     };
+    const finishThink = failed => {
+      const current = activeRef.current;
+      if (current?.type !== "think") return false;
+      const completedAt = Date.now();
+      clearActive();
+      appendArchived({
+        ...current,
+        text: failed ? "Analysis timed out" : "Analysis completed",
+        done: true,
+        failed: Boolean(failed),
+        completedAt,
+      });
+      return true;
+    };
     const finishReadBatch = failed => {
       const current = activeRef.current;
       if (current?.type !== "read-group") return false;
@@ -528,6 +569,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const startRead = (callId, args, startedAt = Date.now()) => {
       const current = activeRef.current;
       const currentFile = readFileName(args);
+      finishThink(false);
       if (current?.type === "read-group") {
         const existing = current.callIds.includes(callId);
         const next = {
@@ -622,6 +664,17 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       : attachFileReferences(input, workspace.path);
     for await (const ev of agent.loop(agentInput)) {
       if (ev.type === "thinking") {
+        discardStreaming();
+        finishReadBatch(false);
+        const activity = thinkActivityFromPlan(planRef.current);
+        const current = activeRef.current;
+        const base = current?.type === "think" ? current : {
+          id: `think-${sessionBefore?.id || "session"}-${ev.turn || Date.now()}`,
+          type: "think",
+          turn: ev.turn,
+          startedAt: Date.now(),
+        };
+        activate({ ...base, ...activity, done: false, failed: false });
         continue;
       }
 
@@ -634,16 +687,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "plan-update") {
-        setPlan(prev => prev.map((item, i) =>
-          i === ev.index ? { ...item, status: ev.status } : item
-        ));
+        setPlan(prev => {
+          const next = prev.map((item, i) =>
+            i === ev.index ? { ...item, status: ev.status } : item
+          );
+          if (activeRef.current?.type === "think") {
+            activate({ ...activeRef.current, ...thinkActivityFromPlan(next) });
+          }
+          return next;
+        });
         continue;
       }
 
       if (ev.type === "question") {
         const questionAlreadyStreamed = completeStreaming();
         finishReadBatch(false);
-        clearActive();
+        finishThink(false);
         if (!questionAlreadyStreamed) {
           appendArchived({
             id: nextId(),
@@ -658,7 +717,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "permission") {
         discardStreaming();
         finishReadBatch(false);
-        clearActive();
+        finishThink(false);
         appendArchived({
           id: nextId(),
           type: "permission",
@@ -686,6 +745,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             continue;
           }
           finishReadBatch(false);
+          finishThink(false);
           if (activeRef.current?.type !== "tool") {
             toolStartRef.current = part.state.time?.start || Date.now();
             activate({
@@ -734,6 +794,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           continue;
         }
         finishReadBatch(false);
+        finishThink(false);
         toolStartRef.current = Date.now();
         activate({ id: nextId(), type: "tool", tool: ev.tool, args: redactSerializable(ev.args || {}), done: false });
         continue;
@@ -741,6 +802,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "stream") {
         finishReadBatch(false);
+        finishThink(false);
         const current = activeRef.current;
         if (current?.type === "streaming") {
           streamBufferRef.current += ev.token;
@@ -804,18 +866,25 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (isInternalAgentFailure(ev.content)) continue;
         discardStreaming();
         finishReadBatch(false);
+        const safeContent = removeAssistantProtocolText(redactSecrets(removeEmoji(ev.content))).trim();
+        const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
         if (ev.type === "answer") {
+          finishThink(false);
           finishedNormally = true;
           setPlan([]);
+        } else if (thinkTimeout) {
+          finishThink(true);
+        } else {
+          clearActive();
         }
-        const safeContent = removeAssistantProtocolText(redactSecrets(removeEmoji(ev.content))).trim();
-        if (safeContent) appendArchived({ id: nextId(), type: ev.type, content: safeContent });
+        if (safeContent && !thinkTimeout) appendArchived({ id: nextId(), type: ev.type, content: safeContent });
         continue;
       }
 
       if (ev.type === "stream-end") {
         flushStream();
         finishReadBatch(false);
+        finishThink(false);
         const current = activeRef.current;
         if (current?.type === "streaming") {
           clearActive();
@@ -829,6 +898,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     } catch (error) {
       completeStreaming();
       finishReadBatch(true);
+      finishThink(false);
       clearActive();
       const content = removeAssistantProtocolText(redactSecrets(error?.message || String(error))).trim();
       if (content) appendArchived({ id: nextId(), type: "error", content: `Unexpected error: ${content}` });
@@ -889,6 +959,21 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     resolve("");
   }, []);
 
+  const handleAbort = useCallback(() => {
+    if (!submittingRef.current) return;
+    // Archive any in-flight streaming content so it isn't lost
+    const active = activeRef.current;
+    if (active?.type === "streaming") {
+      flushStream();
+      clearActive();
+      appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(active.content) });
+    } else {
+      clearActive();
+    }
+    appendArchived({ id: nextId(), type: "answer", content: "Interrupted." });
+    agentRef.current?.abort();
+  }, [appendArchived]);
+
   const clearDisplay = useCallback(() => {
     process.stdout.write("\u001b[2J\u001b[H");
     completedRef.current = [];
@@ -907,7 +992,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   ];
   const visiblePlan = plan;
   const displayedActiveMessage = activeMessage;
-  const showWorking = running && activeMessage?.type !== "read-group";
+  const showWorking = running && !activeMessage;
 
   return h(ThemeProvider, { name: themeName, syntaxTheme: syntaxThemeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {
@@ -943,6 +1028,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           onSubmit: pendingQuestion ? answerQuestion : submit,
           onCommand: handleCommand,
           onClear: clearDisplay,
+          onAbort: handleAbort,
           commands: COMMANDS,
           disabled: running && !pendingQuestion,
           activeModel: currentModel,

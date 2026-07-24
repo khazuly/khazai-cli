@@ -1,5 +1,6 @@
 import { cleanInteractiveText } from "../../lib/interactive-text.js";
 import { ExecutionPolicy } from "../execution-policy.js";
+import { fallbackIntentContract, normalizeIntentContract } from "../intent-resolver.js";
 import { redactSecrets, extractCredential } from "../../lib/secrets.js";
 import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { randomUUID } from "node:crypto";
@@ -55,7 +56,20 @@ export class LoopMethods {
     this._completionRedirects = 0;
     this._resolvedArtifactDocumentation = false;
     this._researchSources = [];
-    this._executionPolicy = null;
+    let initialContract = fallbackIntentContract(this._currentRequest);
+    if (this._intentResolver?.resolve) {
+      try {
+        const resolved = await this._intentResolver.resolve({
+          input: this._currentRequest,
+          model: this._model,
+          signal,
+        });
+        if (resolved) initialContract = normalizeIntentContract(resolved, this._currentRequest);
+      } catch { /* fall back to heuristic */ }
+    }
+    this._executionPolicy = new ExecutionPolicy(initialContract);
+    this._taskContract = this._executionPolicy.contract;
+    this._activeTask = taskState(this._taskContract, this._currentRequest);
     let pendingProse = "";
     let proseContinuations = 0;
     while (this._turn < this._config.maxTurns) {
@@ -211,7 +225,7 @@ export class LoopMethods {
         if (!chatErr) break;
 
         finalError = chatErr;
-        if (streamStarted || receivedAnyToken) break;
+        if (streamStarted || receivedAnyToken || /request timed out|timeout|timed out/i.test(String(chatErr?.message || chatErr))) break;
         if (attempt < maxAttempts - 1) {
           try {
             await this._resetSession({ signal });
@@ -236,7 +250,11 @@ export class LoopMethods {
           yield { type: "tool-part", part: lifecyclePart };
         }
         this._finishLatency();
-        yield { type: "error", content: `Provider error: ${redactSecrets(finalError?.message || String(finalError))}` };
+        const message = finalError?.message || String(finalError);
+        const content = /request timed out|timeout|timed out/i.test(message)
+          ? "Analysis timed out"
+          : `Provider error: ${redactSecrets(message)}`;
+        yield { type: "error", content };
         return;
       }
       this._transportFailures = 0;
@@ -460,6 +478,9 @@ export class LoopMethods {
         failed: resultFailed(result),
         metadata,
       });
+      if (this._executionPolicy) {
+        this._executionPolicy.record(tool.name, tool.args, result, part.state.status === "error");
+      }
       this._lastToolResult = result;
       this._activeTask.lastToolResult = result.slice(0, 1500);
       this._activeTask.pendingProblem = part.state.status === "error" ? result.slice(0, 500) : "";

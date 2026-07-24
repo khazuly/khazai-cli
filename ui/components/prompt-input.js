@@ -33,6 +33,7 @@ export function PromptInput({
   commands = [],
   onCommand,
   onClear,
+  onAbort,
   activeModel,
   questionOptions = [],
   onSelectOption,
@@ -149,7 +150,12 @@ export function PromptInput({
   }, []);
 
   useInput((ch, key) => {
-    if (disabled) return;
+    if (disabled) {
+      if (ch === "\u001b" || key.escape) {
+        onAbort?.();
+      }
+      return;
+    }
 
     if (questionOptions.length > 0) {
       if (key.upArrow) {
@@ -336,7 +342,7 @@ export function PromptInput({
 
   const terminalWidth = stdout?.columns || 80;
   const panelWidth = Math.max(12, terminalWidth - 1);
-  const innerWidth = Math.max(1, panelWidth - 4);
+  const innerWidth = Math.max(1, panelWidth - 2);
   const inputCharacters = graphemes(input.value);
   const pasteLabel = pastePreview ? `[Pasted ${pastePreview.hiddenLength.toLocaleString()} chars]` : "";
   const visibleInput = secret && input.value
@@ -440,7 +446,7 @@ export function PromptInput({
       width: panelWidth,
       backgroundColor: disabled ? theme.panel : undefined,
       tone: disabled ? "border" : "primary",
-      paddingX: 1,
+      paddingX: 0,
     },
       h(Box, { flexDirection: "row" },
         h(Text, { color: disabled ? theme.muted : theme.primary, bold: !disabled }, "❯"),

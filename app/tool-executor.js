@@ -81,6 +81,7 @@ export class ToolExecutor {
     resultFailed = () => false,
     timeoutMs = 60_000,
     signal = null,
+    taskContext = null,
   }) {
     this.registry = registry;
     this.lifecycle = lifecycle;
@@ -95,6 +96,7 @@ export class ToolExecutor {
     this.resultFailed = resultFailed;
     this.timeoutMs = Math.max(250, Number(timeoutMs) || 60_000);
     this.signal = signal;
+    this.taskContext = taskContext;
   }
 
   async *_reject(part, call, message, reason = "denied") {
@@ -257,6 +259,9 @@ export class ToolExecutor {
       this.lifecycle.failed(part, redactSecrets(error?.message || String(error)));
     }
     const result = part.state.status === "error" ? part.state.error : part.state.output;
+    if (this.taskContext?.recordToolExecution) {
+      this.taskContext.recordToolExecution(call.name, call.args, result, part.state.status === "error");
+    }
     yield { type: "tool-part", part: { ...part } };
     yield {
       type: "tool-result",

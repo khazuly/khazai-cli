@@ -73,6 +73,13 @@ function ReadGroupCall({ count, currentFile, done, duration, failed }) {
 export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false, readGroup = false, count, currentFile, failed }) {
   if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed });
   const theme = useTheme();
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (done) return undefined;
+    const timer = setInterval(() => setFrame(value => value + 1), 80);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [done]);
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
   const accent = theme.colorEnabled ? theme[presentation.accentRole] : undefined;
   const stateLabel = presentation.state === "running"
@@ -84,7 +91,7 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
     : "muted";
   const prefix = presentation.state === "failed" || presentation.state === "warning"
     ? "[×]"
-    : presentation.state === "running" ? "⠋" : "[✓]";
+    : presentation.state === "running" ? SPINNER_FRAMES[frame % SPINNER_FRAMES.length] : "[✓]";
 
   return h(StatusRail, {
     flexShrink: 0,

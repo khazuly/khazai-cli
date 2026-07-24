@@ -1,5 +1,7 @@
 import { createElement as h } from "react";
+import { useEffect, useState } from "react";
 import { Text, Box, useStdout } from "ink";
+import { SPINNER_FRAMES } from "./status-bar.js";
 import { ToolCall } from "./tool-call.js";
 import { CodePreview } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
@@ -32,6 +34,36 @@ function RoleMessage({ role, content }) {
   );
 }
 
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(Number(ms) || 0));
+  const minutes = Math.floor(total / 60000);
+  const seconds = Math.floor((total % 60000) / 1000);
+  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function ThinkStatus({ message }) {
+  const theme = useTheme();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (message.done) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [message.done]);
+  const elapsed = formatElapsed((message.completedAt || now) - message.startedAt);
+  const activity = message.text || "Analyzing the execution context";
+  if (message.done) {
+    return h(Box, { flexDirection: "column", marginBottom: 1 },
+      h(Text, { color: message.failed ? theme.error : theme.success }, `${message.failed ? "[×]" : "[✓]"} ${activity} · ${elapsed}`),
+    );
+  }
+  const frame = Math.floor(now / 120) % SPINNER_FRAMES.length;
+  return h(Box, { flexDirection: "column", marginBottom: 1 },
+    h(Text, { color: theme.metadata }, SPINNER_FRAMES[frame], " ", activity, " · ", elapsed),
+    message.step ? h(Text, { color: theme.metadata, dimColor: true }, "  ", message.step) : null,
+  );
+}
+
 function StreamingMessage({ content, width }) {
   const theme = useTheme();
   const { stdout } = useStdout();
@@ -53,14 +85,17 @@ function StreamingMessage({ content, width }) {
 
 function UserMessage({ content }) {
   const theme = useTheme();
-  return h(StatusRail, {
+  return h(Box, {
+    flexDirection: "column",
     marginBottom: 1,
-    tone: "border",
+    borderStyle: "single",
+    borderTop: false,
+    borderBottom: false,
+    borderRight: false,
+    borderColor: theme.border,
   },
-    h(Box, { flexDirection: "column" },
-      h(Text, { bold: true, color: theme.metadata }, "You"),
-      h(Text, { color: theme.inputText, wrap: "wrap" }, content),
-    ),
+    h(Text, { bold: true, color: theme.metadata }, "You"),
+    h(Text, { color: theme.inputText, wrap: "wrap" }, content),
   );
 }
 
@@ -159,6 +194,8 @@ export function MessageList({ messages, streamingWidth = null }) {
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
       case "streaming":
         return h(StreamingMessage, { key: m.id, content: m.content, width: streamingWidth });
+      case "think":
+        return h(ThinkStatus, { key: m.id, message: m });
       case "error":
         return h(ErrorDisplay, { key: m.id, content: m.content });
       case "summary":
