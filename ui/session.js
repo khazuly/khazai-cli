@@ -23,7 +23,7 @@ import { EmptyState } from "./components/empty-state.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
-import { redactSecrets, redactSerializable } from "../lib/secrets.js";
+import { redactSecrets } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { SYNTAX_THEMES } from "./syntax-theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
@@ -689,7 +689,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const committed = commitResponseBuffer(responseBufferRef.current, analysisScope);
       responseBufferRef.current = committed.state;
       if (!committed.response) return false;
-      const content = normalizeStreamText(committed.response.content);
+      const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
       if (!content) return false;
       appendArchived({ id: committed.response.id, type: "answer", content });
       finalCommitted = true;
@@ -796,8 +796,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           options: ev.options,
           kind: "permission",
           permissionRequest: {
-            action: redactSecrets(ev.action),
-            target: redactSerializable(ev.target),
+            action: agent.redactForDisplay(ev.action),
+            target: agent.redactSerializableForDisplay(ev.target),
           },
           runId: ev.runId,
           turnId: ev.turnId,
@@ -815,7 +815,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           if (part.tool === "read") {
             startRead(
               part.callId,
-              redactSerializable(part.state.input || {}),
+              agent.redactSerializableForDisplay(part.state.input || {}),
               part.state.time?.start || Date.now(),
               part.state.status,
             );
@@ -826,7 +826,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           if (activeRef.current?.type === "tool" && activeRef.current.callId === part.callId) {
             activate({
               ...activeRef.current,
-              args: redactSerializable(part.state.input || {}),
+              args: agent.redactSerializableForDisplay(part.state.input || {}),
               status: part.state.status,
             });
           } else {
@@ -835,7 +835,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
               type: "tool",
               callId: part.callId,
               tool: part.tool,
-              args: redactSerializable(part.state.input || {}),
+              args: agent.redactSerializableForDisplay(part.state.input || {}),
               done: false,
               status: part.state.status,
               startedAt: part.state.time?.start || Date.now(),
@@ -845,7 +845,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           }
           continue;
         }
-        const safeResult = redactSecrets(
+        const safeResult = agent.redactForDisplay(
           part.state.status === "error" ? part.state.error : part.state.output,
         );
         const failed = part.state.status === "error";
@@ -866,7 +866,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             id: toolMessageId,
             type: "tool",
             tool: part.tool,
-            args: part.state.input || {},
+            args: agent.redactSerializableForDisplay(part.state.input || {}),
             runId: ev.runId,
             turnId: ev.turnId,
           }),
@@ -876,7 +876,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           failed,
           duration,
           resultSize: Buffer.byteLength(safeResult || ""),
-          metadata: redactSerializable(part.state.metadata || {}),
+          metadata: agent.redactSerializableForDisplay(part.state.metadata || {}),
           expanded: false,
         });
         continue;
@@ -887,7 +887,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.tool === "question") continue;
         resetStreaming();
         if (ev.tool === "read") {
-          startRead(ev.callId, redactSerializable(ev.args || {}));
+          startRead(ev.callId, agent.redactSerializableForDisplay(ev.args || {}));
           continue;
         }
         finishReadBatch(false);
@@ -897,7 +897,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           type: "tool",
           callId: ev.callId,
           tool: ev.tool,
-          args: redactSerializable(ev.args || {}),
+          args: agent.redactSerializableForDisplay(ev.args || {}),
           done: false,
           status: "pending",
           startedAt: Date.now(),
@@ -933,7 +933,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         const current = activeRef.current;
         const duration = current?.startedAt ? Date.now() - current.startedAt : null;
-        const safeResult = redactSecrets(ev.result);
+        const safeResult = agent.redactForDisplay(ev.result);
         if (isInternalAgentFailure(safeResult)) {
           // Legacy tools may still return a guard phrase as text. The agent
           // converts current guards to steering; this protects the UI while a
@@ -953,7 +953,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (completedRef.current.some(message => message.id === toolMessageId)) continue;
         appendArchived(
           current?.type === "tool"
-            ? { ...current, content: safeResult, done: true, failed, duration, resultSize, metadata: redactSerializable(ev.metadata || {}), expanded: false }
+            ? { ...current, content: safeResult, done: true, failed, duration, resultSize, metadata: agent.redactSerializableForDisplay(ev.metadata || {}), expanded: false }
             : {
                 id: toolMessageId,
                 type: "tool",
@@ -964,7 +964,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
                 failed,
                 duration,
                 resultSize,
-                metadata: redactSerializable(ev.metadata || {}),
+                metadata: agent.redactSerializableForDisplay(ev.metadata || {}),
                 expanded: false,
                 runId: ev.runId,
                 turnId: ev.turnId,
@@ -981,7 +981,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (isInternalAgentFailure(ev.content)) continue;
         discardStreaming();
         finishReadBatch(false);
-        const safeContent = removeAssistantProtocolText(redactSecrets(removeEmoji(ev.content))).trim();
+        const safeContent = removeAssistantProtocolText(agent.redactForDisplay(removeEmoji(ev.content))).trim();
         const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
         if (ev.type === "answer") {
           pauseAnalysis();
@@ -1030,7 +1030,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       pauseAnalysis();
       analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
       clearActive();
-      const content = removeAssistantProtocolText(redactSecrets(error?.message || String(error))).trim();
+      const content = removeAssistantProtocolText(agent.redactForDisplay(error?.message || String(error))).trim();
       if (content) {
         fatalError = `Unexpected error: ${content}`;
         appendArchived({ id: nextId(), type: "error", content: fatalError });
@@ -1090,6 +1090,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           });
         }
       }
+      if (!recoverableFailure) agent.clearTurnSecrets(analysisScope);
     }
   }, [appendArchived]);
   submitRef.current = submit;

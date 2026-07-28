@@ -13,6 +13,7 @@ import { StateMethods } from "./agent/state.js";
 import { ToolMethods } from "./agent/tools.js";
 import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
+import { SecretStore } from "./secret-store.js";
 
 export class Agent {
   constructor(registry, opts = {}) {
@@ -103,6 +104,7 @@ export class Agent {
     this._resetSession = opts.resetSession || resetSession;
     this._recoverableProviderRequest = null;
     this._shellScheduler = new ShellScheduler(this._workspace);
+    this._secretStore = new SecretStore();
     const configuredResolver = opts.intentResolver;
     this._intentResolver = typeof configuredResolver === "function"
       ? { resolve: configuredResolver }
@@ -118,6 +120,8 @@ export class Agent {
     if (this._activeRun) this._activeRun.cancelled = true;
     this._abortController?.abort();
     this._shellScheduler.cancelActive();
+    this._secretStore.clear();
+    this._recoverableProviderRequest = null;
   }
   setModel(model) {
     if (model !== this._model) {
@@ -137,6 +141,9 @@ export class Agent {
   setQuestionHandler(handler) { this._questionHandler = handler; }
   setPermissionHandler(handler) { this._permissionHandler = handler; }
   setAutoApprove(value) { this._permissionService.setAuto(value); }
+  redactForDisplay(value) { return this._secretStore.redact(value); }
+  redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
+  clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
   compact() { this._compactMessages(true); return this.exportSessionState(); }
 }
 

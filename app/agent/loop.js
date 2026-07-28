@@ -1,12 +1,11 @@
 import { cleanInteractiveText } from "../../lib/interactive-text.js";
-import { redactSecrets, extractCredential } from "../../lib/secrets.js";
+import { redactSecrets } from "../../lib/secrets.js";
 import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
-
 export class LoopMethods {
   async *loop(input, signal, scope = {}) {
     await this._registryReady;
@@ -31,11 +30,12 @@ export class LoopMethods {
     this._abortController = new AbortController();
     if (signal?.aborted) this._abortController.abort();
     else signal?.addEventListener("abort", () => this._abortController.abort(), { once: true });
+    try {
     this._latency = { inputReceived: performance.now() };
     this._compactMessages();
-    const safeInput = redactSecrets(input);
-    if (!retryProvider && safeInput.trimStart().startsWith("!")) {
-      yield* this._runShellShortcut(safeInput.trimStart());
+    const requestInput = retryProvider ? null : this._secretStore.capture(input, runId, turnId);
+    if (!retryProvider && requestInput.rawContent.trimStart().startsWith("!")) {
+      yield* this._runShellShortcut(requestInput.rawContent.trimStart());
       return;
     }
     if (retryProvider) {
@@ -45,9 +45,10 @@ export class LoopMethods {
         }
         return;
       }
+      this._secretStore.rebind(runId, turnId);
       prepareProviderRetry(this);
     } else {
-      await initializeAgentRequest(this, safeInput, signal);
+      await initializeAgentRequest(this, requestInput.protectedContent, signal, requestInput.rawContent);
     }
     let pendingProse = "";
     let proseContinuations = 0;
@@ -79,7 +80,6 @@ export class LoopMethods {
       const deferProse = Boolean(pendingProse);
       const requestModel = this._model;
       const maxAttempts = this._chatHandlesRetries || /(?:claude|anthropic)/i.test(String(requestModel)) ? 1 : 2;
-
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         let chatErr;
         let receivedAnyToken = false;
@@ -235,7 +235,6 @@ export class LoopMethods {
         }
         break;
       }
-
       if (finalError && reply === undefined) {
         if (!isRunActive()) {
           finalizeRun();
@@ -262,7 +261,6 @@ export class LoopMethods {
       }
       this._recoverableProviderRequest = null;
       this._transportFailures = 0;
-
       if (!reply || !reply.trim() || reply.trim() === "{}" || reply.trim() === "[]") {
         this._emptyResponses++;
         if (this._emptyResponses < 3) {
@@ -351,7 +349,7 @@ export class LoopMethods {
           callId: part.callId,
           failed: true,
         });
-        this._messages.push({ role: "assistant", content: reply });
+        this._messages.push({ role: "assistant", content: this._secretStore.protect(reply, runId, turnId) });
         this._messages.push({ role: "user", content: `---TOOL ERROR: invalid_tool_call---\n${part.state.error}` });
         for (const lifecyclePart of this._lifecycle.finishStep("tool-error")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
@@ -379,7 +377,7 @@ export class LoopMethods {
             yield scoped({ type: "stream", token: remaining });
           }
         }
-        this._messages.push({ role: "assistant", content: visibleReply });
+        this._messages.push({ role: "assistant", content: this._secretStore.protect(visibleReply, runId, turnId) });
         this._clearPendingAction();
         for (const lifecyclePart of this._lifecycle.finishStep("stop")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
@@ -419,7 +417,7 @@ export class LoopMethods {
         tool_calls: [{
           id: tool.id,
           type: "function",
-          function: { name: tool.name, arguments: JSON.stringify(publicToolArgs(tool.args)) },
+          function: { name: tool.name, arguments: JSON.stringify(this._secretStore.protectSerializable(publicToolArgs(tool.args), runId, turnId)) },
         }],
       });
       const planTracker = auxiliaryTool ? null : yield* this._startPlanItem();
@@ -449,8 +447,9 @@ export class LoopMethods {
         this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
         yield { type: "plan", items: this._plan.map(item => ({ ...item })) };
       }
-      result = redactSecrets(result);
-      this._rememberToolOutcome(tool, result);
+      const protectedResult = this._secretStore.protect(result, runId, turnId);
+      result = this._secretStore.redact(protectedResult);
+      this._rememberToolOutcome(tool, protectedResult);
       if (["web", "webfetch", "websearch", "repo"].includes(tool.name)) {
         this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
       }
@@ -483,7 +482,7 @@ export class LoopMethods {
         role: "tool",
         tool_call_id: part.callId,
         name: tool.name,
-        content: result,
+        content: protectedResult,
       });
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });
@@ -493,6 +492,9 @@ export class LoopMethods {
     this._finishLatency();
     if (finalizeRun()) {
       yield scoped({ type: "error", content: `Maximum step count reached (${this._config.maxTurns}).` });
+    }
+    } finally {
+      if (!this._recoverableProviderRequest) this._secretStore.clear(runId, turnId);
     }
   }
 };

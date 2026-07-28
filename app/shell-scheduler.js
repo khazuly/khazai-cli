@@ -113,6 +113,14 @@ export class ShellScheduler {
         blocked: true,
       };
     }
+    if (previous?.status === "blocked") {
+      return {
+        result: previous.result || "Shell command is blocked by the active permission policy.",
+        failed: true,
+        blocked: true,
+        terminal: true,
+      };
+    }
     if (previous?.status === "failed") {
       const retryReason = String(call.args?.retryReason || "").trim();
       if (previous.attempt >= 2 || !retryReason) {
@@ -172,7 +180,8 @@ export class ShellScheduler {
     const record = this._record(call);
     if (!record || !this._scopeCurrent(record)) return;
     const text = String(result || "");
-    record.status = failed ? "failed" : "completed";
+    const permissionDenied = failed && /Permission (?:denied|rejected):/i.test(text);
+    record.status = permissionDenied ? "blocked" : failed ? "failed" : "completed";
     record.completedAt = Date.now();
     record.exitCode = Number(/^Exit:\s*(-?\d+)/im.exec(text)?.[1] ?? (failed ? -1 : 0));
     record.error = failed ? text.split("\n").slice(1).join("\n").trim() : "";

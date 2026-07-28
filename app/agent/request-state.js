@@ -38,7 +38,7 @@ export function prepareProviderRetry(agent) {
   agent._activeTask = taskState(agent._taskContract, agent._currentRequest);
 }
 
-export async function initializeAgentRequest(agent, input, signal) {
+export async function initializeAgentRequest(agent, input, signal, authorizedInput = input) {
   agent._recoverableProviderRequest = null;
   agent._messages.push({ role: "user", content: input });
   agent._requestStartIndex = agent._messages.length - 1;
@@ -79,7 +79,7 @@ export async function initializeAgentRequest(agent, input, signal) {
   if (agent._intentResolver?.resolve) {
     try {
       const resolved = await agent._intentResolver.resolve({
-        input: agent._currentRequest,
+        input: authorizedInput,
         model: agent._model,
         signal,
       });

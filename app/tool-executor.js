@@ -41,15 +41,15 @@ function outputPath(sessionId, callId) {
   return join(directory, `${callId}.txt`);
 }
 
-function truncateOutput(output, sessionId, callId) {
-  const source = redactSecrets(String(output || ""));
+function truncateOutput(output, sessionId, callId, protect, redact) {
+  const source = protect(String(output || ""));
   const lines = source.split("\n");
   const bytes = Buffer.byteLength(source);
   if (bytes <= MAX_OUTPUT_BYTES && lines.length <= MAX_OUTPUT_LINES) {
     return { output: source, metadata: {} };
   }
   const path = outputPath(sessionId, callId);
-  writeFileSync(path, source, { encoding: "utf-8", mode: 0o600 });
+  writeFileSync(path, redact(source), { encoding: "utf-8", mode: 0o600 });
   chmodSync(path, 0o600);
   let visible = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
   if (Buffer.byteLength(visible) > MAX_OUTPUT_BYTES) {
@@ -110,6 +110,9 @@ export class ToolExecutor {
     runId = null,
     turnId = null,
     shellScheduler = null,
+    protectOutput = redactSecrets,
+    protectData = value => value,
+    redactOutput = redactSecrets,
   }) {
     this.registry = registry;
     this.lifecycle = lifecycle;
@@ -128,6 +131,9 @@ export class ToolExecutor {
     this.runId = runId;
     this.turnId = turnId;
     this.shellScheduler = shellScheduler;
+    this.protectOutput = protectOutput;
+    this.protectData = protectData;
+    this.redactOutput = redactOutput;
   }
 
   _approvalRequest(call, permission, outsideWorkspace = false) {
@@ -157,7 +163,7 @@ export class ToolExecutor {
     this.permissionService.recordApproval({
       tool: call.name,
       permission: permission.permission,
-      value: permission.value,
+      value: this.protectOutput(permission.value),
       source,
     });
   }
@@ -187,7 +193,7 @@ export class ToolExecutor {
     const part = this.lifecycle.pending({
       callId: call.id,
       tool: call.name,
-      input: call.args,
+      input: this.protectData(call.args),
       metadata: { runId: this.runId, turnId: this.turnId },
     });
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
@@ -250,7 +256,7 @@ export class ToolExecutor {
       this._recordApproval(call, permission, "allow-all");
     }
 
-    this.lifecycle.running(part, call.args);
+    this.lifecycle.running(part, this.protectData(call.args));
     this.shellScheduler?.running(call);
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
     call.args = this.prepareArgs(call.name, call.args);
@@ -283,7 +289,7 @@ export class ToolExecutor {
         const answer = await this.questionHandler({ question, options });
         raw = {
           title: "Question",
-          output: `User answered: ${redactSecrets(String(answer))}`,
+          output: `User answered: ${this.protectOutput(String(answer))}`,
           metadata: {},
         };
       } else {
@@ -322,16 +328,22 @@ export class ToolExecutor {
       }
       let output = normalizeToolOutput(raw, call.name);
       output = await this.registry.trigger("tool.execute.after", { ...context, args: call.args }, output);
-      const truncated = truncateOutput(output.output, this.sessionId, call.id);
+      const truncated = truncateOutput(
+        output.output,
+        this.sessionId,
+        call.id,
+        this.protectOutput,
+        this.redactOutput,
+      );
       output = {
         ...output,
         output: truncated.output,
-        metadata: { ...(output.metadata || {}), ...truncated.metadata },
+        metadata: this.protectData({ ...(output.metadata || {}), ...truncated.metadata }),
       };
       if (this.resultFailed(output.output)) this.lifecycle.failed(part, output.output, output.metadata);
       else this.lifecycle.completed(part, output);
     } catch (error) {
-      this.lifecycle.failed(part, redactSecrets(error?.message || String(error)));
+      this.lifecycle.failed(part, this.protectOutput(error?.message || String(error)));
     }
     const result = part.state.status === "error" ? part.state.error : part.state.output;
     this.shellScheduler?.complete(call, result, part.state.status === "error");

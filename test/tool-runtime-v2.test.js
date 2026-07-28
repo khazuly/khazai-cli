@@ -5,8 +5,10 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../app/agent.js";
-import { PermissionService } from "../app/permission.js";
+import { externalPaths, PermissionService } from "../app/permission.js";
 import { Registry } from "../app/registry.js";
+import { ShellScheduler } from "../app/shell-scheduler.js";
+import { ToolExecutor } from "../app/tool-executor.js";
 import { ToolLifecycle } from "../app/tool-lifecycle.js";
 import { toProviderMessages } from "../lib/providers.js";
 import { readTool } from "../tools/file.js";
@@ -148,6 +150,85 @@ test("external-directory approval is separate from normal read permission", asyn
     await readTool.execute({ path, _agentWorkspace: workspace, _allowExternal: true }),
     /outside/,
   );
+});
+
+test("shell redirects distinguish safe devices from external file access", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-paths-"));
+  const service = new PermissionService(workspace, { permission: {} });
+  const safe = [
+    `cd "${workspace}" && grep -rn "auto.free" --include="*.js" . 2>/dev/null`,
+    `cd "${workspace}" && cat test/model-selection.test.js 2>/dev/null | head -100`,
+    "cat < /dev/stdin 1>/dev/stdout 2>/dev/stderr",
+    "cat /dev/fd/0 2>&1 1>&2",
+  ];
+  for (const command of safe) {
+    assert.deepEqual(externalPaths("bash", { command, workdir: workspace }, workspace), []);
+    assert.equal(service.evaluate("bash", { command, workdir: workspace }).decision, "allow");
+  }
+
+  const redirected = service.evaluateExternalDirectory("bash", {
+    command: "grep value . 2>>/tmp/khazai-results.log",
+    workdir: workspace,
+  });
+  assert.equal(redirected.decision, "ask");
+  assert.equal(redirected.value, "/tmp/khazai-results.log");
+  for (const command of ["cat /etc/passwd", "cat /tmp/dev/null"]) {
+    assert.equal(service.evaluateExternalDirectory("bash", { command, workdir: workspace }).decision, "ask");
+  }
+  assert.equal(service.evaluateExternalDirectory("bash", {
+    command: "cat ../../outside.txt",
+    workdir: join(workspace, "src"),
+  }).decision, "ask");
+});
+
+test("permission-denied Shell calls become terminal blockers without execution", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-denied-"));
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    name: "bash",
+    description: "Shell",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" }, workdir: { type: "string" } },
+      required: ["command"],
+    },
+    execute: () => { executions++; return "unexpected"; },
+  });
+  const scheduler = new ShellScheduler(workspace);
+  scheduler.beginRun("run-denied", "turn-denied");
+  const call = {
+    id: "shell-denied",
+    name: "bash",
+    args: { command: "cat /etc/passwd", workdir: workspace },
+  };
+  assert.equal(scheduler.reserve(call), null);
+  const executor = new ToolExecutor({
+    registry,
+    lifecycle: new ToolLifecycle({ sessionId: "shell-denied", workspace }),
+    permissionService: new PermissionService(workspace, {
+      permission: { external_directory: "deny" },
+    }),
+    workspace,
+    sessionId: "shell-denied",
+    runId: "run-denied",
+    turnId: "turn-denied",
+    shellScheduler: scheduler,
+  });
+  const parts = [];
+  for await (const event of executor.execute(call)) {
+    if (event.type === "tool-part") parts.push(event.part);
+  }
+  assert.equal(executions, 0);
+  assert.deepEqual(parts.map(part => part.callId), ["shell-denied", "shell-denied"]);
+  assert.deepEqual(parts.map(part => part.state.status), ["pending", "error"]);
+  assert.equal([...scheduler.records.values()][0].status, "blocked");
+
+  const repeated = scheduler.reserve({ ...call, id: "shell-denied-again" });
+  assert.equal(repeated.terminal, true);
+  assert.match(repeated.result, /Permission denied: external_directory/);
+  scheduler.beginRun("run-new", "turn-new");
+  assert.equal(scheduler.records.size, 0);
 });
 
 test("registry hooks wrap normalized tool execution in deterministic order", async () => {

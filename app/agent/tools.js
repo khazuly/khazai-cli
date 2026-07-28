@@ -11,6 +11,22 @@ import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
 export class ToolMethods {
+  _protectForContext(value) {
+    return this._secretStore.protect(
+      value,
+      this._activeRun?.runId,
+      this._activeRun?.turnId,
+    );
+  }
+
+  _protectDataForContext(value) {
+    return this._secretStore.protectSerializable(
+      value,
+      this._activeRun?.runId,
+      this._activeRun?.turnId,
+    );
+  }
+
   _scopedToolEvent(event) {
     return {
       ...event,
@@ -20,14 +36,14 @@ export class ToolMethods {
   }
 
   _recordShellReuse(tool, decision) {
-    const result = redactSecrets(String(decision.result || ""));
+    const result = this._protectForContext(String(decision.result || ""));
     this._messages.push({
       role: "assistant",
       content: null,
       tool_calls: [{
         id: tool.id,
         type: "function",
-        function: { name: tool.name, arguments: JSON.stringify(publicToolArgs(tool.args)) },
+        function: { name: tool.name, arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(tool.args))) },
       }],
     });
     this._messages.push({
@@ -118,16 +134,17 @@ export class ToolMethods {
         type: "function",
         function: {
           name: entry.tool.name,
-          arguments: JSON.stringify(publicToolArgs(entry.tool.args)),
+          arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(entry.tool.args))),
         },
       })),
     });
     for (const entry of settled) {
-      const result = redactSecrets(String(entry.result));
-      const metadata = toolMetadata(entry.tool, result);
-      const failed = entry.failed || resultFailed(result);
+      const result = this._protectForContext(String(entry.result));
+      const displayResult = this.redactForDisplay(result);
+      const metadata = toolMetadata(entry.tool, displayResult);
+      const failed = entry.failed || resultFailed(displayResult);
       this._rememberToolOutcome(entry.tool, result);
-      this._toolEvidence.push({ tool: entry.tool.name, args: { ...entry.tool.args }, result, failed, metadata });
+      this._toolEvidence.push({ tool: entry.tool.name, args: this._protectDataForContext(entry.tool.args), result, failed, metadata });
       this._messages.push({
         role: "tool",
         tool_call_id: entry.tool.id,
@@ -135,7 +152,7 @@ export class ToolMethods {
         content: result,
       });
       if (["websearch", "webfetch", "repo"].includes(entry.tool.name)) {
-        this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
+        this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(displayResult)])].slice(0, 20);
       }
       this._lastToolResult = result;
       this._activeTask.lastToolResult = result.slice(0, 1500);
@@ -163,7 +180,7 @@ export class ToolMethods {
         type: "function",
         function: {
           name: call.name,
-          arguments: JSON.stringify(publicToolArgs(call.args)),
+          arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(call.args))),
         },
       })),
     });
@@ -178,15 +195,16 @@ export class ToolMethods {
           yield event;
           continue;
         }
-        const result = redactSecrets(String(event.result));
+        const result = this._protectForContext(String(event.result));
+        const displayResult = this.redactForDisplay(result);
         completedPart = event.part;
         failed ||= event.failed;
         callFailed ||= event.failed;
-        const metadata = toolMetadata(event.call, result);
+        const metadata = toolMetadata(event.call, displayResult);
         this._rememberToolOutcome(event.call, result);
         this._toolEvidence.push({
           tool: event.call.name,
-          args: { ...event.call.args },
+          args: this._protectDataForContext(event.call.args),
           result,
           failed: event.failed,
           metadata,
@@ -324,16 +342,17 @@ export class ToolMethods {
       return;
     }
 
+    const protectedInput = this._protectForContext(input);
     this._taskContract = normalizeIntentContract({
       intent: "change",
       category: "SHELL_OPERATION",
       operation: "shell",
       requiredEvidence: ["shell"],
       modifiesFiles: false,
-    }, input);
-    this._activeTask = taskState(this._taskContract, input);
-    this._currentRequest = input;
-    this._messages.push({ role: "user", content: input });
+    }, protectedInput);
+    this._activeTask = taskState(this._taskContract, protectedInput);
+    this._currentRequest = protectedInput;
+    this._messages.push({ role: "user", content: protectedInput });
     this._requestStartIndex = this._messages.length - 1;
     this._toolEvidence = [];
     this._toolCallHistory = [];
@@ -357,7 +376,7 @@ export class ToolMethods {
         type: "function",
         function: {
           name: call.name,
-          arguments: JSON.stringify(publicToolArgs(call.args)),
+          arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(call.args))),
         },
       }],
     });
@@ -366,7 +385,7 @@ export class ToolMethods {
     let finishReason = "tool-calls";
     for await (const event of this._toolExecutor().execute(call, { agent: this._agentProfile?.name })) {
       if (event.type === "execution-result") {
-        result = redactSecrets(String(event.result || ""));
+        result = this._protectForContext(String(event.result || ""));
         failed = Boolean(event.failed);
         finishReason = event.finishReason;
       } else {
@@ -419,7 +438,12 @@ export class ToolMethods {
         selected.shift();
       }
     }
-    return [{ role: "system", content: sys }, ...summary, ...selected];
+    const context = [{ role: "system", content: sys }, ...summary, ...selected];
+    return this._secretStore.resolveSerializable(
+      context,
+      this._activeRun?.runId,
+      this._activeRun?.turnId,
+    );
   }
 
 

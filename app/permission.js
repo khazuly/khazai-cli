@@ -122,6 +122,114 @@ function systemMutationPath(path, workspace) {
     .some(root => target === root || target.startsWith(`${root}${sep}`));
 }
 
+function shellTokens(command) {
+  const tokens = [];
+  let word = "";
+  let quote = "";
+  let escaped = false;
+  const flush = () => {
+    if (!word) return;
+    tokens.push({ type: "word", value: word });
+    word = "";
+  };
+  const source = String(command || "");
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (escaped) {
+      word += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = "";
+      else word += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      flush();
+      continue;
+    }
+    if ("<>".includes(character) || character === "&" && source[index + 1] === ">") {
+      let descriptor = "";
+      if (/^\d+$/.test(word)) {
+        descriptor = word;
+        word = "";
+      } else {
+        flush();
+      }
+      let operator = character;
+      if (source[index + 1] === character || source[index + 1] === "&") {
+        operator += source[++index];
+      }
+      tokens.push({ type: "redirect", value: `${descriptor}${operator}` });
+      continue;
+    }
+    if (";&|()".includes(character)) {
+      flush();
+      let operator = character;
+      if (source[index + 1] === character && ";&|".includes(character)) {
+        operator += source[++index];
+      }
+      tokens.push({ type: "separator", value: operator });
+      continue;
+    }
+    word += character;
+  }
+  if (escaped) word += "\\";
+  flush();
+  return tokens;
+}
+
+function safeDevicePath(path) {
+  const target = resolve("/", String(path || ""));
+  return ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr"].includes(target)
+    || /^\/dev\/fd\/\d+$/.test(target);
+}
+
+function shellAccesses(command) {
+  const tokens = shellTokens(command);
+  const accesses = [];
+  let commandPosition = true;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.type === "separator") {
+      commandPosition = true;
+      continue;
+    }
+    if (token.type === "redirect") {
+      const target = tokens[index + 1];
+      if (!target || target.type !== "word") continue;
+      index++;
+      const descriptorCopy = token.value.endsWith(">&") || token.value.endsWith("<&");
+      if (!descriptorCopy && !token.value.includes("<<")) {
+        accesses.push({ value: target.value, redirect: true });
+      }
+      continue;
+    }
+    if (commandPosition && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
+    if (commandPosition) {
+      commandPosition = false;
+      if (!/^(?:\.{0,2}\/|~\/|\$HOME\/)/.test(token.value)) continue;
+    }
+    let value = token.value;
+    if (value.startsWith("-") && value.includes("=")) value = value.slice(value.indexOf("=") + 1);
+    if (
+      value === "~" || value.startsWith("~/") || value.startsWith("$HOME/")
+      || value.startsWith("/") || value === ".." || value.startsWith("../")
+      || value.startsWith("./") || value.includes("/")
+    ) accesses.push({ value, redirect: false });
+  }
+  return accesses;
+}
+
 export function hardSafetyViolation(toolName, args = {}, workspace = process.cwd()) {
   if (["write", "edit"].includes(toolName) && args.path && systemMutationPath(args.path, workspace)) {
     return "Modifying system directories is blocked.";
@@ -143,22 +251,23 @@ export function hardSafetyViolation(toolName, args = {}, workspace = process.cwd
   if (
     /(?:^|[;&|]\s*)(?:rm|mv|cp|chmod|chown|mkdir|touch|install|tee)\b[^;&|]*\/(?:bin|boot|dev|etc|proc|sbin|sys|usr)(?:\/|\s|$)/i
       .test(command)
-    || /(?:^|\s)(?:>>?|2>>?)\s*\/(?:bin|boot|dev|etc|proc|sbin|sys|usr)(?:\/|\s|$)/i.test(command)
+    || shellAccesses(command).some(access =>
+      access.redirect
+      && !safeDevicePath(access.value)
+      && systemMutationPath(access.value, args.workdir || workspace)
+    )
   ) return "Modifying system directories is blocked.";
   return "";
 }
 
 function shellPaths(command, workdir, workspace) {
-  const paths = [];
-  if (workdir) paths.push(workdir);
-  const tokens = String(command || "").match(/(?:[^\s"'`]+|"[^"]*"|'[^']*')+/g) || [];
-  for (const raw of tokens) {
-    let token = raw.replace(/^['"]|['"]$/g, "").replace(/^\d*[<>]+/, "");
-    if (token.includes("=")) token = token.slice(token.indexOf("=") + 1);
-    if (
-      token === "~" || token.startsWith("~/") || token.startsWith("$HOME/")
-      || token.startsWith("/") || token === ".." || token.startsWith("../")
-    ) paths.push(token);
+  const cwd = resolve(workspace, expandHome(workdir || workspace));
+  const paths = workdir ? [cwd] : [];
+  for (const access of shellAccesses(command)) {
+    const expanded = expandHome(access.value);
+    const target = resolve(cwd, expanded);
+    if (safeDevicePath(target)) continue;
+    paths.push(target);
   }
   return [...new Set(paths.map(path => outside(path, workspace)).filter(Boolean))];
 }

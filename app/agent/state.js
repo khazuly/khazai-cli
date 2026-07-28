@@ -1,6 +1,6 @@
 import { countTokens } from "../../lib/tokens.js";
 import { resolveModelDescriptor } from "../../lib/llm.js";
-import { redactSecrets, redactSerializable } from "../../lib/secrets.js";
+import { redactSecrets } from "../../lib/secrets.js";
 import { sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { getProviderPrompt } from "../prompts.js";
 import { ExecutionPolicy } from "../execution-policy.js";
@@ -42,7 +42,7 @@ export class StateMethods {
       permissionApprovals: this._permissionService.approvalHistory(),
       recoverableProviderRequest: this._recoverableProviderRequest,
     };
-    return redactSerializable(state);
+    return this._secretStore.redactSerializable(state);
   }
 
   restoreSessionState(state) {
@@ -165,7 +165,7 @@ export class StateMethods {
   }
 
   _cleanAnswer(text) {
-    let clean = sanitizeAssistantIdentity(redactSecrets(text))
+    let clean = sanitizeAssistantIdentity(this._secretStore.redact(text))
       .replace(/^final answer\s*:?\s*/im, "")
       .replace(/```\w*\n[\s\S]*?```/g, (m) => {
         const code = m.replace(/```\w*\n?/g, "").trim();
@@ -410,7 +410,7 @@ export class StateMethods {
   }
 
   _debugToolRecovery(kind, detail) {
-    if (this._debug) console.error(`[khazai debug] tool recovery (${kind}): ${detail}`);
+    if (this._debug) console.error(`[khazai debug] tool recovery (${kind}): ${this._secretStore.redact(detail)}`);
   }
 
   _steer({ detectedIntent, proposedAction, recommendedAction, guidance }) {
@@ -487,6 +487,9 @@ export class StateMethods {
       runId: this._activeRun?.runId,
       turnId: this._activeRun?.turnId,
       shellScheduler: this._shellScheduler,
+      protectOutput: value => this._protectForContext(value),
+      protectData: value => this._protectDataForContext(value),
+      redactOutput: value => this.redactForDisplay(value),
     });
   }
 
