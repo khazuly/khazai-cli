@@ -28,6 +28,7 @@ export const COMMANDS = [
   { name: "/undo", description: "Undo the last compatible turn", group: "session" },
   { name: "/redo", description: "Redo the last undone turn", group: "session" },
   { name: "/compact", description: "Compact session context", group: "session" },
+  { name: "/retry", description: "Retry the latest failed model continuation", group: "session" },
   { name: "/export", description: "Export this session to Markdown", group: "session" },
   { name: "/connect", description: "Connect an OpenAI-compatible provider", group: "workspace" },
   { name: "/agent", description: "Select a primary agent", group: "workspace" },
@@ -42,7 +43,7 @@ export const COMMANDS = [
   { name: "/details", description: "Toggle tool result details", group: "view" },
   { name: "/expand", description: "Expand the latest tool result", group: "view" },
   { name: "/collapse", description: "Collapse tool details", group: "view" },
-  { name: "/auto", description: "Toggle auto-approval", group: "settings" },
+  { name: "/allow-all", description: "Allow tool permissions for this session", group: "settings" },
   { name: "/help", description: "Show command reference", group: "settings" },
   { name: "/exit", description: "Exit KhazAI", group: "settings" },
 ];

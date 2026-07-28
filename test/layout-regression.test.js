@@ -6,7 +6,7 @@ import { createElement as h } from "react";
 import { Box, Static, Text, render } from "ink";
 import { MessageList } from "../ui/components/message-list.js";
 import { normalizeVerticalWhitespace } from "../ui/text-layout.js";
-import { normalizeStreamText, shouldShowCompletionSummary, streamViewportText } from "../ui/session.js";
+import { normalizeStreamText, streamViewportText } from "../ui/session.js";
 
 class NarrowTerminal extends Writable {
   constructor(columns, rows) {
@@ -62,16 +62,16 @@ test("narrow terminal keeps consecutive tool blocks in normal vertical flow", as
     { id: "tool-fetch-1", type: "tool", tool: "web", args: { url: "https://example.com/a/very/long/path" }, done: true, content: "FETCH-FIRST\nContent-Type: text/html" },
     { id: "tool-search-1", type: "tool", tool: "websearch", args: { query: "a long search query that wraps" }, done: true, content: "SEARCH-MIDDLE\nTwo results" },
     { id: "tool-fetch-2", type: "tool", tool: "web", args: { url: "https://example.com/another/long/path" }, done: true, content: "FETCH-LAST\nContent-Type: text/html" },
-    { id: "stream-answer", type: "streaming", content: "A long streaming response that wraps naturally in a narrow terminal without reserving the full viewport height." },
+    { id: "completed-answer", type: "answer", content: "A completed response that wraps naturally in a narrow terminal without reserving the full viewport height." },
     { id: "error-result", type: "error", content: "Error: narrow fixture failure\nThe error details also wrap naturally." },
     { id: "task-summary", type: "summary", tools: 3, created: 0, updated: 0, tests: 0, duration: 1250 },
   ];
 
   for (const [columns, rows] of [[40, 20], [50, 30]]) {
     const frame = await renderFrame(messages, columns, rows);
-    const first = frame.indexOf("https://example.com/a/very");
-    const middle = frame.indexOf("a long search query");
-    const last = frame.indexOf("https://example.com/another");
+    const first = frame.indexOf("FETCH-FIRST");
+    const middle = frame.indexOf("SEARCH-MIDDLE");
+    const last = frame.indexOf("FETCH-LAST");
     assert.ok(first >= 0 && first < middle && middle < last, `tool order changed at ${columns} columns`);
     assert.ok(maximumBlankRun(frame.trimEnd()) <= 1, `more than one blank row rendered at ${columns} columns`);
     assert.ok(frame.split("\n").length < rows * 2, `message items reserved a viewport-sized block at ${columns} columns`);
@@ -101,22 +101,17 @@ test("markdown normalization dedents prose without changing fenced code", () => 
   assert.match(content, /    const value = 1;  /);
 });
 
-test("streaming answer never adds a viewport-overflow cursor marker", async () => {
+test("private streaming messages are never rendered", async () => {
   const frame = await renderFrame([{
     id: "stream-without-overflow-marker",
     type: "streaming",
     content: "Implementasi Baileys dengan Pairing Code",
   }], 40, 20);
 
-  assert.match(frame, /KhazAI/);
-  assert.match(frame, /Implementasi Baileys/);
-  assert.doesNotMatch(frame, /_\s*$/m);
-  for (const line of frame.split("\n")) {
-    assert.ok(line.length <= 40, `streaming row exceeds viewport width: ${line}`);
-  }
+  assert.doesNotMatch(frame, /KhazAI|Implementasi Baileys/);
 });
 
-test("live streaming renders a bounded tail before the response is committed", async () => {
+test("partial Markdown remains hidden before response completion", async () => {
   const content = Array.from({ length: 12 }, (_, index) => `stream line ${index + 1}`).join("\n");
   const frame = await renderFrame([{
     id: "bounded-live-stream",
@@ -124,10 +119,7 @@ test("live streaming renders a bounded tail before the response is committed", a
     content,
   }], 40, 20);
 
-  assert.match(frame, /KhazAI/);
-  assert.match(frame, /stream line 12/);
-  assert.doesNotMatch(frame, /stream line 1\n/);
-  assert.match(frame, /…/);
+  assert.doesNotMatch(frame, /KhazAI|stream line/);
 });
 
 test("streaming preview stays within the real viewport while retaining the full tail", () => {
@@ -153,12 +145,6 @@ test("stream normalization preserves spaces across provider chunks", () => {
   const first = "Mau saya buat script";
   const second = " automation untuk login?";
   assert.equal(normalizeStreamText(first + second), "Mau saya buat script automation untuk login?");
-});
-
-test("completion summary is reserved for mutations and failures", () => {
-  assert.equal(shouldShowCompletionSummary({ mutatedFiles: new Set(), failedTools: 0 }), false);
-  assert.equal(shouldShowCompletionSummary({ mutatedFiles: new Set(["app.js"]), failedTools: 0 }), true);
-  assert.equal(shouldShowCompletionSummary({ mutatedFiles: new Set(), failedTools: 1 }), true);
 });
 
 test("incremental static commits stay compact when tool labels wrap", async () => {
@@ -191,12 +177,12 @@ test("incremental static commits stay compact when tool labels wrap", async () =
   instance.cleanup();
 
   assert.equal(commits.length, 3);
-  assert.match(commits[0], /example\.com\/a\/very/);
-  assert.match(commits[1], /query that wraps/);
-  assert.match(commits[2], /example\.com\/another/);
+  assert.match(commits[0], /STATIC-FIRST/);
+  assert.match(commits[1], /STATIC-MIDDLE/);
+  assert.match(commits[2], /STATIC-LAST/);
   for (const commit of commits) {
     assert.ok(maximumBlankRun(commit.trimEnd()) <= 1);
-    assert.doesNotMatch(commit, /STATIC-/, "collapsed tools must not repeat result bodies");
+    assert.equal((commit.match(/(?:Fetched|Search) body/g) || []).length, 1, "collapsed tools must render one concise result preview");
     assert.ok(commit.split("\n").length < stdout.rows, "a static item reserved the terminal viewport");
   }
 });

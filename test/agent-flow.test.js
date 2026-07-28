@@ -29,6 +29,23 @@ function scripted(responses) {
   };
 }
 
+test("agent forwards stable session scope to provider requests", async () => {
+  let request;
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-provider-scope-")),
+    sessionId: "session-contract",
+    intentResolver: intent(),
+    chat: async (_messages, options) => {
+      request = options;
+      return "done";
+    },
+  });
+  for await (const _event of agent.loop("hello")) {}
+  assert.equal(request.sessionId, "session-contract");
+  assert.ok(request.runId);
+  assert.ok(request.turnId);
+});
+
 test("identity questions use the provider while identity leakage is sanitized", async () => {
   let providerCalls = 0;
   const agent = new Agent(new Registry(), {
@@ -108,6 +125,86 @@ test("provider timeout is configurable per workspace", async () => {
 
   for await (const _event of agent.loop("answer this")) {}
   assert.equal(timeoutMs, 180_000);
+});
+
+test("provider timeout terminates one scoped analysis without retrying", async () => {
+  let calls = 0;
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-provider-timeout-finalize-")),
+    intentResolver: intent(),
+    chat: async () => {
+      calls++;
+      throw new Error("Request timed out");
+    },
+  });
+  const scope = { runId: "run-timeout", turnId: "turn-timeout" };
+  const events = [];
+
+  for await (const event of agent.loop("answer this", undefined, scope)) events.push(event);
+
+  assert.equal(calls, 1);
+  assert.equal(events.filter(event => event.type === "thinking").length, 1);
+  assert.equal(events.filter(event => event.type === "error").length, 1);
+  assert.deepEqual(
+    events.filter(event => ["thinking", "error"].includes(event.type))
+      .map(event => [event.runId, event.turnId]),
+    [["run-timeout", "turn-timeout"], ["run-timeout", "turn-timeout"]],
+  );
+  assert.equal(events.at(-1).content, "Analysis timed out");
+});
+
+test("recoverable provider continuation retries without rerunning completed tools", async () => {
+  let toolCalls = 0;
+  let modelCalls = 0;
+  const registry = new Registry();
+  registry.register({
+    name: "read",
+    description: "Read a fixture.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+    async execute() {
+      toolCalls++;
+      return "completed tool result";
+    },
+  });
+  const agent = new Agent(registry, {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-provider-retry-continuation-")),
+    intentResolver: intent(),
+    chatHandlesRetries: true,
+    chat: async () => {
+      modelCalls++;
+      if (modelCalls === 1) {
+        return JSON.stringify({ tool: "read", args: { path: "fixture.txt" }, id: "read-once" });
+      }
+      if (modelCalls === 2) {
+        const error = new Error("HTTP 500: Internal Server Error");
+        error.status = 500;
+        error.attempts = 3;
+        throw error;
+      }
+      return "Recovered final answer.";
+    },
+  });
+  const failed = [];
+  for await (const event of agent.loop("inspect and answer")) failed.push(event);
+  assert.equal(toolCalls, 1);
+  assert.equal(agent.hasRecoverableProviderRequest(), true);
+  assert.equal(failed.at(-1).content, "[×] Model request failed after 3 attempts · HTTP 500");
+
+  const recovered = [];
+  for await (const event of agent.loop("", undefined, {
+    runId: "retry-run",
+    turnId: "retry-turn",
+    retryProvider: true,
+  })) recovered.push(event);
+  assert.equal(toolCalls, 1);
+  assert.equal(modelCalls, 3);
+  assert.equal(agent.hasRecoverableProviderRequest(), false);
+  assert.equal(agent._messages.filter(message => message.role === "user" && !String(message.content).startsWith("---TOOL")).length, 1);
+  assert.match(recovered.filter(event => event.type === "stream").map(event => event.token).join(""), /Recovered final answer/);
 });
 
 test("default hot path sends one primary request and releases typed text immediately", async () => {

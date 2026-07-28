@@ -36,17 +36,32 @@ If push fails with auth error and the user provided a token in their message, se
 If no token provided, guide the user: \`git remote set-url origin https://<TOKEN>@github.com/<user>/<repo>.git\`
 - NEVER update git config. NEVER use \`git push -i\`.
 - For PRs: push with \`-u\` flag, then use \`gh pr create\`.`,
-  parameters: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number", description: "timeout in seconds" }, workdir: { type: "string" } }, required: ["command"] },
-  async execute({ command, timeout = 60, workdir }) {
+  parameters: {
+    type: "object",
+    properties: {
+      command: { type: "string" },
+      timeout: { type: "number", description: "Timeout in seconds." },
+      workdir: { type: "string" },
+      retryReason: { type: "string", description: "Required justification for retrying a failed identical command." },
+    },
+    required: ["command"],
+  },
+  async execute({ command, timeout = 60, workdir, env }, context = {}) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
     const fixed = fixCommand(command);
+    const timeoutMs = Math.max(1_000, Number(timeout) * 1000 || 60_000);
 
     if (INTERACTIVE_PAGER.test(fixed)) {
       return "Error: interactive pagers are not supported";
     }
 
     try {
-      const { stdout: out } = await execAsync(fixed, { cwd, timeoutMs: Number(timeout) * 1000 });
+      const { stdout: out } = await execAsync(fixed, {
+        cwd,
+        timeoutMs,
+        env,
+        signal: context.signal,
+      });
       return `Exit: 0\n${out.slice(0, 5000)}${out.length > 5000 ? `\n... (${out.length - 5000} more)` : ""}`;
     } catch (lastErr) {
       const stderr = lastErr.stderr?.trim() ?? "";

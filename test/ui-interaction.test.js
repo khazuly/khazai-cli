@@ -11,6 +11,14 @@ import { formatInteractiveQuestion, streamViewportText } from "../ui/session.js"
 import { CLEAR_TERMINAL, NORMAL_SCROLL_MODE, prepareScrollableTerminal } from "../ui/scrollback-output.js";
 import { renderComponent, stripAnsi, TerminalInput, TerminalOutput } from "./helpers/ink-render.js";
 
+function latestTerminalFrame(stdout) {
+  for (const frame of [...stdout.frames].reverse()) {
+    const normalized = stripAnsi(frame).replace(/\r/g, "");
+    if (normalized.trim()) return normalized;
+  }
+  return "";
+}
+
 test("completed responses accumulate in native terminal scrollback without truncation", async () => {
   const stdout = new TerminalOutput(40, 12);
   const stdin = new TerminalInput();
@@ -122,8 +130,9 @@ test("read groups keep one live row and finalize without a file name", async () 
     currentFile: "status-bar.js",
     done: false,
   }] }), 60, 12);
-  assert.match(running, /Read 3 files · status-bar\.js/);
-  assert.doesNotMatch(running, /\d+ ms/);
+  assert.match(running, /Read · running/);
+  assert.match(running, /Path\s+status-bar\.js/);
+  assert.doesNotMatch(running, /\d+ms/);
 
   const completed = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-finished",
@@ -133,8 +142,10 @@ test("read groups keep one live row and finalize without a file name", async () 
     done: true,
     duration: 287,
     failed: false,
+    totalLines: 186,
   }] }), 60, 12);
-  assert.match(completed, /\[✓\] Read 3 files · 287 ms/);
+  assert.match(completed, /\[✓\] Read · completed · 287ms/);
+  assert.match(completed, /Result\s+Read 186 lines from 3 files/);
   assert.doesNotMatch(completed, /status-bar\.js/);
 });
 
@@ -313,13 +324,70 @@ test("command palette stays compact while searching commands", async () => {
   await new Promise(resolve => setTimeout(resolve, 30));
   stdin.push("/");
   await new Promise(resolve => setTimeout(resolve, 80));
-  const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
+  const output = latestTerminalFrame(stdout);
 
   assert.match(output, /Quick commands/);
   assert.match(output, /\/new\s+Start a persistent session/);
   assert.match(output, /\/model\s+Change the active model/);
   assert.doesNotMatch(output, /\/compact|\/connect|\/collapse/);
   assert.ok((output.match(/\n\s*[> ]?\s*\//g) || []).length <= 6);
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
+test("command palette keeps keyboard navigation inside its scrolling viewport", async () => {
+  const stdout = new TerminalOutput(46, 24);
+  const stdin = new TerminalInput();
+  const executed = [];
+  const commands = Array.from({ length: 9 }, (_, index) => ({
+    name: `/x${index + 1}`,
+    description: `Command ${index + 1}`,
+  }));
+  const instance = render(h(PromptInput, {
+    onSubmit() {},
+    onCommand(command) { executed.push(command); },
+    commands,
+    disabled: false,
+  }), {
+    stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false,
+  });
+
+  const press = async key => {
+    stdin.push(key);
+    await new Promise(resolve => setTimeout(resolve, 80));
+  };
+
+  await press("/x");
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  for (let index = 0; index < 6; index++) await press("\u001b[B");
+  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*> \/x7/);
+  assert.doesNotMatch(latestTerminalFrame(stdout), /\/x1\s/);
+
+  for (let index = 0; index < 6; index++) await press("\u001b[A");
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  await press("\u001b[6~");
+  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*> \/x7/);
+  await press("\u001b[6~");
+  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*> \/x9/);
+  await press("\u001b[5~");
+  assert.match(latestTerminalFrame(stdout), /Commands · 3–8 of 9[\s\S]*> \/x3/);
+  await press("\u001b[H");
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  await press("\u001b[F");
+  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*> \/x9/);
+  await press("\r");
+  assert.deepEqual(executed, ["/x9"]);
+
+  await press("/x");
+  await press("\u001b[F");
+  await press("1");
+  const filteredFrame = latestTerminalFrame(stdout);
+  assert.match(filteredFrame, /Commands[\s\S]*> \/x1/);
+  assert.doesNotMatch(filteredFrame, / of 9|\/x2/);
+  await press("\u001b");
+  assert.doesNotMatch(latestTerminalFrame(stdout), /Commands|\/x1\s+Command 1/);
+
   instance.unmount();
   instance.cleanup();
   stdin.destroy();

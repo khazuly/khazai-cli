@@ -11,6 +11,63 @@ import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
 export class ToolMethods {
+  _scopedToolEvent(event) {
+    return {
+      ...event,
+      runId: this._activeRun?.runId,
+      turnId: this._activeRun?.turnId,
+    };
+  }
+
+  _recordShellReuse(tool, decision) {
+    const result = redactSecrets(String(decision.result || ""));
+    this._messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: [{
+        id: tool.id,
+        type: "function",
+        function: { name: tool.name, arguments: JSON.stringify(publicToolArgs(tool.args)) },
+      }],
+    });
+    this._messages.push({
+      role: "tool",
+      tool_call_id: tool.id,
+      name: tool.name,
+      content: result,
+    });
+    this._toolEvidence.push({
+      tool: tool.name,
+      args: { ...tool.args },
+      result,
+      failed: decision.failed,
+      metadata: { cached: Boolean(decision.cached), blocked: Boolean(decision.blocked) },
+    });
+    this._lastToolResult = result;
+    this._activeTask.lastToolResult = result.slice(0, 1500);
+  }
+
+  _finalizeShellBlocker(result) {
+    const answer = String(result || "Shell execution is blocked.");
+    this._messages.push({ role: "assistant", content: answer });
+    this._activeTask.pendingProblem = answer;
+    this._lifecycle.finishStep("tool-error");
+    this._clearPendingAction();
+    this._finishLatency();
+    return answer;
+  }
+
+  _schedulableShellCalls(calls) {
+    return calls.filter(call => {
+      if (call.name !== "bash") return true;
+      call.id ||= randomUUID();
+      const decision = this._shellScheduler.reserve(call);
+      if (!decision) return true;
+      this._recordShellReuse(call, decision);
+      return false;
+    });
+  }
+
   *_startPlanItem() {
     const plan = this._plan;
     const index = this._planIndex;
@@ -38,7 +95,7 @@ export class ToolMethods {
     if (!normalized.every(tool => PARALLEL_READ_ONLY_TOOLS.has(tool.name))) return false;
     const planTracker = yield* this._startPlanItem();
     for (const call of normalized) {
-      yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
+      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
     }
     const settled = [];
     const concurrency = Math.min(8, Math.max(1, Number(this._config.toolConcurrency) || 4));
@@ -84,7 +141,7 @@ export class ToolMethods {
       this._activeTask.lastToolResult = result.slice(0, 1500);
     }
     for (const part of this._lifecycle.finishStep(this._stepBlocked ? "denied" : "tool-calls")) {
-      yield { type: "tool-part", part };
+      yield this._scopedToolEvent({ type: "tool-part", part });
     }
     this._lastToolWasExecuted = settled.length > 0;
     yield* this._finishPlanItem(planTracker, settled.some(entry => !resultFailed(entry.result)));
@@ -93,7 +150,7 @@ export class ToolMethods {
 
   async *_runSequentialBatch(tools) {
     const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
-    const calls = this._filterRepeatedBatchTools(candidates);
+    const calls = this._schedulableShellCalls(this._filterRepeatedBatchTools(candidates));
     if (this._loopRecoveryExhausted || calls.length === 0) {
       this._lifecycle.finishStep("tool-calls");
       return true;
@@ -112,7 +169,7 @@ export class ToolMethods {
     });
     let failed = false;
     for (const call of calls) {
-      yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
+      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
       const planTracker = call.name === "todowrite" ? null : yield* this._startPlanItem();
       let callFailed = false;
       let completedPart = null;
@@ -156,21 +213,36 @@ export class ToolMethods {
       yield* this._finishPlanItem(planTracker, !callFailed);
     }
     for (const part of this._lifecycle.finishStep(failed ? "tool-error" : "tool-calls")) {
-      yield { type: "tool-part", part };
+      yield this._scopedToolEvent({ type: "tool-part", part });
     }
     this._lastToolWasExecuted = calls.length > 0;
     return true;
   }
 
-  _compactMessages() {
-    const usage = this._messages.reduce((total, message) => (
+  _messageTokenUsage() {
+    return this._messages.reduce((total, message) => (
       total
       + countTokens(String(message.content || ""))
       + countTokens(JSON.stringify(message.tool_calls || []))
     ), 0);
-    if (usage < this._config.tokenBudget * this._config.compactThreshold) return;
+  }
 
-    const target = this._config.tokenBudget * 0.45;
+  contextUsage() {
+    const tokens = this._messageTokenUsage();
+    const budget = Math.max(1, Number(this._config.tokenBudget) || 1);
+    return { tokens, budget, percent: Math.min(100, Math.floor((tokens / budget) * 100)) };
+  }
+
+  compactIfNeeded() {
+    return this._compactMessages(false);
+  }
+
+  _compactMessages(force = false) {
+    const usage = this._messageTokenUsage();
+    if (!force && usage < this._config.tokenBudget * this._config.compactThreshold) return false;
+    if (this._messages.length < 2) return false;
+
+    const target = this._config.tokenBudget * (force ? 0.2 : 0.45);
     let keptTokens = 0;
     let keepFrom = this._messages.length;
     for (let index = this._messages.length - 1; index >= 0; index--) {
@@ -193,6 +265,7 @@ export class ToolMethods {
       this._summary = [this._summary, transcript].filter(Boolean).join("\n").slice(-8000);
     }
     this._messages = this._messages.slice(keepFrom);
+    return true;
   }
 
   async _getRemoteUrl() {
@@ -268,13 +341,14 @@ export class ToolMethods {
     this._invalidateInspectionCache();
 
     const snapshot = this._lifecycle.startStep();
-    if (snapshot) yield { type: "tool-part", part: snapshot };
+    if (snapshot) yield this._scopedToolEvent({ type: "tool-part", part: snapshot });
     const call = {
       id: randomUUID(),
       name: "bash",
       args: { command, workdir: this._workspace },
     };
-    yield { type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id };
+    this._shellScheduler.reserve(call);
+    yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
     this._messages.push({
       role: "assistant",
       content: null,
@@ -309,7 +383,7 @@ export class ToolMethods {
     this._lastToolResult = result;
     this._activeTask.lastToolResult = result.slice(0, 1500);
     for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
-      yield { type: "tool-part", part: lifecyclePart };
+      yield this._scopedToolEvent({ type: "tool-part", part: lifecyclePart });
     }
     const exitCode = /^Exit:\s*(-?\d+)/im.exec(result)?.[1];
     const answer = failed
@@ -322,11 +396,7 @@ export class ToolMethods {
   }
 
   _buildContext() {
-    let sys = this._buildSystem();
-    if (this._executionPolicy) {
-      const contextBlock = this._executionPolicy.contextBlock();
-      if (contextBlock) sys += `\n\n<execution>\n${contextBlock}\n</execution>`;
-    }
+    const sys = this._buildSystem();
     const summary = this._summary
       ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
       : [];

@@ -1,6 +1,6 @@
 import { createElement as h } from "react";
 import { useEffect, useState } from "react";
-import { Text, Box, useStdout } from "ink";
+import { Text, Box } from "ink";
 import { SPINNER_FRAMES } from "./status-bar.js";
 import { ToolCall } from "./tool-call.js";
 import { CodePreview } from "./code-preview.js";
@@ -8,7 +8,6 @@ import { Markdown } from "./markdown.js";
 import { normalizeVerticalWhitespace } from "../text-layout.js";
 import { useTheme } from "../theme.js";
 import { StatusRail } from "./surface.js";
-import { streamViewportText } from "../stream-viewport.js";
 
 function hasCodePreview(message) {
   if (!message.done) return false;
@@ -50,7 +49,13 @@ function ThinkStatus({ message }) {
     timer.unref?.();
     return () => clearInterval(timer);
   }, [message.done]);
-  const elapsed = formatElapsed((message.completedAt || now) - message.startedAt);
+  const accumulated = message.accumulatedDurationMs
+    ?? (message.done ? Math.max(0, (message.completedAt || 0) - (message.startedAt || 0)) : 0);
+  const activeStartedAt = message.activeStartedAt ?? message.startedAt;
+  const elapsed = formatElapsed(
+    Number(accumulated || 0)
+    + (!message.done && activeStartedAt ? Math.max(0, now - activeStartedAt) : 0)
+  );
   const activity = message.text || "Analyzing the execution context";
   if (message.done) {
     return h(Box, { flexDirection: "column", marginBottom: 1 },
@@ -61,25 +66,6 @@ function ThinkStatus({ message }) {
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Text, { color: theme.metadata }, SPINNER_FRAMES[frame], " ", activity, " · ", elapsed),
     message.step ? h(Text, { color: theme.metadata, dimColor: true }, "  ", message.step) : null,
-  );
-}
-
-function StreamingMessage({ content, width }) {
-  const theme = useTheme();
-  const { stdout } = useStdout();
-  const lines = streamViewportText(content, width || stdout?.columns || 80, 5).split("\n");
-  return h(Box, {
-    flexDirection: "column",
-    width: width || "100%",
-  },
-    h(Text, { bold: true, color: theme.primary }, "KhazAI"),
-    ...lines.map((line, index) => h(Text, {
-      key: index,
-      color: theme.assistant,
-      wrap: "truncate-end",
-      width: width || "100%",
-    }, line || " ")),
-    h(Text, { color: theme.metadata, dimColor: true }, "▋"),
   );
 }
 
@@ -121,48 +107,44 @@ function ErrorDisplay({ content }) {
   );
 }
 
+function ProviderErrorDisplay({ content }) {
+  const theme = useTheme();
+  return h(Box, { marginBottom: 1 },
+    h(Text, { color: theme.error, wrap: "wrap" }, content),
+  );
+}
+
 function SummaryDisplay({ message }) {
   const theme = useTheme();
-  const duration = message.duration < 1000 ? `${message.duration} ms` : `${(message.duration / 1000).toFixed(1)} s`;
-  const headline = message.status === "attention" ? "Finished with issues" : "Finished";
-  const details = [`${message.tools} ${message.tools === 1 ? "tool" : "tools"}`, duration];
-  const files = Array.isArray(message.files) ? message.files : [];
-  const validations = Array.isArray(message.validations) ? message.validations.slice(0, 3) : [];
+  const issues = Array.isArray(message.unresolvedIssues) ? message.unresolvedIssues : [];
+  if (!issues.length) return null;
   return h(StatusRail, {
     marginBottom: 1,
-    tone: message.status === "attention" ? "warning" : "success",
+    tone: "warning",
   },
-    h(Box, null,
-      h(Text, { bold: true, color: message.status === "attention" ? theme.warning : theme.success }, headline),
-      h(Text, { color: theme.metadata }, "  ", details.join(" · ")),
-    ),
-    files.length
-      ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, `Files  ${files.slice(0, 3).join(" · ")}${files.length > 3 ? ` · +${files.length - 3}` : ""}`)
-      : null,
-    ...validations.map((validation, index) => h(Text, {
-      key: `validation-${index}`,
-      color: validation.exitCode === 0 ? theme.success : theme.error,
+    h(Text, { bold: true, color: theme.warning }, "Finished with issues"),
+    ...issues.map((issue, index) => h(Text, {
+      key: `issue-${index}`,
+      color: theme.warning,
       wrap: "wrap",
-    }, `Check  ${String(validation.command).replace(/\s+/g, " ").slice(0, 120)}${String(validation.command).replace(/\s+/g, " ").length > 120 ? "…" : ""} · exit ${validation.exitCode}${validation.duration ? ` · ${validation.duration}` : ""}`)),
-    message.validationMissing
-      ? h(Text, { color: theme.warning }, "Check  not run")
-      : null,
+    }, `- ${issue}`)),
   );
 }
 
 function PermissionDisplay({ message }) {
   const theme = useTheme();
+  const target = message.target && typeof message.target === "object" ? message.target : null;
   return h(StatusRail, {
     marginBottom: 1,
     tone: "warning",
   },
     h(Text, { bold: true, color: theme.warning }, "Action required"),
-    h(Text, { color: theme.assistant, wrap: "wrap" }, message.reason),
-    message.tool ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, `${message.tool}  ${message.target || ""}`.trim()) : null,
+    h(Text, { color: theme.assistant, wrap: "wrap" }, message.action || message.reason),
+    target?.value ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, target.value) : null,
   );
 }
 
-export function MessageList({ messages, streamingWidth = null }) {
+export function MessageList({ messages }) {
   const items = messages.map(m => {
     switch (m.type) {
       case "user":
@@ -176,6 +158,7 @@ export function MessageList({ messages, streamingWidth = null }) {
           h(ToolCall, {
             tool: m.tool, args: m.args, done: m.done, duration: m.duration,
             resultSize: m.resultSize, content: m.content, expanded: m.expanded,
+            status: m.status, startedAt: m.startedAt, metadata: m.metadata,
           }),
           hasCodePreview(m)
             ? h(Box, { marginBottom: 1, width: "100%" },
@@ -188,16 +171,18 @@ export function MessageList({ messages, streamingWidth = null }) {
           h(ToolCall, {
             readGroup: true, count: m.count, currentFile: m.currentFile,
             done: m.done, duration: m.duration, failed: m.failed,
+            status: m.status, totalLines: m.totalLines,
+            failurePreview: m.failurePreview,
           }),
         );
       case "answer":
         return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
-      case "streaming":
-        return h(StreamingMessage, { key: m.id, content: m.content, width: streamingWidth });
       case "think":
         return h(ThinkStatus, { key: m.id, message: m });
       case "error":
         return h(ErrorDisplay, { key: m.id, content: m.content });
+      case "provider-error":
+        return h(ProviderErrorDisplay, { key: m.id, content: m.content });
       case "summary":
         return h(SummaryDisplay, { key: m.id, message: m });
       case "permission":

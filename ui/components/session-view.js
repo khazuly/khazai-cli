@@ -77,6 +77,8 @@ export function SessionView({
           disabled: (running && !pendingQuestion) || Boolean(inspectedTool),
           activeModel: currentModel,
           questionOptions: pendingQuestion?.options || [],
+          questionKind: pendingQuestion?.kind || "",
+          permissionRequest: pendingQuestion?.permissionRequest || null,
           onSelectOption: handlers.answerQuestion,
           onCancelOption: handlers.cancelQuestion,
           secret: Boolean(pendingQuestion?.secret),

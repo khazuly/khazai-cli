@@ -38,6 +38,19 @@ test("execution policy with no required evidence always completes", () => {
   assert.equal(policy.completionSteering(), null);
 });
 
+test("completion gaps reflect the latest outcome for required verification", () => {
+  const policy = new ExecutionPolicy("fix app.js and run tests");
+  policy.record("edit", { path: "app.js" }, "Edited", false);
+  policy.record("bash", { command: "npm test" }, "Exit: 1", true);
+  assert.equal(policy.completionGaps().some(gap => gap.kind === "validation"), true);
+
+  policy.record("bash", { command: "npm test" }, "Exit: 0", false);
+  assert.equal(policy.completionGaps().some(gap => gap.kind === "validation"), false);
+
+  policy.record("bash", { command: "npm test" }, "Exit: 1", true);
+  assert.equal(policy.completionGaps().some(gap => gap.kind === "validation"), true);
+});
+
 test("contextBlock includes phase and evidence summary", () => {
   const policy = new ExecutionPolicy("fix app.js");
   const block = policy.contextBlock();

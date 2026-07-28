@@ -39,6 +39,8 @@ export class StateMethods {
       model: this._model,
       agent: this._agentProfile?.name || "build",
       parts: this._lifecycle.parts.slice(-200),
+      permissionApprovals: this._permissionService.approvalHistory(),
+      recoverableProviderRequest: this._recoverableProviderRequest,
     };
     return redactSerializable(state);
   }
@@ -57,9 +59,13 @@ export class StateMethods {
       this._lifecycle.sessionId = this._sessionId;
     }
     if (Array.isArray(state.parts)) this._lifecycle.parts = state.parts.slice(-200);
+    this._permissionService.restoreApprovals(state.permissionApprovals);
+    this._recoverableProviderRequest = isObject(state.recoverableProviderRequest)
+      ? state.recoverableProviderRequest
+      : null;
     this._pendingAction = null;
     this._pendingGitPush = null;
-    this._currentRequest = "";
+    this._currentRequest = this._recoverableProviderRequest?.currentRequest || "";
     return true;
   }
 
@@ -478,6 +484,9 @@ export class StateMethods {
       timeoutMs: this._config.toolTimeout,
       signal: this._abortController?.signal,
       taskContext: this._executionPolicy,
+      runId: this._activeRun?.runId,
+      turnId: this._activeRun?.turnId,
+      shellScheduler: this._shellScheduler,
     });
   }
 

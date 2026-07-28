@@ -140,15 +140,17 @@ test("conversation hierarchy and tool metadata remain compact at mobile width", 
       args: { url: "https://shopee.co.id/buyer/login" },
       content: "URL: https://shopee.co.id/buyer/login\nContent-Type: text/html\nBytes: 187\nTotal 103 chars | showing 0-103",
     },
-    { id: "a2", type: "streaming", content: "I found the login page." },
+    { id: "a2", type: "answer", content: "I found the login page." },
   ] }), 40, 24);
 
   assert.ok(frame.indexOf("You") < frame.indexOf("KhazAI"));
-  assert.ok(frame.indexOf("KhazAI") < frame.indexOf("Shell"));
-  assert.match(frame, /Shell · completed · 618 ms/);
-  assert.match(frame, /https:\/\/shopee\.co\.id\/buyer\/login/);
-  assert.match(frame, /text\/html · 187 B · 103 chars/);
+  assert.ok(frame.indexOf("KhazAI") < frame.indexOf("Fetch"));
+  assert.match(frame, /Fetch · completed · 618ms/);
+  assert.match(frame, /URL\s+https:\/\/shopee\.co\.id\/buye/);
+  assert.match(frame, /Type\s+text\/html/);
+  assert.match(frame, /Size\s+187 B · 103 chars/);
   assert.match(frame, /\/expand/);
+  assert.match(frame, /Fetched 103 characters/);
   assert.doesNotMatch(frame, /URL:|Content-Type:|Total chars:/);
   assert.ok(maximumBlankRun(frame.trimEnd()) <= 2);
 });
@@ -278,17 +280,28 @@ test("tool states use words and long output is collapsed", async () => {
   const output = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n");
   const frame = await renderComponent(h(Box, { flexDirection: "column" },
     h(ToolCall, { tool: "web", args: { url: "https://example.com" }, done: false }),
+    h(ToolCall, { tool: "bash", args: { command: "npm run lint" }, done: false, status: "running", startedAt: Date.now() - 12_000 }),
     h(ToolCall, { tool: "bash", args: { command: "npm test" }, done: true, content: `Exit: 0\n${output}` }),
+    h(ToolCall, { tool: "bash", args: { command: "npm test" }, done: true, duration: 60_000, content: "Exit: -1\nTimed out after 60000ms" }),
     h(ToolCall, { tool: "bash", args: { command: "missing" }, done: true, content: "Exit: 2\nError: not found" }),
     h(ToolCall, { tool: "bash", args: { command: "npm start" }, done: true, content: "Warning: redirected" }),
   ), 50, 30);
 
   assert.doesNotMatch(frame, /running\.\.\./);
-  assert.match(frame, /failed/);
-  assert.match(frame, /warning/);
+  assert.match(frame, /Shell · running · 12s/);
+  assert.match(frame, /Command npm run lint/);
+  assert.match(frame, /\[×\] Shell · failed/);
+  assert.match(frame, /Command missing/);
+  assert.match(frame, /Command npm start/);
   assert.doesNotMatch(frame, /line 12/, "successful tool output stays collapsed");
-  assert.match(frame, /Error: not found/);
+  assert.match(frame, /Command produced 12 lines/);
+  assert.match(frame, /Error\s+not found/);
   assert.match(frame, /\[✓\] Shell · completed/);
+  assert.match(frame, /\[×\] Shell · failed · 60\.0s/);
+  assert.match(frame, /Timed out while running the test\n.*suite/);
+  const errorLine = frame.split("\n").find(line => line.includes("Timed out while running"));
+  const continuation = frame.split("\n").find(line => line.trim() === "│             suite");
+  assert.equal(errorLine.indexOf("Timed"), continuation.indexOf("suite"));
 });
 
 test("successful shell commands reveal raw details only when expanded", async () => {
@@ -303,9 +316,10 @@ test("successful shell commands reveal raw details only when expanded", async ()
   const collapsed = await renderComponent(h(ToolCall, props), 50, 20);
   const expanded = await renderComponent(h(ToolCall, { ...props, expanded: true }), 50, 20);
 
-  assert.match(collapsed, /Deleted snake_game\.py/);
-  assert.match(collapsed, /exit 0 · 107 B · \/expand/);
-  assert.doesNotMatch(collapsed, /rm -f/);
+  assert.match(collapsed, /Shell · completed/);
+  assert.match(collapsed, /Command rm -f \/root\/test\/snake_game\.py/);
+  assert.match(collapsed, /Command completed with no output/);
+  assert.doesNotMatch(collapsed, /exit 0/);
   assert.match(expanded, /Command\s+rm -f/);
 });
 
@@ -440,19 +454,17 @@ test("expanded edit previews include surrounding context", async () => {
   assert.match(expanded, /fifth/);
 });
 
-test("streaming content uses stable, line-bounded rendering", async () => {
+test("private streaming content is not rendered", async () => {
   const frame = await renderComponent(h(MessageList, { messages: [{
     id: "streaming-markdown",
     type: "streaming",
     content: "Sedang menyiapkan contoh.\n\n```python\ndef token():\n",
   }] }), 50, 20);
 
-  assert.equal((frame.match(/KhazAI/g) || []).length, 1);
-  assert.match(frame, /Sedang menyiapkan contoh\./);
-  assert.match(frame, /def token/);
+  assert.doesNotMatch(frame, /KhazAI|Sedang menyiapkan contoh|def token/);
 });
 
-test("factual completion receipt shows files and validation records without model claims", async () => {
+test("successful completion summaries stay hidden", async () => {
   const frame = await renderComponent(h(MessageList, { messages: [{
     id: "receipt",
     type: "summary",
@@ -463,28 +475,30 @@ test("factual completion receipt shows files and validation records without mode
     duration: 2400,
   }] }), 50, 20);
 
-  assert.match(frame, /Finished\s+6 tools · 2\.4 s/);
-  assert.match(frame, /Files\s+src\/auth\.js/);
-  assert.match(frame, /Check\s+npm test · exit 0 · 1\.2 s/);
-  assert.doesNotMatch(frame, /created|updated|tests passed/i);
+  assert.doesNotMatch(frame, /Finished|Files|Check|src\/auth\.js|npm test/);
 });
 
-test("completion receipt truncates multiline validation commands", async () => {
+test("issue summary renders only concise unresolved problems", async () => {
   const command = `node --test ${"test/very-long-suite.test.js ".repeat(10)}
 echo should-not-render-as-another-line`;
   const frame = await renderComponent(h(MessageList, { messages: [{
     id: "compact-receipt",
     type: "summary",
-    status: "finished",
+    status: "attention",
     tools: 2,
     files: ["src/auth.js"],
     validations: [{ command, exitCode: 0, duration: "1.2 s" }],
+    unresolvedIssues: [
+      "Build failed: unresolved TypeScript error",
+      "Required verification did not complete",
+    ],
     duration: 2400,
   }] }), 60, 20);
 
-  assert.match(frame, /Check\s+node --test/);
-  assert.match(frame, /… · exit 0 · 1\.2 s/);
-  assert.doesNotMatch(frame, /\necho should-not-render/);
+  assert.match(frame, /Finished with issues/);
+  assert.match(frame, /Build failed: unresolved TypeScript error/);
+  assert.match(frame, /Required verification did not complete/);
+  assert.doesNotMatch(frame, /src\/auth\.js|node --test|2 tools|2\.4 s/);
 });
 
 test("theme resolver preserves semantics and honors NO_COLOR", () => {
@@ -771,7 +785,7 @@ test("command palette stays compact while searching commands", async () => {
   await new Promise(resolve => setTimeout(resolve, 30));
   stdin.push("/");
   await new Promise(resolve => setTimeout(resolve, 80));
-  const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
+  const output = stripAnsi(stdout.frames.at(-1) || "").replace(/\r/g, "");
 
   assert.match(output, /Quick commands/);
   assert.match(output, /\/new\s+Start a persistent session/);

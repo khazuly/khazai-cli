@@ -112,7 +112,11 @@ export class ExecutionPolicy {
   }
 
   successfulKinds() {
-    return new Set(this.evidence.filter(entry => !entry.failed).flatMap(entry => entry.kinds));
+    const latest = new Map();
+    for (const entry of this.evidence) {
+      for (const kind of entry.kinds) latest.set(kind, !entry.failed);
+    }
+    return new Set([...latest].filter(([, succeeded]) => succeeded).map(([kind]) => kind));
   }
 
   completionGaps() {

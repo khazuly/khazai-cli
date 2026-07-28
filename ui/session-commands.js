@@ -18,7 +18,7 @@ import { listModels } from "../lib/llm.js";
 import { redactSecrets } from "../lib/secrets.js";
 import { formatCommandHelp } from "./commands.js";
 import { findToolMessage, recentToolMessages, toolChoice } from "./tool-activity.js";
-import { buildRegistry, displayModel, nextId } from "./session-runtime.js";
+import { buildRegistry, displayModel, nextId, permissionModeCommand } from "./session-runtime.js";
 
 async function chooseModel(requested, context) {
   const {
@@ -320,16 +320,28 @@ export async function handleSessionCommand(cmd, arg, context) {
     workspacePath,
   } = context;
   if (cmd === "/exit") process.exit(0);
-  if (cmd === "/auto") {
-    const requested = String(arg || "").trim().toLowerCase();
-    autoApproveRef.current = requested
-      ? ["on", "true", "1", "enable", "enabled"].includes(requested)
-      : !autoApproveRef.current;
-    agentRef.current?.setAutoApprove(autoApproveRef.current);
+  if (cmd === "/allow-all" || cmd === "/auto") {
+    const requested = cmd === "/auto" && !String(arg || "").trim()
+      ? (autoApproveRef.current ? "off" : "on")
+      : arg;
+    const result = permissionModeCommand(
+      requested,
+      autoApproveRef.current ? "allow-all" : "prompt",
+    );
+    if (result.error) {
+      appendArchived({ id: nextId(), type: "error", content: result.error });
+      return;
+    }
+    autoApproveRef.current = result.mode === "allow-all";
+    if (String(requested || "").trim().toLowerCase() !== "status") {
+      agentRef.current?.setAutoApprove(autoApproveRef.current);
+      currentSessionRef.current.permissionMode = result.mode;
+      currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
+    }
     appendArchived({
       id: nextId(),
       type: "answer",
-      content: `Auto-approve is ${autoApproveRef.current ? "enabled" : "disabled"}. Explicit deny rules still apply.`,
+      content: result.message,
     });
     return;
   }

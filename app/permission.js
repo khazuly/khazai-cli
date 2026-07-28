@@ -116,6 +116,38 @@ function outside(path, workspace) {
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? target : null;
 }
 
+function systemMutationPath(path, workspace) {
+  const target = resolve(workspace, expandHome(path));
+  return ["/bin", "/boot", "/dev", "/etc", "/proc", "/sbin", "/sys", "/usr"]
+    .some(root => target === root || target.startsWith(`${root}${sep}`));
+}
+
+export function hardSafetyViolation(toolName, args = {}, workspace = process.cwd()) {
+  if (["write", "edit"].includes(toolName) && args.path && systemMutationPath(args.path, workspace)) {
+    return "Modifying system directories is blocked.";
+  }
+  if (toolName !== "bash") return "";
+  const command = String(args.command || "").trim();
+  if (/(?:^|[;&|]\s*)(?:sudo|doas|pkexec|su)(?:\s|$)/i.test(command)) {
+    return "Privilege escalation is blocked.";
+  }
+  const root = resolve(workspace);
+  const destructiveRoot = /(?:^|[;&|]\s*)rm\s+(?=[^;&|]*(?:-[A-Za-z]*r[A-Za-z]*|--recursive))(?=[^;&|]*(?:-[A-Za-z]*f[A-Za-z]*|--force))([^;&|]*)/gi;
+  for (const match of command.matchAll(destructiveRoot)) {
+    const targets = match[1].trim().split(/\s+/).filter(token => !token.startsWith("-"));
+    if (targets.some(target => {
+      const resolved = resolve(args.workdir || workspace, expandHome(target));
+      return resolved === "/" || resolved === root;
+    })) return "Deleting the workspace root or filesystem root is blocked.";
+  }
+  if (
+    /(?:^|[;&|]\s*)(?:rm|mv|cp|chmod|chown|mkdir|touch|install|tee)\b[^;&|]*\/(?:bin|boot|dev|etc|proc|sbin|sys|usr)(?:\/|\s|$)/i
+      .test(command)
+    || /(?:^|\s)(?:>>?|2>>?)\s*\/(?:bin|boot|dev|etc|proc|sbin|sys|usr)(?:\/|\s|$)/i.test(command)
+  ) return "Modifying system directories is blocked.";
+  return "";
+}
+
 function shellPaths(command, workdir, workspace) {
   const paths = [];
   if (workdir) paths.push(workdir);
@@ -150,6 +182,7 @@ export class PermissionService {
     this.agentPermission = options.agentPermission || {};
     this.auto = Boolean(options.auto);
     this.sessionRules = [];
+    this.approvals = [];
     this.globalConfigPath = join(homedir(), ".config", "khazai-ai", "permissions.json");
     this.projectConfigPath = join(this.workspace, ".khazai", "permissions.json");
   }
@@ -170,6 +203,19 @@ export class PermissionService {
   evaluate(toolName, args = {}) {
     const permission = permissionName(toolName);
     const values = actionValues(toolName, args);
+    const safety = hardSafetyViolation(toolName, args, this.workspace);
+    if (safety) {
+      return {
+        decision: "deny",
+        permission,
+        pattern: "*",
+        patterns: values,
+        always: [],
+        value: values[0] || "*",
+        source: "safety",
+        reason: safety,
+      };
+    }
     let selected = null;
     for (const value of values) {
       const match = resolveAction(this.rules(), permission, value);
@@ -204,6 +250,19 @@ export class PermissionService {
     const args = typeof toolNameOrArgs === "string" ? maybeArgs : toolNameOrArgs;
     const paths = externalPaths(toolName, args, this.workspace);
     if (!paths.length) return null;
+    const safety = hardSafetyViolation(toolName, args, this.workspace);
+    if (safety) {
+      return {
+        decision: "deny",
+        permission: "external_directory",
+        pattern: "*",
+        patterns: paths,
+        always: [],
+        value: paths[0],
+        source: "safety",
+        reason: safety,
+      };
+    }
     let selected = null;
     for (const path of paths) {
       const match = resolveAction(this.rules(), "external_directory", path)
@@ -235,8 +294,30 @@ export class PermissionService {
     }
   }
 
+  recordApproval(approval) {
+    this.approvals.push({
+      permission: String(approval.permission || permissionName(approval.tool) || "unknown"),
+      tool: String(approval.tool || "unknown"),
+      value: String(approval.value || "*"),
+      source: String(approval.source || "user"),
+      createdAt: new Date().toISOString(),
+    });
+    this.approvals = this.approvals.slice(-200);
+  }
+
+  approvalHistory() {
+    return this.approvals.map(approval => ({ ...approval }));
+  }
+
+  restoreApprovals(approvals) {
+    this.approvals = Array.isArray(approvals)
+      ? approvals.slice(-200).map(approval => ({ ...approval }))
+      : [];
+  }
+
   clearSession() {
     this.sessionRules = [];
+    this.approvals = [];
   }
 
   setAuto(value) {

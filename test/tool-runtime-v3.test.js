@@ -17,6 +17,8 @@ import { SessionStore, migrateSessionV3, migrateSessionV4 } from "../app/session
 import { ToolExecutor } from "../app/tool-executor.js";
 import { ToolLifecycle } from "../app/tool-lifecycle.js";
 import { todoWriteTool } from "../tools/todo.js";
+import { execAsync } from "../lib/exec-async.js";
+import { ShellScheduler } from "../app/shell-scheduler.js";
 
 test("dynamic registry loads OpenCode-compatible TypeScript tools with KhazAI precedence", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-custom-tools-"));
@@ -81,6 +83,92 @@ test("plugin definition and execution hooks share one deterministic registry pip
     if (event.type === "execution-result") result = event.result;
   }
   assert.equal(result, "true!");
+});
+
+test("permission approval keeps one tool pending before it starts running", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-permission-lifecycle-"));
+  const registry = new Registry();
+  registry.register({
+    name: "write",
+    description: "Write",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+    execute: () => "written",
+  });
+  const permissions = new PermissionService(workspace, { permission: { edit: "ask" } });
+  const executor = new ToolExecutor({
+    registry,
+    lifecycle: new ToolLifecycle({ sessionId: "permission-lifecycle", workspace }),
+    permissionService: permissions,
+    permissionHandler: async () => "Allow once",
+    workspace,
+    sessionId: "permission-lifecycle",
+    runId: "run-1",
+    turnId: "turn-1",
+  });
+  const events = [];
+  for await (const event of executor.execute({
+    name: "write",
+    args: { path: join(workspace, "src", "index.js") },
+    id: "write-call",
+  })) {
+    events.push(event);
+  }
+
+  assert.deepEqual(
+    events.filter(event => event.type === "tool-part").map(event => event.part.state.status),
+    ["pending", "running", "completed"],
+  );
+  const request = events.find(event => event.type === "permission");
+  assert.equal(request.callId, "write-call");
+  assert.equal(request.runId, "run-1");
+  assert.equal(request.turnId, "turn-1");
+  assert.equal(request.action, "KhazAI wants to write.");
+  assert.deepEqual(request.target, { label: "Path", value: join(workspace, "src", "index.js") });
+  assert.equal(Object.hasOwn(request, "args"), false);
+  assert.equal(permissions.approvalHistory().length, 1);
+});
+
+test("allow-all suppresses prompts and never overrides explicit deny rules", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-allow-all-"));
+  const allowed = new PermissionService(workspace, {
+    permission: { edit: "ask", bash: { "sudo *": "deny" } },
+  }, { auto: true });
+  assert.equal(allowed.evaluate("write", { path: "src/index.js" }).decision, "allow");
+  assert.equal(allowed.evaluate("bash", { command: "sudo rm -rf /" }).decision, "deny");
+  assert.equal(allowed.evaluate("write", { path: "/etc/khazai.conf" }).source, "safety");
+  assert.equal(
+    allowed.evaluate("bash", { command: "rm -rf .", workdir: workspace }).source,
+    "safety",
+  );
+
+  const registry = new Registry();
+  registry.register({
+    name: "write",
+    description: "Write",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    execute: () => "written",
+  });
+  const events = [];
+  const executor = new ToolExecutor({
+    registry,
+    lifecycle: new ToolLifecycle({ sessionId: "allow-all", workspace }),
+    permissionService: allowed,
+    workspace,
+    sessionId: "allow-all",
+  });
+  for await (const event of executor.execute({
+    name: "write",
+    args: { path: join(workspace, "index.js") },
+    id: "allow-all-write",
+  })) {
+    events.push(event);
+  }
+  assert.equal(events.some(event => event.type === "permission"), false);
+  assert.equal(allowed.approvalHistory()[0].source, "allow-all");
 });
 
 test("unified executor truncates large output and preserves the complete redacted file", async () => {
@@ -159,6 +247,46 @@ test("tool-specific timeout can exceed the global executor timeout", async () =>
   }
   assert.equal(result.failed, false);
   assert.equal(result.result, "done");
+});
+
+test("shell timeout terminates the child process group", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-kill-"));
+  const marker = join(workspace, "late-marker");
+  await assert.rejects(
+    execAsync(`sleep 1; touch ${marker}`, { cwd: workspace, timeoutMs: 100 }),
+    /Timed out after 100ms/,
+  );
+  await new Promise(resolve => setTimeout(resolve, 1_100));
+  assert.equal(existsSync(marker), false);
+});
+
+test("shell cancellation terminates the child process group", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-cancel-"));
+  const marker = join(workspace, "cancelled-marker");
+  const controller = new AbortController();
+  const execution = execAsync(`sleep 1; touch ${marker}`, {
+    cwd: workspace,
+    signal: controller.signal,
+  });
+  setTimeout(() => controller.abort(new Error("Cancelled by user")), 100);
+  await assert.rejects(execution, /Cancelled by user/);
+  await new Promise(resolve => setTimeout(resolve, 1_100));
+  assert.equal(existsSync(marker), false);
+});
+
+test("stale shell callbacks cannot finalize a newer run", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-stale-"));
+  const scheduler = new ShellScheduler(workspace);
+  const oldCall = { id: "old-call", name: "bash", args: { command: "npm test" } };
+  scheduler.beginRun("run-old", "turn-old");
+  scheduler.reserve(oldCall);
+  scheduler.running(oldCall);
+  scheduler.beginRun("run-new", "turn-new");
+  const newCall = { id: "new-call", name: "bash", args: { command: "npm test" } };
+  scheduler.reserve(newCall);
+  scheduler.running(newCall);
+  scheduler.complete(oldCall, "Exit: 0", false);
+  assert.equal([...scheduler.records.values()][0].status, "running");
 });
 
 test("mixed mutation batches execute sequentially without provider reissue", async () => {

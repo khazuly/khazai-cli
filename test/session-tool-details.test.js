@@ -71,3 +71,35 @@ test("details latest skips the selector and limits history choices to twenty", a
   });
   await handleSessionCommand("/details", "", selectorState.context);
 });
+
+test("allow-all command persists session mode and restores normal prompts", async () => {
+  const messages = [];
+  const permissionValues = [];
+  const session = { id: "session-1", permissionMode: "prompt" };
+  const context = {
+    agentRef: { current: { setAutoApprove: value => permissionValues.push(value) } },
+    appendArchived: message => messages.push(message),
+    autoApproveRef: { current: false },
+    completedRef: { current: [] },
+    currentModel: "big-cock",
+    currentSessionRef: { current: session },
+    sessionStoreRef: { current: { save: value => ({ ...value }) } },
+    setInspectedTool() {},
+    setThemeName() {},
+    workspacePath: "/tmp/project",
+  };
+
+  await handleSessionCommand("/allow-all", "", context);
+  assert.equal(context.autoApproveRef.current, true);
+  assert.equal(context.currentSessionRef.current.permissionMode, "allow-all");
+  assert.equal(messages.at(-1).content, "All tool permissions are allowed for this session.");
+
+  await handleSessionCommand("/allow-all", "status", context);
+  assert.equal(messages.at(-1).content, "All tool permissions are allowed for this session.");
+
+  await handleSessionCommand("/allow-all", "off", context);
+  assert.equal(context.autoApproveRef.current, false);
+  assert.equal(context.currentSessionRef.current.permissionMode, "prompt");
+  assert.deepEqual(permissionValues, [true, false]);
+  assert.equal(messages.at(-1).content, "Normal permission prompts are restored for this session.");
+});

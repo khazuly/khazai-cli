@@ -11,12 +11,12 @@ import { todoWriteTool } from "../tools/todo.js";
 export function builtinTools(workspace) {
   return [
     questionTool,
+    bashTool,
     readTool,
     globTool,
     grepTool,
     editTool,
     writeTool,
-    bashTool,
     taskTool,
     webfetchTool,
     todoWriteTool,

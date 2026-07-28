@@ -3,7 +3,6 @@ import { useState, useRef, useCallback } from "react";
 import { Box, Static } from "ink";
 import { resolve } from "node:path";
 import { Agent } from "../app/agent.js";
-import { validationCommand } from "../app/execution-policy.js";
 import { PermissionService } from "../app/permission.js";
 import { Registry } from "../app/registry.js";
 import { SessionStore } from "../app/session-store.js";
@@ -28,6 +27,27 @@ import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { SYNTAX_THEMES } from "./syntax-theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
+import {
+  analysisActivityMessage,
+  analysisEventIsCurrent,
+  clearAnalysisActivity,
+  completeAnalysisActivity,
+  createAnalysisActivity,
+  failAnalysisActivity,
+  pauseAnalysisActivity,
+  startAnalysisActivity,
+  updateAnalysisActivity,
+} from "./analysis-activity.js";
+import {
+  appendResponseDelta,
+  commitResponseBuffer,
+  createResponseBuffer,
+  discardResponseBuffer,
+  permissionModeCommand,
+  prepareRunInterruption,
+  resetResponseBuffer,
+  terminalRunResult,
+} from "./session-runtime.js";
 export { streamViewportText } from "./stream-viewport.js";
 
 const MODEL_LABELS = { "auto-free": "Auto (free)" };
@@ -47,31 +67,32 @@ function readFileName(args) {
   return parts.at(-1) || String(args?.path || "");
 }
 
-function thinkActivityFromPlan(plan) {
+function thinkActivityFromPlan(plan, phase) {
   const items = Array.isArray(plan) ? plan : [];
   const activeIndex = items.findIndex(item => item.status === "in_progress" || item.status === "running" || item.status === "active");
   if (activeIndex >= 0) {
     return {
-      text: removeEmoji(items[activeIndex].text || items[activeIndex].content || items[activeIndex].title || "Analyzing the execution context").trim(),
+      text: removeEmoji(items[activeIndex].text || items[activeIndex].content || items[activeIndex].title || items[activeIndex].description || "Analyzing the execution context").trim(),
       step: items.length > 1 ? `Step ${activeIndex + 1} of ${items.length}` : null,
     };
   }
   const pendingIndex = items.findIndex(item => !item.status || item.status === "pending");
   if (pendingIndex >= 0) {
     return {
-      text: removeEmoji(items[pendingIndex].text || items[pendingIndex].content || items[pendingIndex].title || "Analyzing the execution context").trim(),
+      text: removeEmoji(items[pendingIndex].text || items[pendingIndex].content || items[pendingIndex].title || items[pendingIndex].description || "Analyzing the execution context").trim(),
       step: items.length > 1 ? `Step ${pendingIndex + 1} of ${items.length}` : null,
     };
   }
-  return { text: "Analyzing the execution context", step: null };
+  const text = phase === "continuation"
+    ? "Inspecting continuation after tool results"
+    : phase === "implementation"
+      ? "Preparing the implementation"
+      : "Analyzing the execution context";
+  return { text, step: null };
 }
 
 export function normalizeStreamText(text) {
   return normalizeVerticalWhitespace(removeAssistantProtocolText(removeEmoji(text)));
-}
-
-export function shouldShowCompletionSummary({ mutatedFiles, failedTools }) {
-  return Number(failedTools) > 0 || Number(mutatedFiles?.size || mutatedFiles?.length || 0) > 0;
 }
 
 export function toolResultFailed(result) {
@@ -125,16 +146,18 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [expandedTool, setExpandedTool] = useState(null);
   const agentRef = useRef(null);
   const activeRef = useRef(null);
-  const toolStartRef = useRef(null);
   const submittingRef = useRef(false);
   const questionResolverRef = useRef(null);
-  const streamBufferRef = useRef("");
-  const streamTimerRef = useRef(null);
+  const activeScopeRef = useRef(null);
+  const responseBufferRef = useRef(null);
   const completedRef = useRef([]);
   const agentSessionRef = useRef(null);
   const mcpToolsRef = useRef(initialMcpTools);
   const autoApproveRef = useRef(false);
   const structuredCallsRef = useRef(new Set());
+  const analysisRef = useRef(null);
+  const cancelledRunIdRef = useRef(null);
+  const submitRef = useRef(null);
 
   if (!agentRef.current) {
     agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
@@ -161,7 +184,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
   const requestValue = useCallback((question, options = [], settings = {}) => new Promise(resolveValue => {
     const values = new Map((settings.values || []).map(entry => [entry.label, entry.value]));
-    questionResolverRef.current = answer => resolveValue(values.get(answer) ?? answer);
+    questionResolverRef.current = {
+      kind: settings.kind || "command",
+      resolve: answer => resolveValue(values.get(answer) ?? answer),
+      scope: null,
+    };
     setPendingQuestion({
       question,
       options,
@@ -173,17 +200,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const loadStoredSession = useCallback(session => {
     currentSessionRef.current = session;
     agentSessionRef.current = session.agentState || null;
+    autoApproveRef.current = session.permissionMode === "allow-all";
     agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
       workspace: workspace.path,
       sessionId: session.id,
       model: session.model,
       agent: session.agent,
       sessionState: session.agentState,
-      autoApprove: autoApproveRef.current,
+      autoApprove: session.permissionMode === "allow-all",
       partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
     });
     completedRef.current = session.messages || [];
     activeRef.current = null;
+    analysisRef.current = null;
+    responseBufferRef.current = null;
     setCompletedMessages(session.messages || []);
     setActiveMessage(null);
     setPlan([]);
@@ -195,16 +225,39 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
   const handleCommand = useCallback(async (cmd, arg) => {
     if (cmd === "/exit") process.exit(0);
-    if (cmd === "/auto") {
-      const requested = String(arg || "").trim().toLowerCase();
-      autoApproveRef.current = requested
-        ? ["on", "true", "1", "enable", "enabled"].includes(requested)
-        : !autoApproveRef.current;
-      agentRef.current?.setAutoApprove(autoApproveRef.current);
+    if (cmd === "/retry") {
+      if (!agentRef.current?.hasRecoverableProviderRequest?.()) {
+        appendArchived({
+          id: nextId(),
+          type: "error",
+          content: "No recoverable model request is available.",
+        });
+        return;
+      }
+      return submitRef.current?.("", { retryProvider: true });
+    }
+    if (cmd === "/allow-all" || cmd === "/auto") {
+      const requested = cmd === "/auto" && !String(arg || "").trim()
+        ? (autoApproveRef.current ? "off" : "on")
+        : arg;
+      const result = permissionModeCommand(
+        requested,
+        autoApproveRef.current ? "allow-all" : "prompt",
+      );
+      if (result.error) {
+        appendArchived({ id: nextId(), type: "error", content: result.error });
+        return;
+      }
+      autoApproveRef.current = result.mode === "allow-all";
+      if (String(requested || "").trim().toLowerCase() !== "status") {
+        agentRef.current?.setAutoApprove(autoApproveRef.current);
+        currentSessionRef.current.permissionMode = result.mode;
+        currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
+      }
       appendArchived({
         id: nextId(),
         type: "answer",
-        content: `Auto-approve is ${autoApproveRef.current ? "enabled" : "disabled"}. Explicit deny rules still apply.`,
+        content: result.message,
       });
       return;
     }
@@ -513,20 +566,30 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/collapse") setExpandedTool(null);
   }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
 
-  const submit = useCallback(async (input) => {
-    if (!input.trim() || submittingRef.current) return;
+  const submit = useCallback(async (input, options = {}) => {
+    const retryProvider = Boolean(options.retryProvider);
+    if ((!retryProvider && !input.trim()) || submittingRef.current) return;
     setExpandedTool(null);
     structuredCallsRef.current.clear();
     submittingRef.current = true;
     const startedAt = Date.now();
     setRunning(true);
     setRunningStartedAt(startedAt);
-    let taskTools = 0;
-    let failedTools = 0;
     let finishedNormally = false;
-    const mutatedFiles = new Set();
-    const validations = [];
+    let finalCommitted = false;
+    let fatalError = "";
+    let recoverableFailure = false;
     const sessionBefore = currentSessionRef.current;
+    const runId = nextId();
+    const turnId = `${sessionBefore?.id || "session"}-${runId}`;
+    const analysisScope = { runId, turnId };
+    activeScopeRef.current = analysisScope;
+    cancelledRunIdRef.current = null;
+    analysisRef.current = createAnalysisActivity({
+      ...analysisScope,
+      analysisId: `analysis-${turnId}`,
+    });
+    responseBufferRef.current = createResponseBuffer(analysisScope);
     const gitBefore = sessionStoreRef.current.captureGitState();
     const agentStateBefore = agentRef.current?.exportSessionState?.() || null;
     const activate = message => {
@@ -537,21 +600,30 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       activeRef.current = null;
       setActiveMessage(null);
     };
-    const finishThink = failed => {
-      const current = activeRef.current;
-      if (current?.type !== "think") return false;
-      const completedAt = Date.now();
-      clearActive();
-      appendArchived({
-        ...current,
-        text: failed ? "Analysis timed out" : "Analysis completed",
-        done: true,
-        failed: Boolean(failed),
-        completedAt,
-      });
-      return true;
+    const pauseAnalysis = (now = Date.now()) => {
+      analysisRef.current = pauseAnalysisActivity(analysisRef.current, analysisScope, now);
+      if (activeRef.current?.id === analysisRef.current?.analysisId) clearActive();
     };
-    const finishReadBatch = failed => {
+    const showAnalysis = activity => {
+      analysisRef.current = startAnalysisActivity(
+        analysisRef.current,
+        analysisScope,
+        activity,
+      );
+      const message = analysisActivityMessage(analysisRef.current);
+      if (message) activate(message);
+    };
+    const updateAnalysis = activity => {
+      analysisRef.current = updateAnalysisActivity(
+        analysisRef.current,
+        analysisScope,
+        activity,
+      );
+      if (activeRef.current?.id === analysisRef.current?.analysisId) {
+        activate(analysisActivityMessage(analysisRef.current));
+      }
+    };
+    const finishReadBatch = (failed, failurePreview = "") => {
       const current = activeRef.current;
       if (current?.type !== "read-group") return false;
       const completedAt = Date.now();
@@ -560,16 +632,31 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         ...current,
         done: true,
         failed: Boolean(failed),
+        failurePreview: failed ? failurePreview || "Error: Read failed" : "",
         currentFile: failed ? current.currentFile : "",
         completedAt,
         duration: completedAt - current.startedAt,
       });
       return true;
     };
-    const startRead = (callId, args, startedAt = Date.now()) => {
+    const recordReadResult = (callId, result) => {
+      const current = activeRef.current;
+      if (
+        current?.type !== "read-group"
+        || !current.callIds.includes(callId)
+        || current.completedCallIds.includes(callId)
+      ) return;
+      const lineCount = Number(/^Lines:\s*(\d+)/im.exec(String(result || ""))?.[1] || 0);
+      activate({
+        ...current,
+        completedCallIds: [...current.completedCallIds, callId],
+        totalLines: current.totalLines + lineCount,
+      });
+    };
+    const startRead = (callId, args, startedAt = Date.now(), status = "running") => {
       const current = activeRef.current;
       const currentFile = readFileName(args);
-      finishThink(false);
+      pauseAnalysis();
       if (current?.type === "read-group") {
         const existing = current.callIds.includes(callId);
         const next = {
@@ -578,6 +665,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           currentFile,
           callIds: existing ? current.callIds : [...current.callIds, callId],
           count: existing ? current.count : current.count + 1,
+          status,
         };
         activate(next);
         return;
@@ -588,99 +676,79 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         tool: "read",
         args,
         callIds: [callId],
+        completedCallIds: [],
         count: 1,
+        totalLines: 0,
         currentFile,
         startedAt,
         done: false,
+        status,
       });
     };
-    const flushStream = () => {
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
-      const buffered = streamBufferRef.current;
-      streamBufferRef.current = "";
-      const current = activeRef.current;
-      if (!buffered || current?.type !== "streaming") return;
-      const next = { ...current, content: current.content + buffered };
-      activeRef.current = next;
-      setActiveMessage(next);
-    };
     const completeStreaming = () => {
-      flushStream();
-      const current = activeRef.current;
-      if (current?.type === "streaming") {
-        clearActive();
-        appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(current.content) });
-        return true;
-      }
-      return false;
+      const committed = commitResponseBuffer(responseBufferRef.current, analysisScope);
+      responseBufferRef.current = committed.state;
+      if (!committed.response) return false;
+      const content = normalizeStreamText(committed.response.content);
+      if (!content) return false;
+      appendArchived({ id: committed.response.id, type: "answer", content });
+      finalCommitted = true;
+      return true;
+    };
+    const resetStreaming = () => {
+      responseBufferRef.current = resetResponseBuffer(responseBufferRef.current, analysisScope);
     };
     const discardStreaming = () => {
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
-      streamBufferRef.current = "";
-      if (activeRef.current?.type === "streaming") clearActive();
+      responseBufferRef.current = discardResponseBuffer(responseBufferRef.current, analysisScope);
     };
-    const recordToolEvidence = (tool, args, result, failed, duration) => {
-      taskTools++;
-      if (failed) failedTools++;
-      if (["write", "edit"].includes(tool) && args?.path) mutatedFiles.add(String(args.path));
-      if (tool === "apply_patch") {
-        for (const match of String(args?.patchText || "").matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
-          mutatedFiles.add(match[1]);
-        }
-      }
-      if (tool === "bash" && validationCommand(args?.command)) {
-        const exitCode = Number(/^Exit:\s*(-?\d+)/im.exec(String(result || ""))?.[1] ?? (failed ? -1 : 0));
-        const command = String(args.command).trim();
-        if (!validations.some(validation => validation.command === command)) {
-          validations.push({
-            command,
-            exitCode,
-            duration: duration === null || duration === undefined
-              ? null
-              : duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(1)} s`,
-          });
-        }
-      }
-    };
-
-    appendArchived({ id: nextId(), type: "user", content: redactSecrets(input) });
+    if (!retryProvider) {
+      appendArchived({ id: nextId(), type: "user", content: redactSecrets(input) });
+    }
 
     const agent = agentRef.current;
     agent.setQuestionHandler(() => new Promise(resolve => {
-      questionResolverRef.current = resolve;
+      questionResolverRef.current = { kind: "question", resolve, scope: analysisScope };
     }));
-    agent.setPermissionHandler(() => new Promise(resolve => {
-      questionResolverRef.current = resolve;
+    agent.setPermissionHandler(request => new Promise(resolve => {
+      const current = activeScopeRef.current;
+      if (
+        !current
+        || request.runId !== current.runId
+        || request.turnId !== current.turnId
+        || cancelledRunIdRef.current === request.runId
+      ) {
+        resolve("");
+        return;
+      }
+      questionResolverRef.current = {
+        kind: "permission",
+        resolve,
+        scope: { runId: request.runId, turnId: request.turnId },
+      };
     }));
     try {
-    const agentInput = input.trimStart().startsWith("!")
+    const agentInput = retryProvider
+      ? ""
+      : input.trimStart().startsWith("!")
       ? input
       : attachFileReferences(input, workspace.path);
-    for await (const ev of agent.loop(agentInput)) {
+    for await (const ev of agent.loop(agentInput, undefined, {
+      ...analysisScope,
+      retryProvider,
+    })) {
+      if (cancelledRunIdRef.current === analysisScope.runId) continue;
+      if (!analysisEventIsCurrent(ev, analysisScope)) continue;
       if (ev.type === "thinking") {
-        discardStreaming();
+        resetStreaming();
         finishReadBatch(false);
-        const activity = thinkActivityFromPlan(planRef.current);
-        const current = activeRef.current;
-        const base = current?.type === "think" ? current : {
-          id: `think-${sessionBefore?.id || "session"}-${ev.turn || Date.now()}`,
-          type: "think",
-          turn: ev.turn,
-          startedAt: Date.now(),
-        };
-        activate({ ...base, ...activity, done: false, failed: false });
+        showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase));
         continue;
       }
 
       if (ev.type === "plan") {
-        discardStreaming();
+        resetStreaming();
         finishReadBatch(false);
+        pauseAnalysis();
         clearActive();
         setPlan(ev.items.map(item => ({ ...item, status: item.status || "pending" })));
         continue;
@@ -692,7 +760,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             i === ev.index ? { ...item, status: ev.status } : item
           );
           if (activeRef.current?.type === "think") {
-            activate({ ...activeRef.current, ...thinkActivityFromPlan(next) });
+            updateAnalysis(thinkActivityFromPlan(next));
           }
           return next;
         });
@@ -700,35 +768,39 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "question") {
-        const questionAlreadyStreamed = completeStreaming();
+        resetStreaming();
         finishReadBatch(false);
-        finishThink(false);
-        if (!questionAlreadyStreamed) {
-          appendArchived({
-            id: nextId(),
-            type: "answer",
-            content: removeEmoji(ev.question).trim(),
-          });
-        }
+        pauseAnalysis();
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: removeEmoji(ev.question).trim(),
+        });
         setPendingQuestion({ question: ev.question, options: ev.options });
         continue;
       }
 
       if (ev.type === "permission") {
-        discardStreaming();
-        finishReadBatch(false);
-        finishThink(false);
-        appendArchived({
-          id: nextId(),
-          type: "permission",
-          reason: redactSecrets(ev.reason),
-          tool: ev.tool,
-          target: redactSecrets(JSON.stringify(ev.args || {})),
-        });
+        resetStreaming();
+        pauseAnalysis();
+        const currentTool = activeRef.current;
+        if (
+          currentTool?.callId === ev.callId
+          || currentTool?.type === "read-group" && currentTool.callIds?.includes(ev.callId)
+        ) {
+          activate({ ...currentTool, status: "awaiting-approval" });
+        }
         setPendingQuestion({
-          question: ev.reason,
+          id: `permission-${ev.callId}`,
+          question: ev.action,
           options: ev.options,
           kind: "permission",
+          permissionRequest: {
+            action: redactSecrets(ev.action),
+            target: redactSerializable(ev.target),
+          },
+          runId: ev.runId,
+          turnId: ev.turnId,
         });
         continue;
       }
@@ -739,22 +811,36 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (part.tool === "question") continue;
         structuredCallsRef.current.add(part.callId);
         if (part.state.status === "pending" || part.state.status === "running") {
-          discardStreaming();
+          resetStreaming();
           if (part.tool === "read") {
-            startRead(part.callId, redactSerializable(part.state.input || {}), part.state.time?.start || Date.now());
+            startRead(
+              part.callId,
+              redactSerializable(part.state.input || {}),
+              part.state.time?.start || Date.now(),
+              part.state.status,
+            );
             continue;
           }
           finishReadBatch(false);
-          finishThink(false);
-          if (activeRef.current?.type !== "tool") {
-            toolStartRef.current = part.state.time?.start || Date.now();
+          pauseAnalysis();
+          if (activeRef.current?.type === "tool" && activeRef.current.callId === part.callId) {
             activate({
-              id: nextId(),
+              ...activeRef.current,
+              args: redactSerializable(part.state.input || {}),
+              status: part.state.status,
+            });
+          } else {
+            activate({
+              id: `tool-${part.callId}`,
               type: "tool",
               callId: part.callId,
               tool: part.tool,
               args: redactSerializable(part.state.input || {}),
               done: false,
+              status: part.state.status,
+              startedAt: part.state.time?.start || Date.now(),
+              runId: ev.runId,
+              turnId: ev.turnId,
             });
           }
           continue;
@@ -766,21 +852,31 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         const duration = part.state.time?.end && part.state.time?.start
           ? part.state.time.end - part.state.time.start
           : null;
-        recordToolEvidence(part.tool, part.state.input || {}, safeResult, failed, duration);
         if (part.tool === "read") {
-          if (failed) finishReadBatch(true);
+          if (failed) finishReadBatch(true, safeResult);
+          else recordReadResult(part.callId, safeResult);
           continue;
         }
         const current = activeRef.current?.callId === part.callId ? activeRef.current : null;
         if (current) clearActive();
+        const toolMessageId = `tool-${part.callId}`;
+        if (completedRef.current.some(message => message.id === toolMessageId)) continue;
         appendArchived({
-          ...(current || { id: nextId(), type: "tool", tool: part.tool, args: part.state.input || {} }),
+          ...(current || {
+            id: toolMessageId,
+            type: "tool",
+            tool: part.tool,
+            args: part.state.input || {},
+            runId: ev.runId,
+            turnId: ev.turnId,
+          }),
           callId: part.callId,
           content: safeResult,
           done: true,
           failed,
           duration,
           resultSize: Buffer.byteLength(safeResult || ""),
+          metadata: redactSerializable(part.state.metadata || {}),
           expanded: false,
         });
         continue;
@@ -788,52 +884,55 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "tool-call") {
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
-        discardStreaming();
+        if (ev.tool === "question") continue;
+        resetStreaming();
         if (ev.tool === "read") {
           startRead(ev.callId, redactSerializable(ev.args || {}));
           continue;
         }
         finishReadBatch(false);
-        finishThink(false);
-        toolStartRef.current = Date.now();
-        activate({ id: nextId(), type: "tool", tool: ev.tool, args: redactSerializable(ev.args || {}), done: false });
+        pauseAnalysis();
+        activate({
+          id: `tool-${ev.callId}`,
+          type: "tool",
+          callId: ev.callId,
+          tool: ev.tool,
+          args: redactSerializable(ev.args || {}),
+          done: false,
+          status: "pending",
+          startedAt: Date.now(),
+          runId: ev.runId,
+          turnId: ev.turnId,
+        });
         continue;
       }
 
       if (ev.type === "stream") {
         finishReadBatch(false);
-        finishThink(false);
-        const current = activeRef.current;
-        if (current?.type === "streaming") {
-          streamBufferRef.current += ev.token;
-          if (!streamTimerRef.current) {
-            streamTimerRef.current = setTimeout(() => flushStream(), 40);
-          }
-        } else {
-          const initial = ev.token;
-          if (!initial) continue;
-          clearActive();
-          activate({ id: nextId(), type: "streaming", content: initial });
-        }
+        pauseAnalysis();
+        responseBufferRef.current = appendResponseDelta(
+          responseBufferRef.current,
+          analysisScope,
+          ev.token,
+        );
         continue;
       }
 
       if (ev.type === "stream-discard") {
-        discardStreaming();
+        resetStreaming();
         continue;
       }
 
       if (ev.type === "stream-commit") {
         finishReadBatch(false);
-        completeStreaming();
+        resetStreaming();
         continue;
       }
 
       if (ev.type === "tool-result") {
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
-        flushStream();
         const current = activeRef.current;
-        const duration = toolStartRef.current ? Date.now() - toolStartRef.current : null;
+        const duration = current?.startedAt ? Date.now() - current.startedAt : null;
         const safeResult = redactSecrets(ev.result);
         if (isInternalAgentFailure(safeResult)) {
           // Legacy tools may still return a guard phrase as text. The agent
@@ -844,16 +943,32 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
         const resultSize = Buffer.byteLength(safeResult || "");
         const failed = toolResultFailed(safeResult);
-        recordToolEvidence(ev.tool, current?.args || {}, ev.result, failed, duration);
         if (ev.tool === "read") {
-          if (failed) finishReadBatch(true);
+          if (failed) finishReadBatch(true, safeResult);
+          else recordReadResult(ev.callId, safeResult);
           continue;
         }
         clearActive();
+        const toolMessageId = `tool-${ev.callId}`;
+        if (completedRef.current.some(message => message.id === toolMessageId)) continue;
         appendArchived(
           current?.type === "tool"
-            ? { ...current, content: safeResult, done: true, failed, duration, resultSize, expanded: false }
-            : { id: nextId(), type: "tool", tool: ev.tool, args: {}, content: safeResult, done: true, failed, duration, resultSize, expanded: false }
+            ? { ...current, content: safeResult, done: true, failed, duration, resultSize, metadata: redactSerializable(ev.metadata || {}), expanded: false }
+            : {
+                id: toolMessageId,
+                type: "tool",
+                tool: ev.tool,
+                args: {},
+                content: safeResult,
+                done: true,
+                failed,
+                duration,
+                resultSize,
+                metadata: redactSerializable(ev.metadata || {}),
+                expanded: false,
+                runId: ev.runId,
+                turnId: ev.turnId,
+              }
         );
         continue;
       }
@@ -869,115 +984,175 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         const safeContent = removeAssistantProtocolText(redactSecrets(removeEmoji(ev.content))).trim();
         const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
         if (ev.type === "answer") {
-          finishThink(false);
+          pauseAnalysis();
           finishedNormally = true;
           setPlan([]);
-        } else if (thinkTimeout) {
-          finishThink(true);
-        } else {
+        } else if (ev.recoverable) {
+          recoverableFailure = true;
+          pauseAnalysis();
           clearActive();
+          analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
+        } else if (thinkTimeout) {
+          fatalError = "Analysis timed out";
+          pauseAnalysis();
+          analysisRef.current = failAnalysisActivity(analysisRef.current, analysisScope);
+          const timeoutMessage = analysisActivityMessage(analysisRef.current);
+          if (timeoutMessage) appendArchived(timeoutMessage);
+          analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
+        } else {
+          fatalError = safeContent || "The provider failed";
+          clearActive();
+          analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
         }
-        if (safeContent && !thinkTimeout) appendArchived({ id: nextId(), type: ev.type, content: safeContent });
+        if (safeContent && !thinkTimeout) {
+          appendArchived({
+            id: nextId(),
+            type: ev.recoverable ? "provider-error" : ev.type,
+            content: safeContent,
+          });
+          if (ev.type === "answer") finalCommitted = true;
+        }
         continue;
       }
 
       if (ev.type === "stream-end") {
-        flushStream();
         finishReadBatch(false);
-        finishThink(false);
-        const current = activeRef.current;
-        if (current?.type === "streaming") {
-          clearActive();
-          appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(current.content) });
-        }
+        pauseAnalysis();
+        completeStreaming();
         setPlan([]);
         finishedNormally = true;
         continue;
       }
     }
     } catch (error) {
-      completeStreaming();
+      discardStreaming();
       finishReadBatch(true);
-      finishThink(false);
+      pauseAnalysis();
+      analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
       clearActive();
       const content = removeAssistantProtocolText(redactSecrets(error?.message || String(error))).trim();
-      if (content) appendArchived({ id: nextId(), type: "error", content: `Unexpected error: ${content}` });
+      if (content) {
+        fatalError = `Unexpected error: ${content}`;
+        appendArchived({ id: nextId(), type: "error", content: fatalError });
+      }
     } finally {
       agentSessionRef.current = agent.exportSessionState?.() || null;
-      completeStreaming();
+      discardStreaming();
       finishReadBatch(false);
       clearActive();
+      if (finishedNormally && analysisRef.current) {
+        analysisRef.current = completeAnalysisActivity(analysisRef.current, analysisScope);
+        const summary = analysisActivityMessage(analysisRef.current);
+        if (analysisRef.current?.status === "completed" && summary?.accumulatedDurationMs > 0) {
+          appendArchived(summary);
+        }
+      }
+      analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
       questionResolverRef.current = null;
+      activeScopeRef.current = null;
       setPendingQuestion(null);
       submittingRef.current = false;
       setRunning(false);
       setRunningStartedAt(null);
       setWorkspaceFiles(listWorkspaceFiles(workspace.path));
-      if (taskTools > 0 && shouldShowCompletionSummary({ mutatedFiles, failedTools })) {
+      const runResult = recoverableFailure ? null : terminalRunResult({
+        cancelled: cancelledRunIdRef.current === runId,
+        completionGaps: agent._executionPolicy?.completionGaps?.() || [],
+        fatalError,
+        finalCommitted,
+        finishedNormally,
+      });
+      if (runResult?.status === "failed" && runResult.unresolvedIssues.length) {
         appendArchived({
           id: nextId(),
           type: "summary",
-          status: finishedNormally && failedTools === 0 ? "finished" : "attention",
-          tools: taskTools,
-          files: [...mutatedFiles],
-          validations,
-          validationMissing: mutatedFiles.size > 0 && validations.length === 0,
-          duration: Date.now() - startedAt,
+          status: "attention",
+          unresolvedIssues: runResult.unresolvedIssues,
         });
       }
       const session = currentSessionRef.current;
       if (session?.id === sessionBefore?.id) {
-        if (session.turns.length === 0) session.title = redactSecrets(input).slice(0, 72);
-        currentSessionRef.current = sessionStoreRef.current.recordTurn(session, {
-          input,
-          before: gitBefore,
-          after: sessionStoreRef.current.captureGitState(),
-          messages: completedRef.current,
-          agentState: agentSessionRef.current,
-          agentStateBefore,
-        });
+        if (retryProvider) {
+          currentSessionRef.current = sessionStoreRef.current.save({
+            ...session,
+            messages: completedRef.current,
+            agentState: agentSessionRef.current,
+          });
+        } else {
+          if (session.turns.length === 0) session.title = redactSecrets(input).slice(0, 72);
+          currentSessionRef.current = sessionStoreRef.current.recordTurn(session, {
+            input,
+            before: gitBefore,
+            after: sessionStoreRef.current.captureGitState(),
+            messages: completedRef.current,
+            agentState: agentSessionRef.current,
+            agentStateBefore,
+          });
+        }
       }
     }
   }, [appendArchived]);
+  submitRef.current = submit;
 
   const answerQuestion = useCallback(answer => {
-    const resolve = questionResolverRef.current;
+    const pending = questionResolverRef.current;
     const value = String(answer || "").trim();
-    if (!resolve || !value) return;
+    if (!pending || !value) return;
+    const current = activeScopeRef.current;
+    if (
+      pending.scope
+      && (!current || current.runId !== pending.scope.runId || current.turnId !== pending.scope.turnId)
+    ) {
+      questionResolverRef.current = null;
+      pending.resolve("");
+      return;
+    }
     const secret = Boolean(pendingQuestion?.secret);
     questionResolverRef.current = null;
     setPendingQuestion(null);
-    appendArchived({ id: nextId(), type: "user", content: secret ? "[credential provided]" : value });
-    resolve(value);
+    if (pending.kind !== "permission") {
+      appendArchived({ id: nextId(), type: "user", content: secret ? "[credential provided]" : value });
+    }
+    pending.resolve(value);
   }, [appendArchived, pendingQuestion]);
 
   const cancelQuestion = useCallback(() => {
-    const resolve = questionResolverRef.current;
-    if (!resolve) return;
+    const pending = questionResolverRef.current;
+    if (!pending) return;
     questionResolverRef.current = null;
     setPendingQuestion(null);
-    resolve("");
+    pending.resolve("");
   }, []);
 
   const handleAbort = useCallback(() => {
-    if (!submittingRef.current) return;
-    // Archive any in-flight streaming content so it isn't lost
-    const active = activeRef.current;
-    if (active?.type === "streaming") {
-      flushStream();
-      clearActive();
-      appendArchived({ id: nextId(), type: "answer", content: normalizeStreamText(active.content) });
-    } else {
-      clearActive();
-    }
-    appendArchived({ id: nextId(), type: "answer", content: "Interrupted." });
+    const interruption = prepareRunInterruption({
+      submitting: submittingRef.current,
+      scope: activeScopeRef.current,
+      cancelledRunId: cancelledRunIdRef.current,
+      responseBuffer: responseBufferRef.current,
+    });
+    if (!interruption.accepted) return;
+    activeRef.current = null;
+    setActiveMessage(null);
+    cancelledRunIdRef.current = interruption.runId;
+    activeScopeRef.current = null;
+    const pending = questionResolverRef.current;
+    questionResolverRef.current = null;
+    pending?.resolve("");
+    responseBufferRef.current = interruption.responseBuffer;
+    analysisRef.current = null;
+    setPendingQuestion(null);
+    setPlan([]);
+    appendArchived({ id: nextId(), type: "answer", content: "Interrupted by user." });
     agentRef.current?.abort();
-  }, [appendArchived]);
+  }, [appendArchived, setPlan]);
 
   const clearDisplay = useCallback(() => {
     process.stdout.write("\u001b[2J\u001b[H");
     completedRef.current = [];
     activeRef.current = null;
+    analysisRef.current = null;
+    responseBufferRef.current = null;
     setCompletedMessages([]);
     setActiveMessage(null);
     setPlan([]);
@@ -1033,6 +1208,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           disabled: running && !pendingQuestion,
           activeModel: currentModel,
           questionOptions: pendingQuestion?.options || [],
+          questionKind: pendingQuestion?.kind || "",
+          permissionRequest: pendingQuestion?.permissionRequest || null,
           onSelectOption: answerQuestion,
           onCancelOption: cancelQuestion,
           secret: Boolean(pendingQuestion?.secret),

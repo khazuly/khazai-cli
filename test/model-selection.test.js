@@ -76,13 +76,13 @@ test("Codex models resolve to the OAuth Responses provider", () => {
   });
 });
 
-test("default transport sends Big Cock's provider model and rejects unqualified unknown models", async () => {
+test("default transport matches the OpenCode Zen Big Pickle request contract", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENCODE_API_KEY;
   const requests = [];
   process.env.OPENCODE_API_KEY = "opencode-test-key";
-  globalThis.fetch = async (_url, options) => {
-    requests.push(JSON.parse(options.body));
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, headers: options.headers, body: JSON.parse(options.body) });
     return {
       ok: true,
       async json() {
@@ -94,8 +94,24 @@ test("default transport sends Big Cock's provider model and rejects unqualified 
   try {
     setDeepThinking(true);
     assert.equal(getDeepThinking(), false);
-    assert.equal(await chat([{ role: "user", content: "test" }], { model: "big-cock" }), "ok");
-    assert.equal(requests[0].model, "big-pickle");
+    assert.equal(await chat([{ role: "user", content: "test" }], {
+      model: "big-cock",
+      sessionId: "session-1",
+      runId: "run-1",
+      tools: [{
+        type: "function",
+        function: { name: "read", description: "Read a file", parameters: { type: "object" } },
+      }],
+    }), "ok");
+    assert.equal(requests[0].url, "https://opencode.ai/zen/v1/chat/completions");
+    assert.equal(requests[0].body.model, "big-pickle");
+    assert.equal(requests[0].body.max_tokens, 32_000);
+    assert.deepEqual(requests[0].body.stream_options, { include_usage: true });
+    assert.equal("tool_choice" in requests[0].body, false);
+    assert.equal(requests[0].headers["x-opencode-session"], "session-1");
+    assert.equal(requests[0].headers["x-opencode-request"], "run-1");
+    assert.equal(requests[0].headers["x-opencode-client"], "khazai-cli");
+    assert.equal(requests[0].headers["User-Agent"], "khazai-ai/0.3.0");
     await assert.rejects(
       chat([{ role: "user", content: "test" }], { model: "gpt" }),
       /Unknown model "gpt". Use provider\/model/,
@@ -147,12 +163,13 @@ test("Big Cock retries a transient provider error without changing models", asyn
   const requests = [];
   process.env.OPENCODE_API_KEY = "opencode-test-key";
   globalThis.fetch = async (_url, options) => {
-    requests.push(JSON.parse(options.body));
-    if (requests.length < 3) {
+    requests.push({ body: JSON.parse(options.body), headers: options.headers });
+    if (requests.length < 2) {
       return {
         ok: false,
         status: 500,
         statusText: "Internal Server Error",
+        headers: { get: name => name.toLowerCase() === "retry-after" ? "0" : null },
         async text() { return '{"error":"temporary"}'; },
       };
     }
@@ -163,9 +180,17 @@ test("Big Cock retries a transient provider error without changing models", asyn
     };
   };
   try {
-    assert.equal(await chat([{ role: "user", content: "test" }], { model: "big-cock" }), "recovered");
-    assert.equal(requests.length, 3);
-    assert.ok(requests.every(request => request.model === "big-pickle"));
+    assert.equal(await chat([{ role: "user", content: "test" }], {
+      model: "big-cock",
+      sessionId: "stable-session",
+      runId: "stable-run",
+    }), "recovered");
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(request => request.body.model === "big-pickle"));
+    assert.equal(requests[0].headers["x-opencode-session"], "stable-session");
+    assert.match(requests[1].headers["x-opencode-session"], /^stable-session-[0-9a-f]{4}$/);
+    assert.notEqual(requests[1].headers["x-opencode-session"], requests[0].headers["x-opencode-session"]);
+    assert.ok(requests.every(request => request.headers["x-opencode-request"] === "stable-run"));
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;

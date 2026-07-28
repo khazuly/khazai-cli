@@ -132,11 +132,16 @@ function migrateAgentStateV4(state, sessionId, parts = []) {
     model: state.model,
     agent: state.agent,
     parts: Array.isArray(state.parts) ? state.parts : parts,
+    permissionApprovals: Array.isArray(state.permissionApprovals) ? state.permissionApprovals : [],
   });
 }
 
 export function migrateSessionV4(value) {
-  if (value?.version === 4) return safeJSON(value);
+  if (value?.version === 4) {
+    const session = safeJSON(value);
+    session.permissionMode = session.permissionMode === "allow-all" ? "allow-all" : "prompt";
+    return session;
+  }
   const session = migrateSessionV3(value);
   session.version = 4;
   session.agentState = migrateAgentStateV4(session.agentState, session.id, session.parts);
@@ -147,6 +152,7 @@ export function migrateSessionV4(value) {
   }));
   session.runtime = { version: 2, lastPartAt: null, ...(session.runtime || {}) };
   session.runtime.version = 2;
+  session.permissionMode = session.permissionMode === "allow-all" ? "allow-all" : "prompt";
   return session;
 }
 
@@ -264,6 +270,7 @@ export class SessionStore {
       parts: [],
       turns: [],
       redo: [],
+      permissionMode: "prompt",
       runtime: { version: 2, lastPartAt: null },
     };
     this.save(session);
@@ -323,6 +330,7 @@ export class SessionStore {
     fork.messages = source.messages;
     fork.agentState = source.agentState;
     fork.parts = source.parts || source.agentState?.parts || [];
+    fork.permissionMode = source.permissionMode === "allow-all" ? "allow-all" : "prompt";
     return this.save(fork);
   }
 

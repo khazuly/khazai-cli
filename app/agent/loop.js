@@ -1,87 +1,71 @@
 import { cleanInteractiveText } from "../../lib/interactive-text.js";
-import { ExecutionPolicy } from "../execution-policy.js";
-import { fallbackIntentContract, normalizeIntentContract } from "../intent-resolver.js";
 import { redactSecrets, extractCredential } from "../../lib/secrets.js";
 import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
-import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
+import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
+import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
 
 export class LoopMethods {
-  async *loop(input, signal) {
+  async *loop(input, signal, scope = {}) {
     await this._registryReady;
+    const retryProvider = Boolean(scope.retryProvider);
+    if (this._activeRun && !this._activeRun.finalized) {
+      this._activeRun.cancelled = true;
+      this._abortController?.abort(new Error("Superseded by a newer turn"));
+    }
+    const runId = scope.runId || randomUUID();
+    const turnId = scope.turnId || randomUUID();
+    const run = { runId, turnId, cancelled: false, finalized: false };
+    this._activeRun = run;
+    this._shellScheduler.beginRun(runId, turnId, retryProvider);
+    const isRunCurrent = () => this._activeRun === run;
+    const isRunActive = () => isRunCurrent() && !run.cancelled && !run.finalized;
+    const scoped = event => ({ ...event, runId, turnId });
+    const finalizeRun = () => {
+      if (!isRunCurrent() || run.finalized) return false;
+      run.finalized = true;
+      return true;
+    };
     this._abortController = new AbortController();
     if (signal?.aborted) this._abortController.abort();
     else signal?.addEventListener("abort", () => this._abortController.abort(), { once: true });
     this._latency = { inputReceived: performance.now() };
     this._compactMessages();
     const safeInput = redactSecrets(input);
-    if (safeInput.trimStart().startsWith("!")) {
+    if (!retryProvider && safeInput.trimStart().startsWith("!")) {
       yield* this._runShellShortcut(safeInput.trimStart());
       return;
     }
-    this._messages.push({ role: "user", content: safeInput });
-    this._requestStartIndex = this._messages.length - 1;
-    this._currentRequest = safeInput;
-    this._pendingAction = null;
-    this._pendingGitPush = null;
-    this._requestMode = "neutral";
-    this._requiresPlan = false;
-    this._planningPhase = false;
-    this._turn = 0;
-    this._aborted = false;
-    this._lastToolWasExecuted = false;
-    this._totalWrites = 0;
-    this._plan = null;
-    this._planIndex = 0;
-    this._lastToolResult = null;
-    this._toolCallHistory = [];
-    this._completedToolResults.clear();
-    this._loopRecoveries = 0;
-    this._loopRecoveryExhausted = false;
-    this._invalidateInspectionCache();
-    this._inspectionCommands.clear();
-    this._readOnlyRedirects = 0;
-    this._planNarrations = 0;
-    this._planMismatches = 0;
-    this._postPlanToolRedirects = 0;
-    this._invalidToolResponses = 0;
-    this._emptyResponses = 0;
-    this._transportFailures = 0;
-    this._toolEvidence = [];
-    this._mutationSnapshots.clear();
-    this._patchReviews.clear();
-    this._cachedInspectionRedirects = 0;
-    this._completionRedirects = 0;
-    this._resolvedArtifactDocumentation = false;
-    this._researchSources = [];
-    let initialContract = fallbackIntentContract(this._currentRequest);
-    if (this._intentResolver?.resolve) {
-      try {
-        const resolved = await this._intentResolver.resolve({
-          input: this._currentRequest,
-          model: this._model,
-          signal,
-        });
-        if (resolved) initialContract = normalizeIntentContract(resolved, this._currentRequest);
-      } catch { /* fall back to heuristic */ }
+    if (retryProvider) {
+      if (!this.hasRecoverableProviderRequest()) {
+        if (finalizeRun()) {
+          yield scoped({ type: "error", content: "No recoverable model request is available." });
+        }
+        return;
+      }
+      prepareProviderRetry(this);
+    } else {
+      await initializeAgentRequest(this, safeInput, signal);
     }
-    this._executionPolicy = new ExecutionPolicy(initialContract);
-    this._taskContract = this._executionPolicy.contract;
-    this._activeTask = taskState(this._taskContract, this._currentRequest);
     let pendingProse = "";
     let proseContinuations = 0;
     while (this._turn < this._config.maxTurns) {
       if (this._aborted || signal?.aborted) {
-        yield { type: "answer", content: "The task was cancelled." };
+        if (finalizeRun()) yield scoped({ type: "answer", content: "The task was cancelled." });
         return;
       }
       this._turn++;
       this._stepBlocked = false;
       const snapshotPart = this._lifecycle.startStep();
-      if (snapshotPart) yield { type: "tool-part", part: snapshotPart };
-      yield { type: "thinking", turn: this._turn };
+      if (snapshotPart) yield scoped({ type: "tool-part", part: snapshotPart });
+      const phase = this._lastToolWasExecuted
+        ? "continuation"
+        : this._planningPhase || this._taskContract?.category === "MODIFICATION"
+          ? "implementation"
+          : "context";
+      yield scoped({ type: "thinking", turn: this._turn, phase });
 
       const ctx = this._buildContext();
       let reply;
@@ -94,7 +78,7 @@ export class LoopMethods {
       let typedProviderStream = false;
       const deferProse = Boolean(pendingProse);
       const requestModel = this._model;
-      const maxAttempts = /(?:claude|anthropic)/i.test(String(requestModel)) ? 1 : 2;
+      const maxAttempts = this._chatHandlesRetries || /(?:claude|anthropic)/i.test(String(requestModel)) ? 1 : 2;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         let chatErr;
@@ -102,7 +86,7 @@ export class LoopMethods {
         const eventQueue = [];
         let eventResolve = null;
         const queueEvent = event => {
-          if (!event) return;
+          if (!event || !isRunActive()) return;
           if (eventResolve) {
             const resolveEvent = eventResolve;
             eventResolve = null;
@@ -113,12 +97,14 @@ export class LoopMethods {
         };
         const compatibilityGuard = createAssistantTextGuard();
         const onToken = token => {
+          if (!isRunActive()) return;
           this._markLatency("providerFirstDelta");
           receivedAnyToken = true;
           const text = compatibilityGuard.push(token);
           if (text) queueEvent({ type: "text-delta", text, compatibility: true });
         };
         const onEvent = event => {
+          if (!isRunActive()) return;
           typedProviderStream = true;
           if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
             this._markLatency("providerFirstDelta");
@@ -145,12 +131,17 @@ export class LoopMethods {
           model: requestModel,
           onToken,
           onEvent,
-          signal,
+          signal: this._abortController.signal,
           timeoutMs: this._config.providerTimeout,
           reasoningEffort: this._config.reasoningEffort,
           tools: nativeTools,
+          sessionId: this._sessionId,
+          runId,
+          turnId,
+          streamPhase: phase,
         })
           .then(result => {
+            if (!isRunActive()) return;
             if (typedProviderStream) {
               reply = sanitizeAssistantIdentity(result);
               return;
@@ -161,7 +152,9 @@ export class LoopMethods {
             }
             reply = completed.text;
           })
-          .catch(error => { chatErr = error; });
+          .catch(error => {
+            if (isRunCurrent()) chatErr = error;
+          });
         const waitForEvent = () => new Promise(resolveEvent => { eventResolve = resolveEvent; });
 
         while (reply === undefined && chatErr === undefined) {
@@ -170,7 +163,7 @@ export class LoopMethods {
             : await Promise.race([waitForEvent(), chatDone.then(() => undefined)]);
           if (event === undefined) continue;
           if (event.type === "reasoning-delta") {
-            yield { type: "reasoning", token: event.text };
+            yield scoped({ type: "reasoning", token: event.text });
             continue;
           }
           const token = event.text;
@@ -179,7 +172,7 @@ export class LoopMethods {
             streamStarted = true;
             streamVisibleLength += token.length;
             this._markLatency("uiFirstText");
-            yield { type: "stream", token };
+            yield scoped({ type: "stream", token });
             continue;
           }
           streamTail += token;
@@ -191,13 +184,13 @@ export class LoopMethods {
             streamStarted = true;
             streamVisibleLength += visible.length;
             this._markLatency("uiFirstText");
-            yield { type: "stream", token: visible };
+            yield scoped({ type: "stream", token: visible });
           }
         }
         while (eventQueue.length > 0) {
           const event = eventQueue.shift();
           if (event.type === "reasoning-delta") {
-            yield { type: "reasoning", token: event.text };
+            yield scoped({ type: "reasoning", token: event.text });
             continue;
           }
           const token = event.text;
@@ -206,7 +199,7 @@ export class LoopMethods {
             streamStarted = true;
             streamVisibleLength += token.length;
             this._markLatency("uiFirstText");
-            yield { type: "stream", token };
+            yield scoped({ type: "stream", token });
             continue;
           }
           streamTail += token;
@@ -218,7 +211,7 @@ export class LoopMethods {
             streamStarted = true;
             streamVisibleLength += visible.length;
             this._markLatency("uiFirstText");
-            yield { type: "stream", token: visible };
+            yield scoped({ type: "stream", token: visible });
           }
         }
         await chatDone.catch(() => {});
@@ -227,8 +220,10 @@ export class LoopMethods {
         finalError = chatErr;
         if (streamStarted || receivedAnyToken || /request timed out|timeout|timed out/i.test(String(chatErr?.message || chatErr))) break;
         if (attempt < maxAttempts - 1) {
+          if (!isRunActive()) break;
           try {
             await this._resetSession({ signal });
+            if (!isRunActive()) break;
             reply = undefined;
             streamTail = "";
             streamMode = "pending";
@@ -242,30 +237,39 @@ export class LoopMethods {
       }
 
       if (finalError && reply === undefined) {
+        if (!isRunActive()) {
+          finalizeRun();
+          return;
+        }
         if (streamStarted && streamMode === "text") {
-          yield { type: "stream-discard" };
+          yield scoped({ type: "stream-discard" });
         }
         this._debugToolRecovery("transport_failure", finalError?.message || String(finalError));
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
-          yield { type: "tool-part", part: lifecyclePart };
+          yield scoped({ type: "tool-part", part: lifecyclePart });
         }
         this._finishLatency();
         const message = finalError?.message || String(finalError);
-        const content = /request timed out|timeout|timed out/i.test(message)
+        const recoverable = recoverableProviderFailure(finalError);
+        if (recoverable) rememberProviderFailure(this, finalError, requestModel, phase);
+        const content = recoverable
+          ? providerFailureContent(finalError)
+          : /request timed out|timeout|timed out/i.test(message)
           ? "Analysis timed out"
           : `Provider error: ${redactSecrets(message)}`;
-        yield { type: "error", content };
+        if (finalizeRun()) yield scoped({ type: "error", content, recoverable });
         return;
       }
+      this._recoverableProviderRequest = null;
       this._transportFailures = 0;
 
       if (!reply || !reply.trim() || reply.trim() === "{}" || reply.trim() === "[]") {
         this._emptyResponses++;
         if (this._emptyResponses < 3) {
-          if (streamStarted && streamMode === "text") yield { type: "stream-discard" };
+          if (streamStarted && streamMode === "text") yield scoped({ type: "stream-discard" });
           this._debugToolRecovery("empty_response", "Provider returned no usable content.");
           for (const lifecyclePart of this._lifecycle.finishStep("error")) {
-            yield { type: "tool-part", part: lifecyclePart };
+            yield scoped({ type: "tool-part", part: lifecyclePart });
           }
           try {
             await this._resetSession({ signal });
@@ -275,10 +279,12 @@ export class LoopMethods {
           }
         }
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
-          yield { type: "tool-part", part: lifecyclePart };
+          yield scoped({ type: "tool-part", part: lifecyclePart });
         }
         this._finishLatency();
-        yield { type: "error", content: "Provider returned an empty response." };
+        if (finalizeRun()) {
+          yield scoped({ type: "error", content: "Provider returned an empty response." });
+        }
         return;
       }
       this._emptyResponses = 0;
@@ -288,9 +294,9 @@ export class LoopMethods {
         if (!typedProviderStream) {
           const prose = extractProseBeforeTool(reply, tool);
           const remaining = prose.slice(Math.min(streamVisibleLength, prose.length));
-          if (remaining) yield { type: "stream", token: remaining };
+          if (remaining) yield scoped({ type: "stream", token: remaining });
         }
-        if (streamStarted || !typedProviderStream) yield { type: "stream-commit" };
+        if (streamStarted || !typedProviderStream) yield scoped({ type: "stream-commit" });
       };
       if (
         parsed.tools?.length > 1
@@ -300,8 +306,8 @@ export class LoopMethods {
         for await (const event of this._runReadOnlyBatch(parsed.tools)) yield event;
         if (this._loopRecoveryExhausted) {
           const answer = this._boundedLoopRecoveryAnswer();
-          yield { type: "stream", token: answer };
-          yield { type: "stream-end" };
+          yield scoped({ type: "stream", token: answer });
+          if (finalizeRun()) yield scoped({ type: "stream-end" });
           return;
         }
         if (this._stepBlocked) return;
@@ -312,8 +318,8 @@ export class LoopMethods {
         for await (const event of this._runSequentialBatch(parsed.tools)) yield event;
         if (this._loopRecoveryExhausted) {
           const answer = this._boundedLoopRecoveryAnswer();
-          yield { type: "stream", token: answer };
-          yield { type: "stream-end" };
+          yield scoped({ type: "stream", token: answer });
+          if (finalizeRun()) yield scoped({ type: "stream-end" });
           return;
         }
         continue;
@@ -328,7 +334,7 @@ export class LoopMethods {
       }
 
       if (parsed.error) {
-        yield { type: "stream-discard" };
+        yield scoped({ type: "stream-discard" });
         this._debugToolRecovery(parsed.kind || "malformed_json", parsed.error);
         const part = this._lifecycle.pending({
           callId: randomUUID(),
@@ -337,18 +343,18 @@ export class LoopMethods {
         });
         this._lifecycle.running(part);
         this._lifecycle.failed(part, parsed.error);
-        yield { type: "tool-part", part: { ...part } };
-        yield {
+        yield scoped({ type: "tool-part", part: { ...part } });
+        yield scoped({
           type: "tool-result",
           tool: "invalid_tool_call",
           result: part.state.error,
           callId: part.callId,
           failed: true,
-        };
+        });
         this._messages.push({ role: "assistant", content: reply });
         this._messages.push({ role: "user", content: `---TOOL ERROR: invalid_tool_call---\n${part.state.error}` });
         for (const lifecyclePart of this._lifecycle.finishStep("tool-error")) {
-          yield { type: "tool-part", part: lifecyclePart };
+          yield scoped({ type: "tool-part", part: lifecyclePart });
         }
         this._invalidToolResponses = 0;
         continue;
@@ -358,69 +364,55 @@ export class LoopMethods {
       if (!tool) {
         let visibleReply = pendingProse ? joinProseContinuation(pendingProse, reply) : reply;
         const displayReply = visibleReply;
-        const plan = normalizePlan(extractPlan(visibleReply));
-        const interactiveQuestion = extractInteractiveQuestion(visibleReply);
-        const missingEvidence = this._missingCompletionEvidence();
-        if (missingEvidence) {
-          yield { type: "stream-discard" };
-          this._completionRedirects++;
-          this._messages.push({ role: "assistant", content: reply });
-          this._debugToolRecovery("completion_evidence", missingEvidence);
-          if (this._taskContract.category === "GIT_OPERATION" && /auth|credential|password|token|permission denied|401|403/i.test(this._activeTask.lastToolResult || "")) {
-            const answer = "The commit is stored locally, but push requires GitHub authentication. Provide a token or configure credentials to continue.";
-            this._messages.push({ role: "assistant", content: answer });
-            yield { type: "answer", content: answer };
-            return;
-          }
-          const steering = this._completionSteering(missingEvidence);
-          if (this._completionRedirects >= 3) {
-            yield this._steer(steering);
-            this._completionRedirects = 0;
-            continue;
-          }
-          yield this._steer(steering);
-          continue;
-        }
-
         if (pendingProse) {
           this._markLatency("uiFirstText");
-          yield { type: "stream", token: displayReply };
+          yield scoped({ type: "stream", token: displayReply });
         } else if (streamMode === "text") {
           if (streamTail) {
             this._markLatency("uiFirstText");
-            yield { type: "stream", token: streamTail };
+            yield scoped({ type: "stream", token: streamTail });
           }
         } else {
           const remaining = reply.slice(streamVisibleLength);
           if (remaining) {
             this._markLatency("uiFirstText");
-            yield { type: "stream", token: remaining };
+            yield scoped({ type: "stream", token: remaining });
           }
         }
         this._messages.push({ role: "assistant", content: visibleReply });
         this._clearPendingAction();
         for (const lifecyclePart of this._lifecycle.finishStep("stop")) {
-          yield { type: "tool-part", part: lifecyclePart };
+          yield scoped({ type: "tool-part", part: lifecyclePart });
         }
         this._finishLatency();
-        yield { type: "stream-end" };
+        if (finalizeRun()) yield scoped({ type: "stream-end" });
         return;
       }
       yield* commitProseBeforeTool(tool);
       const auxiliaryTool = tool.name === "todowrite";
       tool.id ||= randomUUID();
-      const loopRecovery = this._toolLoopRecovery(tool);
+      const loopRecovery = tool.name === "bash" ? this._shellScheduler.reserve(tool) : this._toolLoopRecovery(tool);
       if (loopRecovery) {
+        if (loopRecovery.result) {
+          this._recordShellReuse(tool, loopRecovery);
+          if (loopRecovery.terminal) {
+            const answer = this._finalizeShellBlocker(loopRecovery.result);
+            yield scoped({ type: "stream", token: answer });
+            if (finalizeRun()) yield scoped({ type: "stream-end" });
+            return;
+          }
+          continue;
+        }
         this._lifecycle.finishStep("tool-calls");
         if (loopRecovery.exhausted) {
           const answer = this._boundedLoopRecoveryAnswer();
-          yield { type: "stream", token: answer };
-          yield { type: "stream-end" };
+          yield scoped({ type: "stream", token: answer });
+          if (finalizeRun()) yield scoped({ type: "stream-end" });
           return;
         }
         continue;
       }
-      yield { type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id };
+      yield scoped({ type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id });
       this._messages.push({
         role: "assistant",
         content: null,
@@ -463,14 +455,14 @@ export class LoopMethods {
         this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
       }
       const metadata = toolMetadata(tool, result);
-      yield {
+      yield scoped({
         type: "tool-result",
         tool: tool.name,
         result,
         metadata,
         callId: part.callId,
         failed: part.state.status === "error",
-      };
+      });
       this._toolEvidence.push({
         tool: tool.name,
         args: { ...tool.args },
@@ -494,11 +486,13 @@ export class LoopMethods {
         content: result,
       });
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
-        yield { type: "tool-part", part: lifecyclePart };
+        yield scoped({ type: "tool-part", part: lifecyclePart });
       }
       yield* this._finishPlanItem(planTracker, part.state.status === "completed" && !resultFailed(result));
     }
     this._finishLatency();
-    yield { type: "error", content: `Maximum step count reached (${this._config.maxTurns}).` };
+    if (finalizeRun()) {
+      yield scoped({ type: "error", content: `Maximum step count reached (${this._config.maxTurns}).` });
+    }
   }
 };

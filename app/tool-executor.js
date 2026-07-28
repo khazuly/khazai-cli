@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { redactSecrets } from "../lib/secrets.js";
 import { normalizeToolOutput } from "./tool-lifecycle.js";
@@ -66,6 +66,31 @@ function rejected(answer) {
   return !value.includes("once") && !value.includes("always") && !value.includes("session");
 }
 
+function permissionAction(tool, outsideWorkspace = false) {
+  const actions = {
+    read: "read",
+    write: "write",
+    edit: "edit",
+    apply_patch: "modify files",
+    bash: "run a shell command",
+    glob: "search",
+    grep: "search",
+  };
+  const action = actions[tool] || `use ${tool}`;
+  return outsideWorkspace
+    ? `KhazAI wants to ${action} outside the active workspace.`
+    : `KhazAI wants to ${action}.`;
+}
+
+function permissionTarget(call, request, workspace) {
+  if (request.permission === "external_directory" || call.args.path) {
+    const path = String(request.value || call.args.path || "");
+    return { label: "Path", value: resolve(workspace, path) };
+  }
+  if (call.name === "bash") return { label: "Command", value: String(call.args.command || "") };
+  return { label: "Target", value: String(request.value || "") };
+}
+
 export class ToolExecutor {
   constructor({
     registry,
@@ -82,6 +107,9 @@ export class ToolExecutor {
     timeoutMs = 60_000,
     signal = null,
     taskContext = null,
+    runId = null,
+    turnId = null,
+    shellScheduler = null,
   }) {
     this.registry = registry;
     this.lifecycle = lifecycle;
@@ -97,20 +125,56 @@ export class ToolExecutor {
     this.timeoutMs = Math.max(250, Number(timeoutMs) || 60_000);
     this.signal = signal;
     this.taskContext = taskContext;
+    this.runId = runId;
+    this.turnId = turnId;
+    this.shellScheduler = shellScheduler;
+  }
+
+  _approvalRequest(call, permission, outsideWorkspace = false) {
+    const target = permissionTarget(call, permission, this.workspace);
+    return {
+      ...permission,
+      runId: this.runId,
+      turnId: this.turnId,
+      callId: call.id,
+      tool: call.name,
+      pattern: permission.value,
+      action: permissionAction(call.name, outsideWorkspace),
+      target,
+      options: [
+        "Allow once",
+        target.label === "Path" ? "Always allow this path" : "Always allow this action",
+        "Reject",
+      ],
+    };
+  }
+
+  _scoped(event) {
+    return { ...event, runId: this.runId, turnId: this.turnId };
+  }
+
+  _recordApproval(call, permission, source) {
+    this.permissionService.recordApproval({
+      tool: call.name,
+      permission: permission.permission,
+      value: permission.value,
+      source,
+    });
   }
 
   async *_reject(part, call, message, reason = "denied") {
     this.lifecycle.failed(part, message);
-    yield { type: "tool-part", part: { ...part } };
-    yield { type: "tool-result", tool: call.name, result: part.state.error, callId: part.callId, failed: true };
-    yield {
+    this.shellScheduler?.complete(call, part.state.error, true);
+    yield this._scoped({ type: "tool-part", part: { ...part } });
+    yield this._scoped({ type: "tool-result", tool: call.name, result: part.state.error, callId: part.callId, failed: true });
+    yield this._scoped({
       type: "execution-result",
       call,
       part,
       result: part.state.error,
       failed: true,
       finishReason: reason,
-    };
+    });
   }
 
   async *execute(input, extraContext = {}) {
@@ -120,10 +184,13 @@ export class ToolExecutor {
       args: { ...(input?.args || {}) },
     });
     const tool = this.registry.get(call.name);
-    const part = this.lifecycle.pending({ callId: call.id, tool: call.name, input: call.args });
-    yield { type: "tool-part", part: { ...part, state: { ...part.state } } };
-    this.lifecycle.running(part, call.args);
-    yield { type: "tool-part", part: { ...part } };
+    const part = this.lifecycle.pending({
+      callId: call.id,
+      tool: call.name,
+      input: call.args,
+      metadata: { runId: this.runId, turnId: this.turnId },
+    });
+    yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
 
     const invalid = schemaError(tool, call.args);
     if (invalid) {
@@ -137,25 +204,24 @@ export class ToolExecutor {
       return;
     }
     if (external?.decision === "ask") {
-      yield {
+      const request = this._approvalRequest(call, external, true);
+      yield this._scoped({
         type: "permission",
-        tool: "external_directory",
-        args: { path: external.value },
-        reason: external.reason,
-        pattern: external.value,
-        options: ["Allow once", "Always allow", "Reject"],
-      };
+        ...request,
+      });
       let answer = "reject";
-      try { answer = await this.permissionHandler?.(external); } catch {}
+      try { answer = await this.permissionHandler?.(request); } catch {}
       if (rejected(answer)) {
         yield* this._reject(part, call, `Permission rejected: external_directory (${external.value})`);
         return;
       }
+      this._recordApproval(call, external, /always|session/i.test(String(answer)) ? "session" : "user");
       if (/always|session/i.test(String(answer))) {
         this.permissionService.allowForSession("external_directory", external.always);
       }
       call.args._allowExternal = true;
     } else if (external?.decision === "allow") {
+      if (external.source === "auto") this._recordApproval(call, external, "allow-all");
       call.args._allowExternal = true;
     }
 
@@ -165,25 +231,28 @@ export class ToolExecutor {
       return;
     }
     if (permission.decision === "ask") {
-      yield {
+      const request = this._approvalRequest(call, permission);
+      yield this._scoped({
         type: "permission",
-        tool: call.name,
-        args: call.args,
-        reason: permission.reason,
-        pattern: permission.value,
-        options: ["Allow once", "Always allow", "Reject"],
-      };
+        ...request,
+      });
       let answer = "reject";
-      try { answer = await this.permissionHandler?.(permission); } catch {}
+      try { answer = await this.permissionHandler?.(request); } catch {}
       if (rejected(answer)) {
         yield* this._reject(part, call, `Permission rejected: ${permission.permission} (${permission.value})`);
         return;
       }
+      this._recordApproval(call, permission, /always|session/i.test(String(answer)) ? "session" : "user");
       if (/always|session/i.test(String(answer))) {
         this.permissionService.allowForSession(call.name, permission.always);
       }
+    } else if (permission.source === "auto") {
+      this._recordApproval(call, permission, "allow-all");
     }
 
+    this.lifecycle.running(part, call.args);
+    this.shellScheduler?.running(call);
+    yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
     call.args = this.prepareArgs(call.name, call.args);
     const context = {
       tool: call.name,
@@ -210,7 +279,7 @@ export class ToolExecutor {
         if (!this.questionHandler) throw new Error("Question rejected: no interactive input is available");
         const question = String(call.args.question || "Please choose an option.").trim();
         const options = Array.isArray(call.args.options) ? call.args.options.map(String).filter(Boolean) : [];
-        yield { type: "question", question, options };
+        yield this._scoped({ type: "question", question, options });
         const answer = await this.questionHandler({ question, options });
         raw = {
           title: "Question",
@@ -219,8 +288,11 @@ export class ToolExecutor {
         };
       } else {
         const executionController = new AbortController();
-        const timeoutMs = Math.max(250, Number(tool.timeoutMs) || this.timeoutMs);
-        const abortExecution = () => executionController.abort();
+        const requestedShellTimeout = call.name === "bash"
+          ? (Number(call.args.timeout) > 0 ? Number(call.args.timeout) : 60) * 1000 + 1_000
+          : 0;
+        const timeoutMs = Math.max(250, Number(tool.timeoutMs) || this.timeoutMs, requestedShellTimeout);
+        const abortExecution = () => executionController.abort(this.signal?.reason);
         this.signal?.addEventListener("abort", abortExecution, { once: true });
         const execution = Promise.resolve(tool.execute(call.args, {
           ...context,
@@ -229,13 +301,15 @@ export class ToolExecutor {
           signal: executionController.signal,
         }));
         let timeout;
+        let abortBounded;
         const bounded = new Promise((resolve, reject) => {
           timeout = setTimeout(() => {
             executionController.abort();
             reject(new Error(`Tool timed out after ${timeoutMs}ms.`));
           }, timeoutMs);
-          if (this.signal?.aborted) reject(new Error("Tool execution aborted."));
-          else this.signal?.addEventListener("abort", () => reject(new Error("Tool execution aborted.")), { once: true });
+          abortBounded = () => reject(new Error("Tool execution aborted."));
+          if (this.signal?.aborted) abortBounded();
+          else this.signal?.addEventListener("abort", abortBounded, { once: true });
           execution.then(resolve, reject);
         });
         try {
@@ -243,6 +317,7 @@ export class ToolExecutor {
         } finally {
           clearTimeout(timeout);
           this.signal?.removeEventListener("abort", abortExecution);
+          this.signal?.removeEventListener("abort", abortBounded);
         }
       }
       let output = normalizeToolOutput(raw, call.name);
@@ -259,26 +334,27 @@ export class ToolExecutor {
       this.lifecycle.failed(part, redactSecrets(error?.message || String(error)));
     }
     const result = part.state.status === "error" ? part.state.error : part.state.output;
+    this.shellScheduler?.complete(call, result, part.state.status === "error");
     if (this.taskContext?.recordToolExecution) {
       this.taskContext.recordToolExecution(call.name, call.args, result, part.state.status === "error");
     }
-    yield { type: "tool-part", part: { ...part } };
-    yield {
+    yield this._scoped({ type: "tool-part", part: { ...part } });
+    yield this._scoped({
       type: "tool-result",
       tool: call.name,
       result,
       callId: call.id,
       failed: part.state.status === "error",
       metadata: part.state.metadata || {},
-    };
-    yield {
+    });
+    yield this._scoped({
       type: "execution-result",
       call,
       part,
       result,
       failed: part.state.status === "error",
       finishReason: part.state.status === "error" ? "tool-error" : "tool-calls",
-    };
+    });
   }
 
   async *executeBatch(inputs, extraContext = {}, concurrency = 4) {

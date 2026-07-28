@@ -12,6 +12,7 @@ import { taskState } from "./agent/helpers/parser.js";
 import { StateMethods } from "./agent/state.js";
 import { ToolMethods } from "./agent/tools.js";
 import { LoopMethods } from "./agent/loop.js";
+import { ShellScheduler } from "./shell-scheduler.js";
 
 export class Agent {
   constructor(registry, opts = {}) {
@@ -34,6 +35,7 @@ export class Agent {
     this._lastAnalysis = null;
     this._turn = 0;
     this._aborted = false;
+    this._activeRun = null;
     this._plan = null;
     this._planIndex = 0;
     this._lastToolIsRead = false;
@@ -97,7 +99,10 @@ export class Agent {
     this._activeTask = taskState(this._taskContract, "");
     this._pendingAction = null;
     this._chat = opts.chat || chat;
+    this._chatHandlesRetries = opts.chatHandlesRetries ?? !opts.chat;
     this._resetSession = opts.resetSession || resetSession;
+    this._recoverableProviderRequest = null;
+    this._shellScheduler = new ShellScheduler(this._workspace);
     const configuredResolver = opts.intentResolver;
     this._intentResolver = typeof configuredResolver === "function"
       ? { resolve: configuredResolver }
@@ -108,13 +113,31 @@ export class Agent {
   }
 
 
-  abort() { this._aborted = true; this._abortController?.abort(); }
-  setModel(model) { this._model = model; this._systemCache = null; }
+  abort() {
+    this._aborted = true;
+    if (this._activeRun) this._activeRun.cancelled = true;
+    this._abortController?.abort();
+    this._shellScheduler.cancelActive();
+  }
+  setModel(model) {
+    if (model !== this._model) {
+      this.abort();
+      this._recoverableProviderRequest = null;
+    }
+    this._model = model;
+    this._systemCache = null;
+  }
+  hasRecoverableProviderRequest() {
+    return Boolean(
+      this._recoverableProviderRequest
+      && this._recoverableProviderRequest.model === this._model
+    );
+  }
   setReasoningEffort(effort) { this._config.reasoningEffort = effort; }
   setQuestionHandler(handler) { this._questionHandler = handler; }
   setPermissionHandler(handler) { this._permissionHandler = handler; }
   setAutoApprove(value) { this._permissionService.setAuto(value); }
-  compact() { this._compactMessages(); return this.exportSessionState(); }
+  compact() { this._compactMessages(true); return this.exportSessionState(); }
 }
 
 for (const source of [StateMethods, ToolMethods, LoopMethods]) {

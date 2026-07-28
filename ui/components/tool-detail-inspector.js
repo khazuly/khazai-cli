@@ -42,6 +42,7 @@ export function ToolDetailInspector({ message, onClose }) {
     duration: message.duration,
     resultSize: message.resultSize,
     content: message.content,
+    metadata: message.metadata,
     expanded: true,
   }), [message]);
   const lines = useMemo(() => inspectorLines(presentation), [presentation]);

@@ -73,7 +73,7 @@ test("tool inspector renders bounded structured details and controls", async () 
   const frame = longestFrame(stdout);
 
   assert.match(frame, /(?:✓|\[ok\]) Shell\s+npm test/);
-  assert.match(frame, /completed · exit 0 · 256 B · 618 ms/);
+  assert.match(frame, /completed · exit 0 · 618ms/);
   assert.match(frame, /Command/);
   assert.match(frame, /Output/);
   assert.match(frame, /suite two/);

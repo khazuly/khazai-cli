@@ -3,29 +3,19 @@ import { Text, Box, useInput, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { PANEL_SPACE } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
+import {
+  COMMAND_VIEWPORT_SIZE,
+  filterCommandItems,
+  findSubCommands,
+  useCommandBoundaryKeys,
+  useCommandViewport,
+} from "./command-viewport.js";
 import { Panel } from "./surface.js";
+import { PermissionPrompt } from "./permission-prompt.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
 
 const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
-const MAX_COMMAND_CHOICES = 6;
 const PASTE_COMPRESSION_THRESHOLD = 160;
-
-function findSubCommands(commands, input) {
-  const slashIdx = input.indexOf("/");
-  if (slashIdx < 0) return null;
-  const beforeSpace = input.slice(slashIdx).split(" ")[0];
-  const cmd = commands.find(c => c.name === beforeSpace);
-  if (cmd && cmd.sub) return { cmd, items: cmd.sub };
-  return null;
-}
-
-function filterItems(items, input, prefixLen) {
-  const partial = input.slice(prefixLen).toLowerCase();
-  if (!partial) return items;
-  return items.filter(item =>
-    item.name.toLowerCase().includes(partial) || item.description?.toLowerCase().includes(partial)
-  );
-}
 
 export function PromptInput({
   onSubmit,
@@ -36,6 +26,8 @@ export function PromptInput({
   onAbort,
   activeModel,
   questionOptions = [],
+  questionKind = "",
+  permissionRequest = null,
   onSelectOption,
   onCancelOption,
   secret = false,
@@ -46,7 +38,6 @@ export function PromptInput({
   const [input, setInput] = useState({ value: "", cursor: 0 });
   const [history, setHistory] = useState([]);
   const [histIdx, setHistIdx] = useState(-1);
-  const [cmdIdx, setCmdIdx] = useState(0);
   const [optionIdx, setOptionIdx] = useState(0);
   const [fileIdx, setFileIdx] = useState(0);
   const [pastePreview, setPastePreview] = useState(null);
@@ -59,8 +50,8 @@ export function PromptInput({
   const subInfo = findSubCommands(commands, input.value);
   const inSubMode = subInfo !== null && input.value.includes(" ");
   const filtered = inSubMode
-    ? filterItems(subInfo.items, input.value, input.value.lastIndexOf(" ") + 1)
-    : filterItems(
+    ? filterCommandItems(subInfo.items, input.value, input.value.lastIndexOf(" ") + 1)
+    : filterCommandItems(
         commands.filter(c => {
           if (!input.value.startsWith("/")) return false;
           const partial = input.value.slice(input.value.indexOf("/") + 1).toLowerCase();
@@ -70,11 +61,20 @@ export function PromptInput({
         input.value.indexOf("/") + 1
       );
 
-  const commandChoices = (!inSubMode && input.value === "/"
-    ? QUICK_COMMANDS.map(name => commands.find(command => command.name === name)).filter(Boolean)
-    : filtered
-  ).slice(0, MAX_COMMAND_CHOICES);
-  const showCmd = commandChoices.length > 0 && input.value.startsWith("/");
+  const quickCommandResults = QUICK_COMMANDS
+    .map(name => commands.find(command => command.name === name))
+    .filter(Boolean);
+  const commandResults = !inSubMode && input.value === "/" && quickCommandResults.length
+    ? quickCommandResults
+    : filtered;
+  const commandResetKey = [
+    input.value,
+    activeModel || "",
+    commandResults.map(item => item.name).join("\0"),
+  ].join("\u0001");
+  const commandViewport = useCommandViewport(commandResults, commandResetKey);
+  const showCmd = commandResults.length > 0 && input.value.startsWith("/");
+  useCommandBoundaryKeys(showCmd, commandResults.length - 1, commandViewport.selectIndex);
   const beforeCursor = graphemes(input.value).slice(0, input.cursor).join("");
   const fileToken = /(?:^|\s)@([^\s]*)$/.exec(beforeCursor);
   const fileQuery = fileToken?.[1]?.toLowerCase() || "";
@@ -116,7 +116,6 @@ export function PromptInput({
       } else {
         setPastePreview(compressPaste && hiddenLength > 0 ? { start, hiddenLength } : null);
       }
-      if (!next.value.startsWith("/")) setCmdIdx(-1);
       return next;
     });
     setHistIdx(-1);
@@ -222,11 +221,12 @@ export function PromptInput({
       }
     } else if (showCmd) {
       if (key.return) {
-        const sel = commandChoices[cmdIdx];
+        const sel = commandViewport.selectedItem;
+        if (!sel) return;
         if (!inSubMode && sel.sub) {
           const newVal = sel.name + " ";
           setInput({ value: newVal, cursor: newVal.length });
-          setCmdIdx(0);
+          commandViewport.resetSelection();
           return;
         }
         if (inSubMode) {
@@ -237,32 +237,41 @@ export function PromptInput({
         setInput({ value: "", cursor: 0 });
         setPastePreview(null);
         setHistIdx(-1);
-        setCmdIdx(0);
+        commandViewport.resetSelection();
         return;
       }
       if (key.upArrow) {
-        setCmdIdx(i => i > 0 ? i - 1 : commandChoices.length - 1);
+        commandViewport.selectIndex(commandViewport.selectedIndex - 1);
         return;
       }
       if (key.downArrow) {
-        setCmdIdx(i => i < commandChoices.length - 1 ? i + 1 : 0);
+        commandViewport.selectIndex(commandViewport.selectedIndex + 1);
+        return;
+      }
+      if (key.pageUp) {
+        commandViewport.selectIndex(commandViewport.selectedIndex - COMMAND_VIEWPORT_SIZE);
+        return;
+      }
+      if (key.pageDown) {
+        commandViewport.selectIndex(commandViewport.selectedIndex + COMMAND_VIEWPORT_SIZE);
         return;
       }
       if (key.tab) {
-        const sel = commandChoices[cmdIdx];
+        const sel = commandViewport.selectedItem;
+        if (!sel) return;
         if (inSubMode) {
           const spaceIdx = input.value.lastIndexOf(" ") + 1;
           setInput({ value: input.value.slice(0, spaceIdx) + sel.name + " ", cursor: input.value.slice(0, spaceIdx).length + sel.name.length + 1 });
         } else {
           setInput({ value: sel.name + " ", cursor: sel.name.length + 1 });
         }
-        setCmdIdx(0);
+        commandViewport.resetSelection();
         return;
       }
       if (ch === "\u001b" || key.escape) {
         setInput({ value: "", cursor: 0 });
         setPastePreview(null);
-        setCmdIdx(0);
+        commandViewport.resetSelection();
         return;
       }
     }
@@ -362,6 +371,14 @@ export function PromptInput({
 
   if (questionOptions.length > 0) {
     const optionWidth = Math.max(12, terminalWidth - 2);
+    if (questionKind === "permission") {
+      return h(PermissionPrompt, {
+        request: permissionRequest,
+        options: questionOptions,
+        selectedIndex: optionIdx,
+        width: optionWidth,
+      });
+    }
     return h(Box, { flexDirection: "column", width: optionWidth, marginLeft: 2 },
       ...questionOptions.map((option, index) => h(Text, {
         key: `${index}-${option}`,
@@ -402,9 +419,14 @@ export function PromptInput({
         marginBottom: 1,
         width: Math.max(20, Math.min(64, (process.stdout.columns || 80) - 2)),
       },
-        h(Text, { color: theme.metadata, bold: true }, inSubMode ? subInfo.cmd.name.slice(1) : input.value === "/" ? "Quick commands" : "Commands"),
-        ...commandChoices.map((item, i) => {
-          const selected = i === cmdIdx;
+        h(Text, { color: theme.metadata, bold: true },
+          inSubMode ? subInfo.cmd.name.slice(1) : input.value === "/" ? "Quick commands" : "Commands",
+          commandResults.length > COMMAND_VIEWPORT_SIZE
+            ? ` · ${commandViewport.scrollOffset + 1}–${Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, commandResults.length)} of ${commandResults.length}`
+            : "",
+        ),
+        ...commandViewport.visibleItems.map((item, i) => {
+          const selected = commandViewport.scrollOffset + i === commandViewport.selectedIndex;
           const name = item.name || "";
           const desc = inSubMode ? item.description || "" : item.description || "";
           const isActive = inSubMode && item.name === activeModel;

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOpenCodeCredential, getProviderCredential, saveProviderCredential } from "../lib/auth.js";
 import { OpenAICompatibleProvider } from "../lib/providers.js";
+import { chatWithRetry, isTransientProviderError, providerRetryDelay } from "../lib/llm.js";
 import { PermissionService } from "../app/permission.js";
 import { SessionStore, migrateSessionV2 } from "../app/session-store.js";
 import { loadAgentProfiles } from "../app/agent-profiles.js";
@@ -105,6 +106,111 @@ test("native tool calls preserve preceding streamed prose", async () => {
   }
 });
 
+test("shared provider retry discards failed attempt deltas and preserves context", async () => {
+  const messages = [{ role: "user", content: "Continue from completed tools." }];
+  const seen = [];
+  let calls = 0;
+  const provider = {
+    id: "opencode",
+    async chat(received, options) {
+      calls++;
+      assert.equal(received, messages);
+      options.onEvent?.({ type: "text-delta", text: calls < 3 ? `partial-${calls}` : "Final answer." });
+      if (calls < 3) {
+        const error = new Error("HTTP 500: Internal Server Error");
+        error.status = 500;
+        error.retryAfterMs = 0;
+        error.requestId = `request-${calls}`;
+        throw error;
+      }
+      return "Final answer.";
+    },
+  };
+  const result = await chatWithRetry(provider, messages, {
+    model: "big-pickle",
+    runId: "run-1",
+    turnId: "turn-1",
+    onEvent: event => seen.push(event),
+  }, 3);
+  assert.equal(result, "Final answer.");
+  assert.equal(calls, 3);
+  assert.deepEqual(seen, [{ type: "text-delta", text: "Final answer." }]);
+});
+
+test("shared provider retry exhausts once and cancellation stops backoff", async () => {
+  let calls = 0;
+  const provider = {
+    id: "opencode",
+    async chat() {
+      calls++;
+      const error = new Error("HTTP 500: Internal Server Error");
+      error.status = 500;
+      error.retryAfterMs = 0;
+      throw error;
+    },
+  };
+  let exhausted;
+  try {
+    await chatWithRetry(provider, [], { model: "big-pickle" }, 3);
+  } catch (error) {
+    exhausted = error;
+  }
+  assert.equal(calls, 3);
+  assert.equal(exhausted.attempts, 3);
+  assert.equal(exhausted.retryLog.length, 3);
+
+  calls = 0;
+  const controller = new AbortController();
+  const cancelling = {
+    ...provider,
+    async chat() {
+      const result = provider.chat();
+      controller.abort(new Error("Cancelled"));
+      return result;
+    },
+  };
+  await assert.rejects(
+    chatWithRetry(cancelling, [], { model: "big-pickle", signal: controller.signal }, 3),
+    /Cancelled/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("transient classification and retry timing exclude invalid requests", () => {
+  assert.equal(isTransientProviderError({ status: 503 }), true);
+  assert.equal(isTransientProviderError({ code: "ECONNRESET" }), true);
+  assert.equal(isTransientProviderError({ code: "PREMATURE_STREAM" }), true);
+  assert.equal(isTransientProviderError({ status: 400 }), false);
+  assert.equal(isTransientProviderError({ status: 401 }), false);
+  assert.equal(providerRetryDelay({ retryAfterMs: 4_000 }, 0, () => 0), 4_000);
+  assert.equal(providerRetryDelay({}, 0, () => 0.5), 1_000);
+  assert.equal(providerRetryDelay({}, 1, () => 0.5), 2_500);
+});
+
+test("OpenAI-compatible provider rejects a prematurely terminated stream", async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  globalThis.fetch = async () => ({
+    ok: true,
+    headers: { get: () => "text/event-stream" },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"partial"}}]}\\n\\n'));
+        controller.close();
+      },
+    }),
+  });
+  try {
+    const provider = new OpenAICompatibleProvider({ id: "local", baseURL: "http://localhost:1234/v1" });
+    await assert.rejects(
+      provider.chat([], { model: "test" }),
+      error => error.code === "PREMATURE_STREAM",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("permission defaults match OpenCode and remember always approval", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-permission-"));
   const service = new PermissionService(workspace, { permission: {} });
@@ -134,6 +240,18 @@ test("legacy sessions migrate to structured version 2 idempotently", () => {
   assert.equal(migrated.agentState.version, 2);
   assert.equal(migrated.parts[0].state.status, "completed");
   assert.deepEqual(migrateSessionV2(migrated), migrated);
+});
+
+test("permission mode is session scoped and restored only when resumed", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-permission-mode-"));
+  const data = mkdtempSync(join(tmpdir(), "khazai-permission-mode-data-"));
+  const store = new SessionStore(workspace, data);
+  const fresh = store.create();
+  assert.equal(fresh.permissionMode, "prompt");
+
+  const allowed = store.save({ ...fresh, permissionMode: "allow-all" });
+  assert.equal(store.load(allowed.id).permissionMode, "allow-all");
+  assert.equal(store.create().permissionMode, "prompt");
 });
 
 test("session undo and redo restore tracked and untracked files", () => {

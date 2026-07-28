@@ -1,10 +1,14 @@
 import { createElement as h } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { useEffect, useState } from "react";
-import { presentTool } from "../tool-presentation.js";
+import stringWidth from "string-width";
+import { formatDuration, presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
 import { PrefixRow, StatusRail } from "./surface.js";
 import { SPINNER_FRAMES } from "./status-bar.js";
+
+const DETAIL_LABELS = ["Command", "URL", "Path", "Query", "Pattern", "Type", "Size", "Result", "Error", "Exit", "More"];
+const DETAIL_LABEL_WIDTH = Math.max(...DETAIL_LABELS.map(label => stringWidth(label))) + 1;
 
 function resultColor(state, theme) {
   if (state === "failed") return theme.error;
@@ -12,77 +16,142 @@ function resultColor(state, theme) {
   return theme.toolResult;
 }
 
-function ResultPreview({ presentation, theme }) {
-  const rows = [];
-  if (presentation.searchResults) {
-    for (const item of presentation.searchResults.items) {
-      rows.push(h(Box, { key: `result-${item.index}`, width: "100%", alignItems: "flex-start" },
-        h(Text, { color: theme[presentation.accentRole], dimColor: true }, `${item.index}. `),
-        h(Box, { flexDirection: "column", flexGrow: 1 },
-          h(Text, { color: theme.toolResult, wrap: "wrap" }, item.title),
-          item.description
-            ? h(Text, { color: theme.metadata, wrap: "wrap" }, item.description)
-            : null,
-        )
-      ));
-    }
-    if (presentation.searchResults.hidden) {
-      rows.push(h(Text, { key: "hidden-results", color: theme.metadata }, `show ${presentation.searchResults.hidden} more...`));
-    }
-  } else {
-    for (const [index, line] of presentation.preview.lines.entries()) {
-      rows.push(h(Text, {
-        key: `line-${index}`,
-        color: resultColor(presentation.state, theme),
-        wrap: "wrap",
-      }, line));
-    }
-    if (presentation.preview.hiddenLines) {
-      rows.push(h(Text, { key: "hidden-lines", color: theme.metadata }, `show ${presentation.preview.hiddenLines} more lines...`));
-    }
-    if (presentation.preview.hiddenChars) {
-      rows.push(h(Text, { key: "hidden-chars", color: theme.metadata }, `show ${presentation.preview.hiddenChars} more chars...`));
-    }
-  }
-  return rows.length ? h(Box, { flexDirection: "column" }, ...rows) : null;
+function shellDuration(ms, done) {
+  if (!Number.isFinite(ms)) return "";
+  if (!done) return `${Math.max(0, Math.floor(ms / 1000))}s`;
+  if (ms < 1000) return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function ReadGroupCall({ count, currentFile, done, duration, failed }) {
+function targetDetails(tool, presentation) {
+  if (tool === "bash" && presentation.expanded && presentation.fullCommand) {
+    return [{ label: "Command", value: presentation.fullCommand }];
+  }
+  return presentation.targets || [];
+}
+
+function metadataDetails(tool, presentation) {
+  if (tool === "web" || tool === "webfetch") {
+    return [
+      presentation.metadata[0] ? { label: "Type", value: presentation.metadata[0] } : null,
+      presentation.metadata.length > 1 ? { label: "Size", value: presentation.metadata.slice(1).join(" · ") } : null,
+    ].filter(Boolean);
+  }
+  if (tool === "bash") {
+    const exit = presentation.metadata.find(item => /^exit\s+-?\d+$/i.test(item));
+    return exit && exit !== "exit 0" ? [{ label: "Exit", value: exit.slice(5) }] : [];
+  }
+  return [];
+}
+
+function resultDetails(presentation) {
+  if (presentation.searchResults) {
+    return presentation.searchResults.items.map(item => ({
+      label: "Result",
+      value: [item.title, item.description].filter(Boolean).join(" — "),
+    }));
+  }
+  const preview = presentation.expanded ? presentation.preview : presentation.resultPreview;
+  const label = presentation.state === "failed" ? "Error" : "Result";
+  return (preview?.lines || []).map(value => ({
+    label,
+    value: String(value).replace(/^(?:Error|Result|Title):\s*/i, ""),
+  }));
+}
+
+function toolDetails(tool, presentation, done) {
+  const rows = [
+    ...targetDetails(tool, presentation),
+    ...metadataDetails(tool, presentation),
+    ...(done ? resultDetails(presentation) : []),
+  ];
+  if (done && !presentation.expanded && presentation.expandable) {
+    rows.push({ label: "More", value: "/expand", muted: true });
+  }
+  return rows;
+}
+
+function DetailRows({ rows, state, theme, width }) {
+  if (!rows.length) return null;
+  const labelWidth = Math.min(DETAIL_LABEL_WIDTH, Math.max(5, width - 8));
+  const valueWidth = Math.max(8, width - labelWidth);
+  return h(Box, { flexDirection: "column", width },
+    ...rows.map((row, index) => h(Box, {
+      key: `${row.label}-${index}`,
+      flexDirection: "row",
+      alignItems: "flex-start",
+      width,
+    },
+      h(Box, { width: labelWidth, flexShrink: 0 },
+        h(Text, { color: theme.metadata, dimColor: true, wrap: "truncate-end" }, row.label),
+      ),
+      h(Box, { width: valueWidth, flexShrink: 1 },
+        h(Text, {
+          color: row.muted ? theme.metadata : resultColor(state, theme),
+          dimColor: Boolean(row.muted),
+          wrap: "wrap",
+        }, row.value),
+      ),
+    )),
+  );
+}
+
+function ReadGroupCall({ count, currentFile, done, duration, failed, status, totalLines, failurePreview }) {
+  const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
   const theme = useTheme();
   useEffect(() => {
-    if (done) return undefined;
+    if (done || ["pending", "awaiting-approval"].includes(status)) return undefined;
     const timer = setInterval(() => setFrame(value => value + 1), 80);
     timer.unref?.();
     return () => clearInterval(timer);
-  }, [done]);
+  }, [done, status]);
   const files = `${count} ${count === 1 ? "file" : "files"}`;
-  const icon = failed ? "[×]" : done ? "[✓]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-  const details = failed
-    ? `Read ${files} · failed${currentFile ? ` · ${currentFile}` : ""}`
+  const icon = failed ? "[×]" : done ? "[✓]" : ["pending", "awaiting-approval"].includes(status) ? "[ ]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+  const heading = failed
+    ? `Read · failed${duration ? ` · ${formatDuration(duration)}` : ""}`
     : done
-      ? `Read ${files} · ${duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(1)} s`}`
-      : `Read ${files}${currentFile ? ` · ${currentFile}` : ""}`;
+      ? ["Read", "completed", formatDuration(duration)].filter(Boolean).join(" · ")
+      : status === "awaiting-approval"
+        ? "Read · awaiting approval"
+        : status === "pending"
+          ? "Read · pending"
+        : "Read · running";
+  const failureLines = failed
+    ? presentTool({ tool: "read", content: failurePreview || "Error: Read failed", done: true }).resultPreview.lines
+    : [];
+  const width = Math.max(13, Number(stdout?.columns || 80) - 7);
+  const rows = [
+    currentFile ? { label: "Path", value: currentFile } : null,
+    ...failureLines.map(value => ({ label: "Error", value })),
+    done && !failed ? { label: "Result", value: totalLines ? `Read ${totalLines} lines from ${files}` : `Read ${files}` } : null,
+  ].filter(Boolean);
   return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
     h(PrefixRow, { prefix: icon, prefixColor: failed ? theme.error : done ? theme.success : theme.primary },
-      h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, details),
+      h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, heading),
+      h(DetailRows, { rows, state: failed ? "failed" : "success", theme, width }),
     ),
   );
 }
 
-export function ToolCall({ tool, args, done, duration, resultSize, content, expanded = false, readGroup = false, count, currentFile, failed }) {
-  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed });
+export function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview }) {
+  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed, status, totalLines, failurePreview });
+  const { stdout } = useStdout();
   const theme = useTheme();
   const [frame, setFrame] = useState(0);
   useEffect(() => {
-    if (done) return undefined;
+    if (done || ["pending", "awaiting-approval"].includes(status)) return undefined;
     const timer = setInterval(() => setFrame(value => value + 1), 80);
     timer.unref?.();
     return () => clearInterval(timer);
-  }, [done]);
-  const presentation = presentTool({ tool, args, done, duration, resultSize, content, expanded });
+  }, [done, status]);
+  const presentation = presentTool({ tool, args, done, duration, resultSize, content, metadata, expanded });
   const accent = theme.colorEnabled ? theme[presentation.accentRole] : undefined;
-  const stateLabel = presentation.state === "running"
+  const stateLabel = status === "awaiting-approval"
+    ? "awaiting approval"
+    : status === "pending"
+      ? "pending"
+    : presentation.state === "running"
     ? "running"
     : presentation.statusLabel;
 
@@ -91,7 +160,21 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
     : "muted";
   const prefix = presentation.state === "failed" || presentation.state === "warning"
     ? "[×]"
-    : presentation.state === "running" ? SPINNER_FRAMES[frame % SPINNER_FRAMES.length] : "[✓]";
+    : ["pending", "awaiting-approval"].includes(status) ? "[ ]"
+      : presentation.state === "running" ? SPINNER_FRAMES[frame % SPINNER_FRAMES.length] : "[✓]";
+  const shell = tool === "bash";
+  const shellWaiting = ["pending", "awaiting-approval"].includes(status);
+  const elapsed = shell
+    ? shellWaiting ? "" : shellDuration(done ? duration : startedAt ? Date.now() - startedAt : 0, done)
+    : "";
+  const shellState = shellWaiting ? stateLabel : "";
+  const heading = [
+    presentation.label,
+    shellState || stateLabel,
+    shell ? elapsed : presentation.duration,
+  ].filter(Boolean).join(" · ");
+  const width = Math.max(13, Number(stdout?.columns || 80) - 7);
+  const rows = toolDetails(tool, presentation, done);
 
   return h(StatusRail, {
     flexShrink: 0,
@@ -100,28 +183,9 @@ export function ToolCall({ tool, args, done, duration, resultSize, content, expa
   },
     h(PrefixRow, { prefix, prefixColor: accent },
       h(Text, { bold: true, color: accent, wrap: "wrap" },
-        presentation.label,
-        stateLabel ? ` · ${stateLabel}` : "",
-        presentation.duration ? ` · ${presentation.duration}` : "",
+        heading,
       ),
-      presentation.summary
-        ? h(Text, { color: theme.toolTarget, wrap: "wrap" }, presentation.summary)
-        : null,
-      presentation.metadata.length
-        ? h(Text, { color: theme.metadata, wrap: "wrap" }, `${presentation.metadata.join(" · ")}${done && !expanded ? " · /expand" : ""}`)
-        : null,
-      expanded && presentation.details.length
-        ? h(Box, { flexDirection: "column", marginTop: 1 },
-            ...presentation.details.map((detail, index) => h(Text, {
-              key: `detail-${index}`,
-              color: theme.metadata,
-              wrap: "wrap",
-            }, detail)),
-          )
-        : null,
-      done && (expanded || presentation.state === "failed" || presentation.state === "warning")
-        ? h(ResultPreview, { presentation, theme })
-        : null,
+      h(DetailRows, { rows, state: presentation.state, theme, width }),
     ),
   );
 }

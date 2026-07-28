@@ -96,3 +96,67 @@ test("bang shell shortcut bypasses the model and uses the normal tool lifecycle"
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
   assert.match(events.find(event => event.type === "tool-result")?.result || "", /shortcut-ok/);
 });
+
+test("successful identical shell commands reuse one execution until files change", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-shell-cache-"));
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    ...bashTool,
+    async execute(args, context) {
+      executions++;
+      return bashTool.execute(args, context);
+    },
+  });
+  registry.register({
+    name: "write",
+    description: "write",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, content: { type: "string" } },
+      required: ["path", "content"],
+    },
+    async execute() { return "Written 1 bytes to marker.txt"; },
+  });
+  const shell = id => JSON.stringify({ tool: "bash", id, args: { command: "printf verified" } });
+  const write = JSON.stringify({ tool: "write", id: "write-1", args: { path: "marker.txt", content: "x" } });
+  const agent = new Agent(registry, {
+    workspace,
+    intentResolver: intent("change"),
+    chat: scripted([shell("shell-1"), shell("shell-2"), write, shell("shell-3"), "Done."]),
+  });
+  const events = [];
+  for await (const event of agent.loop("verify, change, and verify again")) events.push(event);
+  assert.equal(executions, 2);
+  assert.equal(events.filter(event => event.type === "tool-call" && event.tool === "bash").length, 2);
+});
+
+test("failed identical shell commands allow one justified retry", async () => {
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    ...bashTool,
+    async execute() {
+      executions++;
+      return "Exit: -1\nTimed out after 60000ms";
+    },
+  });
+  const call = (id, args = {}) => JSON.stringify({
+    tool: "bash",
+    id,
+    args: { command: "npm test", ...args },
+  });
+  const agent = new Agent(registry, {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-shell-retry-")),
+    intentResolver: intent(),
+    chat: scripted([
+      call("shell-1"),
+      call("shell-blocked"),
+      call("shell-2", { timeout: 120, retryReason: "The first attempt timed out before the suite completed." }),
+      call("shell-blocked-again", { timeout: 180, retryReason: "Retry again." }),
+      "Verification remains blocked after two attempts.",
+    ]),
+  });
+  for await (const _event of agent.loop("run the tests")) {}
+  assert.equal(executions, 2);
+});
