@@ -157,6 +157,48 @@ test("Auto Free retries anonymously when an authenticated BYOK route fails", asy
   }
 });
 
+test("Big Cock continues anonymously when a stored credential is rejected", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENCODE_API_KEY;
+  const requests = [];
+  process.env.OPENCODE_API_KEY = "rejected-opencode-key";
+  globalThis.fetch = async (_url, options) => {
+    requests.push({ body: JSON.parse(options.body), headers: options.headers });
+    if (requests.length === 1) {
+      return {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { get: () => null },
+        async text() { return '{"error":"invalid credential"}'; },
+      };
+    }
+    return {
+      ok: true,
+      headers: { get: () => "application/json" },
+      async json() { return { choices: [{ message: { content: "anonymous ok" } }] }; },
+    };
+  };
+  try {
+    const messages = [{ role: "user", content: "continue" }];
+    assert.equal(await chat(messages, {
+      model: "big-cock",
+      sessionId: "session-auth-fallback",
+      runId: "run-auth-fallback",
+    }), "anonymous ok");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].headers.Authorization, "Bearer rejected-opencode-key");
+    assert.equal("Authorization" in requests[1].headers, false);
+    assert.deepEqual(requests[1].body, requests[0].body);
+    assert.equal(requests[1].headers["x-opencode-session"], "session-auth-fallback");
+    assert.equal(requests[1].headers["x-opencode-request"], "run-auth-fallback");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalKey;
+  }
+});
+
 test("Big Cock retries a transient provider error without changing models", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENCODE_API_KEY;
