@@ -87,8 +87,8 @@ test("English-only fallback remains conservative and deterministic", () => {
 });
 
 test("endpoint discovery with a bare domain uses a research contract", () => {
-  const contract = fallbackIntentContract("discover endpoints at aichat.org");
+  const contract = fallbackIntentContract("discover endpoints at example.org");
   assert.equal(contract.intent, "research");
   assert.equal(contract.operation, "discover_endpoints");
-  assert.equal(contract.targetUrl, "aichat.org");
+  assert.equal(contract.targetUrl, "example.org");
 });

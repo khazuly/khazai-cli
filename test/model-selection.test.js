@@ -52,6 +52,18 @@ test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
   );
 });
 
+test("removed provider models require explicit reselection", () => {
+  assert.equal(normalizeModel("retired-model"), "retired-model");
+  assert.throws(
+    () => resolveModelDescriptor("removed-provider/legacy-model", { providers: {} }),
+    /Model "removed-provider\/legacy-model" is unavailable\. Select another model with \/model\./,
+  );
+  assert.throws(
+    () => resolveModelDescriptor("retired-model", { providers: {} }),
+    /Model "retired-model" is unavailable\. Select another model with \/model\./,
+  );
+});
+
 test("Auto free resolves to the configured gateway without a user-facing provider name", () => {
   assert.deepEqual(resolveModelDescriptor("auto-free"), {
     requested: "auto-free",
@@ -114,7 +126,7 @@ test("default transport matches the OpenCode Zen Big Pickle request contract", a
     assert.equal(requests[0].headers["User-Agent"], "khazai-ai/0.3.0");
     await assert.rejects(
       chat([{ role: "user", content: "test" }], { model: "gpt" }),
-      /Unknown model "gpt". Use provider\/model/,
+      /Model "gpt" is unavailable\. Select another model with \/model\./,
     );
     assert.equal(requests.length, 1);
   } finally {

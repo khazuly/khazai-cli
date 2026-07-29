@@ -12,14 +12,14 @@ const OPENCODE_GLOBAL_FILES = ["opencode.json", "opencode.jsonc"];
 const OPENCODE_PROJECT_FILES = ["opencode.json", "opencode.jsonc"];
 const MODEL = "big-cock";
 const AUTO_FREE_MODEL = "auto-free";
-const MODEL_ALIASES = new Set([MODEL, "cock", AUTO_FREE_MODEL]);
+const MODEL_ALIASES = new Set([MODEL, "cock", "gpt", AUTO_FREE_MODEL]);
 
 export function normalizeModel(model) {
   const value = String(model || "").toLowerCase();
   if (!value) return MODEL;
   if (value === AUTO_FREE_MODEL) return AUTO_FREE_MODEL;
   if (MODEL_ALIASES.has(value)) return MODEL;
-  return value.includes("/") ? String(model) : MODEL;
+  return String(model);
 }
 
 function loadJSON(path) {

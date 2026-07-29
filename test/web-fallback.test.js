@@ -7,7 +7,7 @@ import { Registry } from "../app/registry.js";
 import { fallbackIntentContract } from "../app/intent-resolver.js";
 
 test("fetch URL resolver adds https only when a protocol is absent", () => {
-  assert.equal(normalizeUrl("aichat.org"), "https://aichat.org/");
+  assert.equal(normalizeUrl("example.org"), "https://example.org/");
   assert.equal(normalizeUrl("www.example.com/path?q=1"), "https://www.example.com/path?q=1");
   assert.equal(normalizeUrl("http://example.com/path"), "http://example.com/path");
   assert.equal(normalizeUrl("https://example.com/path"), "https://example.com/path");
@@ -44,12 +44,12 @@ test("a raw-domain URL inspection completes with shell instead of a fetch tool",
   registry.register({
     ...bashTool,
     async execute(args) {
-      assert.match(args.command, /aichat\.org/);
-      return "Exit: 0\nURL: https://aichat.org/\n<main>reachable</main>";
+      assert.match(args.command, /example\.org/);
+      return "Exit: 0\nURL: https://example.org/\n<main>reachable</main>";
     },
   });
   const responses = [
-    JSON.stringify({ tool: "bash", args: { command: "curl -Ls https://aichat.org | head -80" } }),
+    JSON.stringify({ tool: "bash", args: { command: "curl -Ls https://example.org | head -80" } }),
     "Inspection complete.",
   ];
   const agent = new Agent(registry, {
@@ -62,11 +62,11 @@ test("a raw-domain URL inspection completes with shell instead of a fetch tool",
     },
   });
   const events = [];
-  for await (const event of agent.loop("fetch aichat.org")) events.push(event);
+  for await (const event of agent.loop("fetch example.org")) events.push(event);
   assert.equal(events.some(event => event.type === "plan-update" && event.status === "failed"), false);
   assert.equal(events.some(event => /Invalid URL/i.test(event.result || event.content || "")), false);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
-  assert.match(events.filter(event => event.type === "tool-result").at(0)?.result || "", /URL: https:\/\/aichat\.org\//);
+  assert.match(events.filter(event => event.type === "tool-result").at(0)?.result || "", /URL: https:\/\/example\.org\//);
 });
 
 test("bare-domain endpoint discovery uses shell-visible inspection", async () => {
@@ -76,7 +76,7 @@ test("bare-domain endpoint discovery uses shell-visible inspection", async () =>
     ...bashTool,
     async execute(args) {
       commands.push(args.command);
-      return "Exit: 0\nJS chars 1200 from https://aichat.org/assets/app.js\nfetch('/api/chat', { method: 'POST' })\n[POST] /api/chat";
+      return "Exit: 0\nJS chars 1200 from https://example.org/assets/app.js\nfetch('/api/chat', { method: 'POST' })\n[POST] /api/chat";
     },
   });
   const agent = new Agent(registry, {
@@ -85,15 +85,15 @@ test("bare-domain endpoint discovery uses shell-visible inspection", async () =>
     intentResolver: async ({ input }) => fallbackIntentContract(input),
     chat: async (_messages, options) => {
       const response = commands.length === 0
-        ? JSON.stringify({ tool: "bash", args: { command: "tmp=$(mktemp -d /tmp/khazai-endpoints-XXXXXX); curl -Ls https://aichat.org/assets/app.js > \"$tmp/app.js\"; rg \"fetch|/api|chat\" \"$tmp\"" } })
+        ? JSON.stringify({ tool: "bash", args: { command: "tmp=$(mktemp -d /tmp/khazai-endpoints-XXXXXX); curl -Ls https://example.org/assets/app.js > \"$tmp/app.js\"; rg \"fetch|/api|chat\" \"$tmp\"" } })
         : "Endpoint discovery complete.";
       options.onToken?.(response);
       return response;
     },
   });
   const events = [];
-  for await (const event of agent.loop("discover endpoints at aichat.org")) events.push(event);
-  assert.match(commands[0], /aichat\.org/);
+  for await (const event of agent.loop("discover endpoints at example.org")) events.push(event);
+  assert.match(commands[0], /example\.org/);
   assert.equal(events.some(event => /Unable to continue|Invalid URL/i.test(event.content || event.result || "")), false);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.tool), ["bash"]);
 });
