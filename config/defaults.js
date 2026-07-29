@@ -7,7 +7,6 @@ export const DEFAULTS = {
     allowPrivate: false,
     search: { providers: null },
   },
-  toolConcurrency: 4,
   toolTimeout: 60000,
   providerTimeout: 300000,
   reasoningEffort: "medium",

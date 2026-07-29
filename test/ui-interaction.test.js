@@ -87,7 +87,7 @@ test("interactive startup keeps native scrollback and avoids alternate screen", 
   assert.doesNotMatch(raw, /\u001b\[\?1049h/);
 });
 
-test("animated working state stays immediately above a visible disabled prompt", async () => {
+test("animated working state stays above an active editable prompt", async () => {
   const stdout = new TerminalOutput(40, 14);
   const stdin = new TerminalInput();
   const instance = render(
@@ -95,7 +95,7 @@ test("animated working state stays immediately above a visible disabled prompt",
       h(Text, null, "ACTIVE TOOL"),
       h(StatusBar, { running: true, plan: [] }),
       h(PromptInput, {
-        onSubmit() {}, onCommand() {}, commands: [], disabled: true,
+        onSubmit() {}, onCommand() {}, commands: [], canAbort: true,
       }),
     ),
     { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false },
@@ -105,7 +105,8 @@ test("animated working state stays immediately above a visible disabled prompt",
   const frame = frames.join("");
   assert.match(frame, /ACTIVE TOOL/);
   assert.match(frame, /Working/);
-  assert.match(frame, /Working\.\.\./);
+  assert.match(frame, /Ask anything/);
+  assert.doesNotMatch(frame, /Input unavailable/);
   const writesAfterInitialRender = stdout.frames.length;
   await new Promise(resolve => setTimeout(resolve, 1100));
   assert.ok(stdout.frames.length > writesAfterInitialRender, "Working animation must produce visible frames");
@@ -436,7 +437,7 @@ test("working state is removed as soon as the agent becomes idle", async () => {
       plan: [],
       waitingForAnswer: false,
       promptProps: {
-        onSubmit() {}, onCommand() {}, commands: [], disabled: running,
+        onSubmit() {}, onCommand() {}, commands: [], canAbort: running,
       },
     }),
   );

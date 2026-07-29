@@ -106,6 +106,9 @@ export class Agent {
     this._chatHandlesRetries = opts.chatHandlesRetries ?? !opts.chat;
     this._resetSession = opts.resetSession || resetSession;
     this._recoverableProviderRequest = null;
+    this._compactionPending = false;
+    this._compacting = false;
+    this._compactionStarted = false;
     this._shellScheduler = new ShellScheduler(this._workspace);
     this._secretStore = new SecretStore();
     const configuredResolver = opts.intentResolver;
@@ -172,6 +175,8 @@ export class Agent {
   redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
   _toolExecutor(scope) { return createToolExecutor(this, scope); }
+  isCompacting() { return this._compacting; }
+  isCompactionPending() { return this._compactionPending; }
   compact() { this._compactMessages(true); return this.exportSessionState(); }
 }
 

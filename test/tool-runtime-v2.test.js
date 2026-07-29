@@ -14,7 +14,7 @@ import { toProviderMessages } from "../lib/providers.js";
 import { readTool } from "../tools/file.js";
 import { applyPatchTool } from "../tools/patch.js";
 
-test("native read-only tool batches preserve IDs and execute concurrently", async () => {
+test("native read-only tool batches preserve IDs and execute sequentially", async () => {
   const registry = new Registry();
   const started = [];
   for (const name of ["read", "grep"]) {
@@ -53,7 +53,7 @@ test("native read-only tool batches preserve IDs and execute concurrently", asyn
   });
   const events = [];
   for await (const event of agent.loop("inspect both files")) events.push(event);
-  assert.ok(Math.abs(started[0].at - started[1].at) < 40);
+  assert.ok(started[1].at - started[0].at >= 100);
   assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.callId), ["call-a", "call-b"]);
   assert.deepEqual(events.filter(event => event.type === "tool-result").map(event => event.callId), ["call-a", "call-b"]);
 });

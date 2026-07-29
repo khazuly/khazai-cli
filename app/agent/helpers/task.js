@@ -22,10 +22,6 @@ export function workspaceMetadata(workspace) {
   }
 }
 
-export const PARALLEL_READ_ONLY_TOOLS = new Set([
-  "read", "glob", "grep", "analyze", "repo", "websearch", "webfetch", "lsp",
-]);
-
 export const INSPECTION_TOOLS = new Set(["read", "glob", "grep", "analyze"]);
 export const IDEMPOTENT_MUTATION_TOOLS = new Set(["write", "edit", "apply_patch"]);
 export const MAX_LOOP_RECOVERIES = 4;

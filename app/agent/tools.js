@@ -7,7 +7,7 @@ import { redactSecrets } from "../../lib/secrets.js";
 import { ToolExecutor } from "../tool-executor.js";
 import { normalizeIntentContract } from "../intent-resolver.js";
 import { randomUUID } from "node:crypto";
-import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
+import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
 export class ToolMethods {
@@ -104,74 +104,6 @@ export class ToolMethods {
     if (succeeded) this._planIndex = index + 1;
   }
 
-  async *_runReadOnlyBatch(tools) {
-    const executionScope = this._activeRun;
-    if (!this._isActiveRun(executionScope)) return true;
-    const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
-    const normalized = this._filterRepeatedBatchTools(candidates);
-    if (this._loopRecoveryExhausted || normalized.length === 0) {
-      this._lifecycle.finishStep("tool-calls");
-      return true;
-    }
-    if (!normalized.every(tool => PARALLEL_READ_ONLY_TOOLS.has(tool.name))) return false;
-    const planTracker = yield* this._startPlanItem(executionScope);
-    for (const call of normalized) {
-      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
-    }
-    if (!this._isActiveRun(executionScope)) return true;
-    const settled = [];
-    const concurrency = Math.min(8, Math.max(1, Number(this._config.toolConcurrency) || 4));
-    for await (const event of this._toolExecutor(executionScope).executeBatch(
-      normalized,
-      { agent: this._agentProfile?.name },
-      concurrency,
-    )) {
-      if (event.type === "execution-result") {
-        settled.push({ tool: event.call, part: event.part, result: event.result, failed: event.failed });
-      } else {
-        yield event;
-      }
-    }
-    if (!this._isActiveRun(executionScope)) return true;
-    this._messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: settled.map(entry => ({
-        id: entry.tool.id,
-        type: "function",
-        function: {
-          name: entry.tool.name,
-          arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(entry.tool.args))),
-        },
-      })),
-    });
-    for (const entry of settled) {
-      const result = this._protectForContext(String(entry.result));
-      const displayResult = this.redactForDisplay(result);
-      const metadata = toolMetadata(entry.tool, displayResult);
-      const failed = entry.failed || resultFailed(displayResult);
-      this._rememberToolOutcome(entry.tool, result);
-      this._toolEvidence.push({ tool: entry.tool.name, args: this._protectDataForContext(entry.tool.args), result, failed, metadata });
-      this._messages.push({
-        role: "tool",
-        tool_call_id: entry.tool.id,
-        name: entry.tool.name,
-        content: result,
-      });
-      if (["websearch", "webfetch", "repo"].includes(entry.tool.name)) {
-        this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(displayResult)])].slice(0, 20);
-      }
-      this._lastToolResult = result;
-      this._activeTask.lastToolResult = result.slice(0, 1500);
-    }
-    for (const part of this._lifecycle.finishStep(this._stepBlocked ? "denied" : "tool-calls")) {
-      yield this._scopedToolEvent({ type: "tool-part", part }, executionScope);
-    }
-    this._lastToolWasExecuted = settled.length > 0;
-    yield* this._finishPlanItem(planTracker, settled.some(entry => !resultFailed(entry.result)), executionScope);
-    return true;
-  }
-
   async *_runSequentialBatch(tools) {
     const executionScope = this._activeRun;
     if (!this._isActiveRun(executionScope)) return true;
@@ -259,9 +191,22 @@ export class ToolMethods {
   }
 
   contextUsage() {
-    const tokens = this._messageTokenUsage();
-    const budget = Math.max(1, Number(this._config.tokenBudget) || 1);
-    return { tokens, budget, percent: Math.min(100, Math.floor((tokens / budget) * 100)) };
+    const usedTokens = this._messageTokenUsage();
+    const contextLimit = Math.max(1, Number(this._config.tokenBudget) || 24000);
+    const usagePercent = Math.min(100, Math.floor((usedTokens / contextLimit) * 100));
+    const projectedTokens = usedTokens + Math.min(Math.floor(usedTokens * 0.15), 2000);
+    return {
+      usedTokens,
+      contextLimit,
+      usagePercent,
+      // backward compatible field names
+      tokens: usedTokens,
+      budget: contextLimit,
+      percent: usagePercent,
+      projectedTokens,
+      compactionPending: Boolean(this._compactionPending),
+      compacting: Boolean(this._compacting),
+    };
   }
 
   compactIfNeeded() {

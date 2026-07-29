@@ -401,35 +401,6 @@ export class ToolExecutor {
     });
   }
 
-  async *executeBatch(inputs, extraContext = {}, concurrency = 4) {
-    const limit = Math.max(1, Math.min(8, Number(concurrency) || 4));
-    for (let index = 0; index < inputs.length; index += limit) {
-      const events = [];
-      let wake = null;
-      let remaining = Math.min(limit, inputs.length - index);
-      const push = event => {
-        events.push(event);
-        const resolve = wake;
-        wake = null;
-        resolve?.();
-      };
-      const workers = inputs.slice(index, index + limit).map(async input => {
-        try {
-          for await (const event of this.execute(input, extraContext)) push(event);
-        } finally {
-          remaining--;
-          const resolve = wake;
-          wake = null;
-          resolve?.();
-        }
-      });
-      while (remaining > 0 || events.length > 0) {
-        if (events.length === 0) await new Promise(resolve => { wake = resolve; });
-        while (events.length > 0) yield events.shift();
-      }
-      await Promise.all(workers);
-    }
-  }
 }
 
 export { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES };

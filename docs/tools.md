@@ -136,8 +136,7 @@ Override the order explicitly:
     "search": {
       "providers": ["exa", "brave", "tavily", "serper", "local"]
     }
-  },
-  "toolConcurrency": 4
+  }
 }
 ```
 

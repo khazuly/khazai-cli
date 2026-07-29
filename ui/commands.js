@@ -23,6 +23,8 @@ export const COMMANDS = [
   { name: "/redo", description: "Redo the last undone turn", group: "session" },
   { name: "/compact", description: "Compact session context", group: "session" },
   { name: "/retry", description: "Retry the latest failed model continuation", group: "session" },
+  { name: "/cancel", description: "Cancel the active run", group: "session" },
+  { name: "/queue", description: "Show or clear queued messages", group: "session" },
   { name: "/export", description: "Export this session to Markdown", group: "session" },
   { name: "/connect", description: "Connect an OpenAI-compatible provider", group: "workspace" },
   { name: "/agent", description: "Select a primary agent", group: "workspace" },

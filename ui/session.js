@@ -1,5 +1,5 @@
 import { createElement as h } from "react";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Box, Static } from "ink";
 import { resolve } from "node:path";
 import { Agent } from "../app/agent.js";
@@ -26,6 +26,7 @@ import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.
 import { redactSecrets } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
+import { formatQueuedMessages, UserMessageQueue } from "./user-message-queue.js";
 import {
   analysisActivityMessage,
   analysisEventIsCurrent,
@@ -145,6 +146,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [sessionKey, setSessionKey] = useState(0);
   const [pendingQuestion, setPendingQuestion] = useState(null);
   const [expandedTool, setExpandedTool] = useState(null);
+  const [queuedCount, setQueuedCount] = useState(0);
+  const [contextUsage, setContextUsage] = useState({});
+  const contextUsageRef = useRef({});
   const agentRef = useRef(null);
   const activeRef = useRef(null);
   const submittingRef = useRef(false);
@@ -160,6 +164,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const cancelledRunIdRef = useRef(null);
   const taskEpochRef = useRef(0);
   const submitRef = useRef(null);
+  const abortRef = useRef(null);
+  const messageQueueRef = useRef(null);
+  if (!messageQueueRef.current) {
+    messageQueueRef.current = new UserMessageQueue(currentSessionRef.current.id);
+  }
+  useEffect(() => () => messageQueueRef.current.markExiting(), []);
 
   if (!agentRef.current) {
     agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
@@ -226,12 +236,52 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setPlan([]);
     setExpandedTool(null);
     setCurrentModel(session.model);
+    messageQueueRef.current.reset(session.id);
+    setQueuedCount(0);
     structuredCallsRef.current.clear();
     setSessionKey(key => key + 1);
   }, [workspace.path]);
 
   const handleCommand = useCallback(async (cmd, arg) => {
-    if (cmd === "/exit") process.exit(0);
+    if (cmd === "/exit") {
+      messageQueueRef.current.markExiting();
+      process.exit(0);
+    }
+    if (cmd === "/queue") {
+      if (String(arg || "").trim().toLowerCase() === "clear") {
+        const cleared = messageQueueRef.current.clearPending();
+        setQueuedCount(messageQueueRef.current.pendingCount());
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: cleared
+            ? `Cleared ${cleared} queued message${cleared === 1 ? "" : "s"}.`
+            : "No queued messages to clear.",
+        });
+        return;
+      }
+      appendArchived({
+        id: nextId(),
+        type: "answer",
+        content: formatQueuedMessages(messageQueueRef.current.pending()),
+      });
+      return;
+    }
+    if (cmd === "/cancel") {
+      abortRef.current?.();
+      return;
+    }
+    if (
+      submittingRef.current
+      && !["/help", "/expand", "/collapse", "/theme"].includes(cmd)
+    ) {
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: "This command is unavailable while a tool is running.",
+      });
+      return;
+    }
     if (cmd === "/retry") {
       if (!agentRef.current?.hasRecoverableProviderRequest?.()) {
         appendArchived({
@@ -557,11 +607,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/collapse") setExpandedTool(null);
   }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
 
-  // Theme preview while navigating the /theme sub-command
   const themePreviewRef = useRef(null);
   const handleThemePreview = useCallback((cmd, value) => {
     if (cmd !== "/theme") return;
-    // Store the original theme on first preview call
     if (themePreviewRef.current === null) {
       themePreviewRef.current = themeName;
     }
@@ -570,7 +618,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
   }, [themeName]);
 
-  // When exiting the /theme sub-command without saving, restore the previous theme
   const handleThemeExitSub = useCallback((cmd) => {
     if (cmd !== "/theme" || themePreviewRef.current === null) return;
     setThemeName(themePreviewRef.current);
@@ -579,7 +626,16 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
   const submit = useCallback(async (input, options = {}) => {
     const retryProvider = Boolean(options.retryProvider);
-    if ((!retryProvider && !input.trim()) || submittingRef.current) return;
+    const queuedItemId = options.queuedItemId || null;
+    if (!retryProvider && !input.trim()) return;
+    if (submittingRef.current) {
+      if (!retryProvider && !queuedItemId) {
+        messageQueueRef.current.enqueue(input, redactSecrets(input));
+        setQueuedCount(messageQueueRef.current.pendingCount());
+      }
+      return;
+    }
+    if (queuedItemId && !messageQueueRef.current.markRunning(queuedItemId)) return;
     setExpandedTool(null);
     structuredCallsRef.current.clear();
     submittingRef.current = true;
@@ -590,6 +646,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     let finalCommitted = false;
     let fatalError = "";
     let recoverableFailure = false;
+    let queueHandoffPending = false;
+    let handedOffForQueue = false;
     const sessionBefore = currentSessionRef.current;
     const runId = nextId();
     const turnId = `${sessionBefore?.id || "session"}-${runId}`;
@@ -732,6 +790,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       appendArchived({ id: nextId(), type: "user", content: redactSecrets(input) });
     }
 
+    const updateUsage = () => {
+      const usage = agentRef.current?.contextUsage() || {};
+      contextUsageRef.current = usage;
+      setContextUsage(usage);
+    };
+
     const agent = agentRef.current;
     agent.setQuestionHandler(() => new Promise(resolve => {
       questionResolverRef.current = { kind: "question", resolve, scope: analysisScope };
@@ -755,6 +819,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       };
     }));
     try {
+    updateUsage();
     const agentInput = retryProvider
       ? ""
       : input.trimStart().startsWith("!")
@@ -764,6 +829,25 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       ...analysisScope,
       retryProvider,
     })) {
+      if (ev.type === "compaction-start") {
+        setContextUsage(current => ({ ...current, compacting: true }));
+        continue;
+      }
+      if (ev.type === "compaction-end") {
+        updateUsage();
+        continue;
+      }
+      if (queueHandoffPending) {
+        if (messageQueueRef.current.pendingCount() > 0) {
+          handedOffForQueue = true;
+          cancelledRunIdRef.current = analysisScope.runId;
+          responseBufferRef.current = discardResponseBuffer(responseBufferRef.current, analysisScope);
+          setPlan([]);
+          agent.abort();
+          break;
+        }
+        queueHandoffPending = false;
+      }
       if (cancelledRunIdRef.current === analysisScope.runId) continue;
       if (!analysisEventIsCurrent(ev, analysisScope)) continue;
       if (ev.type === "thinking") {
@@ -991,15 +1075,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "tool-result") {
-        if (ev.tool === "think") continue;
-        if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
+        updateUsage();
+        if (ev.tool === "think") {
+          if (messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
+          continue;
+        }
+        if (messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
+        if (ev.callId && structuredCallsRef.current.has(ev.callId)) {
+          if (ev.tool === "read") {
+            finishReadBatch(Boolean(ev.failed), agent.redactForDisplay(ev.result));
+          }
+          continue;
+        }
         const current = activeRef.current;
         const duration = current?.startedAt ? Date.now() - current.startedAt : null;
         const safeResult = agent.redactForDisplay(ev.result);
         if (isInternalAgentFailure(safeResult)) {
-          // Legacy tools may still return a guard phrase as text. The agent
-          // converts current guards to steering; this protects the UI while a
-          // plugin/tool is being migrated and avoids a duplicate error card.
           clearActive();
           continue;
         }
@@ -1007,7 +1098,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         const failed = toolResultFailed(safeResult);
         if (ev.tool === "read") {
           if (failed) finishReadBatch(true, safeResult);
-          else recordReadResult(ev.callId, safeResult);
+          else {
+            recordReadResult(ev.callId, safeResult);
+            if (queueHandoffPending) finishReadBatch(false);
+          }
           continue;
         }
         clearActive();
@@ -1035,8 +1129,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         continue;
       }
 
-      // Steering is orchestration metadata. It changes the next model turn but
-      // must never become an assistant/error card in the normal UI.
       if (ev.type === "steering") continue;
 
       if (ev.type === "answer" || ev.type === "error") {
@@ -1083,8 +1175,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         completeStreaming();
         setPlan([]);
         finishedNormally = true;
+        updateUsage();
         continue;
       }
+    }
+    if (queueHandoffPending && messageQueueRef.current.pendingCount() > 0) {
+      handedOffForQueue = true;
+      cancelledRunIdRef.current = analysisScope.runId;
+      agent.abort();
     }
     } catch (error) {
       discardStreaming();
@@ -1098,6 +1196,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         appendArchived({ id: nextId(), type: "error", content: fatalError });
       }
     } finally {
+      updateUsage();
       agentSessionRef.current = agent.exportSessionState?.() || null;
       discardStreaming();
       finishReadBatch(false);
@@ -1117,7 +1216,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       setRunning(false);
       setRunningStartedAt(null);
       setWorkspaceFiles(listWorkspaceFiles(workspace.path));
-      const runResult = recoverableFailure ? null : terminalRunResult({
+      const runResult = recoverableFailure || handedOffForQueue ? null : terminalRunResult({
         cancelled: cancelledRunIdRef.current === runId,
         completionGaps: agent._executionPolicy?.completionGaps?.() || [],
         fatalError,
@@ -1153,6 +1252,19 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
       }
       if (!recoverableFailure) agent.clearTurnSecrets(analysisScope);
+      if (queuedItemId) {
+        const cancelled = cancelledRunIdRef.current === runId && !handedOffForQueue;
+        if (cancelled) messageQueueRef.current.cancel(queuedItemId);
+        else messageQueueRef.current.complete(queuedItemId);
+      }
+      const nextQueued = messageQueueRef.current.startNext();
+      setQueuedCount(messageQueueRef.current.pendingCount());
+      if (nextQueued) {
+        queueMicrotask(() => {
+          if (messageQueueRef.current.exiting) return;
+          submitRef.current?.(nextQueued.rawContent, { queuedItemId: nextQueued.id });
+        });
+      }
     }
   }, [appendArchived]);
   submitRef.current = submit;
@@ -1212,6 +1324,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     appendArchived({ id: nextId(), type: "answer", content: "Interrupted by user." });
     agentRef.current?.abort();
   }, [appendArchived, setPlan]);
+  abortRef.current = handleAbort;
 
   const clearDisplay = useCallback(() => {
     process.stdout.write("\u001b[2J\u001b[H");
@@ -1265,13 +1378,17 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         activeTool: activeMessage?.type === "tool" ? activeMessage : null,
         startedAt: runningStartedAt,
         waitingForAnswer: Boolean(pendingQuestion),
+        queueCount: queuedCount,
+        model: displayModel(currentModel),
+        contextUsage,
         promptProps: {
           onSubmit: pendingQuestion ? answerQuestion : submit,
           onCommand: handleCommand,
           onClear: clearDisplay,
           onAbort: handleAbort,
           commands: COMMANDS,
-          disabled: running && !pendingQuestion,
+          inputActive: !messageQueueRef.current.exiting,
+          canAbort: running && !pendingQuestion,
           activeModel: currentModel,
           questionOptions: pendingQuestion?.options || [],
           questionKind: pendingQuestion?.kind || "",

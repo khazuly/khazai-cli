@@ -3,7 +3,7 @@ import { redactSecrets } from "../../lib/secrets.js";
 import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
+import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
 import { createPublicActivityChannel } from "../public-activity.js";
@@ -77,7 +77,20 @@ export class LoopMethods {
           : "context";
       yield scoped({ type: "thinking", turn: this._turn, phase });
       if (!isRunActive()) return;
-      const ctx = this._buildContext();
+      let ctx = this._buildContext();
+      // Preflight compaction check: compact before provider request if needed
+      if ((this._compactionPending || this._messageTokenUsage() >= this._config.tokenBudget) && !this._compactionStarted) {
+        this._compactionStarted = true;
+        this._compacting = true;
+        yield scoped({ type: "compaction-start" });
+        if (!isRunActive()) return;
+        this._compactMessages(true);
+        this._compactionPending = false;
+        this._compacting = false;
+        this._compactionStarted = false;
+        yield scoped({ type: "compaction-end" });
+        ctx = this._buildContext();
+      }
       let reply;
       let streamMode = "pending", streamTail = "";
       let streamStarted = false;
@@ -293,21 +306,6 @@ export class LoopMethods {
         }
         if (streamStarted || !typedProviderStream) yield scoped({ type: "stream-commit" });
       };
-      if (
-        parsed.tools?.length > 1
-        && parsed.tools.every(candidate => PARALLEL_READ_ONLY_TOOLS.has(this._normalizeTool(candidate).name))
-      ) {
-        yield* commitProseBeforeTool(this._normalizeTool(parsed.tools[0]));
-        for await (const event of this._runReadOnlyBatch(parsed.tools)) yield event;
-        if (this._loopRecoveryExhausted) {
-          const answer = this._boundedLoopRecoveryAnswer();
-          yield scoped({ type: "stream", token: answer });
-          if (finalizeRun()) yield scoped({ type: "stream-end" });
-          return;
-        }
-        if (this._stepBlocked) return;
-        continue;
-      }
       if (parsed.tools?.length > 1) {
         yield* commitProseBeforeTool(this._normalizeTool(parsed.tools[0]));
         for await (const event of this._runSequentialBatch(parsed.tools)) yield event;
@@ -319,6 +317,7 @@ export class LoopMethods {
         }
         continue;
       }
+      if (parsed.tools?.length) parsed = { ...parsed, tool: parsed.tools[0], tools: undefined };
       let tool = parsed.tool ? this._normalizeTool(parsed.tool) : null;
       if (tool) {
         const validation = validateToolArguments(tool, this._registry);
@@ -483,6 +482,9 @@ export class LoopMethods {
         name: tool.name,
         content: protectedResult,
       });
+      if (this._messageTokenUsage() >= this._config.tokenBudget) {
+        this._compactionPending = true;
+      }
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });
       }

@@ -3,7 +3,6 @@ import { Text, Box } from "ink";
 import { useEffect, useState } from "react";
 import { toolTarget } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
-import { PrefixRow } from "./surface.js";
 
 const WORKING_INTERVAL_MS = 80;
 
@@ -30,7 +29,15 @@ export function formatElapsed(seconds) {
   return `${minutes}m ${seconds % 60}s`;
 }
 
-export function StatusBar({ running, plan = [], activeTool = null, startedAt = null }) {
+export function StatusBar({
+  running,
+  plan = [],
+  activeTool = null,
+  startedAt = null,
+  waitingForAnswer = false,
+  model = "",
+  contextUsage = {},
+}) {
   const [frame, setFrame] = useState(0);
   const theme = useTheme();
 
@@ -42,23 +49,72 @@ export function StatusBar({ running, plan = [], activeTool = null, startedAt = n
     return () => clearInterval(timer);
   }, [running]);
 
-  if (!running) return null;
+  // ── Left-status section ──────────────────────────────────────────────
+  let leftStatus;
+  if (running) {
+    const activePlan = plan.findIndex(item => item.status === "running");
+    const target = activeTool
+      ? toolTarget(activeTool.tool, activeTool.args).split("\n")[0]
+      : "";
+    const action = activeTool
+      ? ACTIVE_LABELS[activeTool.tool] || "Working"
+      : activePlan >= 0
+        ? `Working ${activePlan + 1}/${plan.length}`
+        : "Working";
+    const elapsed = startedAt
+      ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+      : Math.floor((frame * WORKING_INTERVAL_MS) / 1000);
+    const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+    leftStatus = h(Text, {},
+      h(Text, { color: theme.primary }, spinner),
+      " ",
+      h(Text, { bold: true, color: theme.primary }, action),
+      target
+        ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, ` · ${target}`)
+        : null,
+      h(Text, { color: theme.metadata }, ` · ${formatElapsed(elapsed)}`),
+      h(Text, { color: theme.muted }, " · Esc cancel"),
+    );
+  } else if (waitingForAnswer) {
+    leftStatus = h(Text, { color: theme.muted },
+      model || "KhazAI",
+      " · ",
+      h(Text, { color: theme.warning }, "Waiting for answer"),
+      " · Esc cancel",
+    );
+  } else {
+    leftStatus = h(Text, { color: theme.muted },
+      model || "KhazAI",
+      " · Esc cancel",
+    );
+  }
 
-  const activePlan = plan.findIndex(item => item.status === "running");
-  const target = activeTool ? toolTarget(activeTool.tool, activeTool.args).split("\n")[0] : "";
-  const action = activeTool
-    ? ACTIVE_LABELS[activeTool.tool] || "Working"
-    : activePlan >= 0 ? `Working ${activePlan + 1}/${plan.length}` : "Working";
-  const elapsed = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : Math.floor(frame * WORKING_INTERVAL_MS / 1000);
-  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+  // ── Right-section: context usage indicator ──────────────────────────
+  const { usagePercent = 0, compacting = false } = contextUsage;
+  const clamped = Math.min(100, Math.max(0, Math.floor(Number(usagePercent))));
 
-  return h(Box, { marginBottom: 0 },
-    h(PrefixRow, { prefix: spinner, prefixColor: theme.primary },
-      h(Box, { flexDirection: "row", flexWrap: "wrap" },
-        h(Text, { bold: true, color: theme.primary }, action),
-        target ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, ` · ${target}`) : null,
-        h(Text, { color: theme.metadata }, ` · ${formatElapsed(elapsed)} · Esc cancel`),
-      ),
+  let contextStatus;
+  if (compacting) {
+    contextStatus = h(Text, { color: theme.primary }, "Compacting context...");
+  } else {
+    let color;
+    if (clamped >= 100) {
+      color = theme.error;
+    } else if (clamped >= 80) {
+      color = theme.warning;
+    } else {
+      color = theme.muted;
+    }
+    contextStatus = h(Text, { color }, `Context ${clamped}%`);
+  }
+
+  // ── Layout: left flex-grow, right fixed ─────────────────────────────
+  return h(Box, { width: "100%" },
+    h(Box, { flexGrow: 1, flexShrink: 1, minWidth: 0 },
+      leftStatus,
+    ),
+    h(Box, { flexShrink: 0, marginLeft: 2 },
+      contextStatus,
     ),
   );
 }

@@ -12,12 +12,10 @@ import {
 import { Panel } from "./surface.js";
 import { PermissionPrompt } from "./permission-prompt.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
-
 const PASTE_COMPRESSION_THRESHOLD = 160;
-
 export function PromptInput({
   onSubmit,
-  disabled,
+  inputActive = true,
   commands = [],
   onCommand,
   onClear,
@@ -32,7 +30,9 @@ export function PromptInput({
   fileItems = [],
   onPreviewChange,
   onExitSub,
+  canAbort = false,
 }) {
+  const promptActive = inputActive;
   const { stdout } = useStdout();
   const theme = useTheme();
   const [input, setInput] = useState({ value: "", cursor: 0 });
@@ -45,7 +45,6 @@ export function PromptInput({
   const textBufferRef = useRef("");
   const textTimerRef = useRef(null);
   const pasteStartRef = useRef({ start: null, characterCount: 0, hasPasteChunk: false, timer: null });
-
   useEffect(() => { optionIdxRef.current = 0; setOptionIdx(0); }, [questionOptions]);
   const subInfo = findSubCommands(commands, input.value);
   const inSubMode = subInfo !== null && input.value.includes(" ");
@@ -60,7 +59,6 @@ export function PromptInput({
         input.value,
         input.value.indexOf("/") + 1
       );
-
   const commandResults = filtered;
   const commandResetKey = [
     input.value,
@@ -76,7 +74,11 @@ export function PromptInput({
     ? fileItems.filter(path => path.toLowerCase().includes(fileQuery)).slice(0, 8)
     : [];
   const showFiles = matchedFiles.length > 0;
-  useCommandBoundaryKeys(showCmd, commandResults.length - 1, commandViewport.selectIndex);
+  useCommandBoundaryKeys(
+    showCmd && questionOptions.length === 0,
+    commandResults.length - 1,
+    commandViewport.selectIndex,
+  );
   const prevSelectedRef = useRef(null);
   const prevInSubModeRef = useRef(false);
   useEffect(() => {
@@ -153,12 +155,6 @@ export function PromptInput({
     if (pasteStartRef.current.timer) clearTimeout(pasteStartRef.current.timer);
   }, []);
   useInput((ch, key) => {
-    if (disabled) {
-      if (ch === "\u001b" || key.escape) {
-        onAbort?.();
-      }
-      return;
-    }
     if (questionOptions.length > 0) {
       if (key.upArrow) {
         setOptionIdx(index => optionIdxRef.current = index > 0 ? index - 1 : questionOptions.length - 1);
@@ -174,7 +170,6 @@ export function PromptInput({
       }
       return;
     }
-
     if (ch && !key.return && !key.shift && !key.ctrl && !key.meta) {
       const text = printableText(ch);
       if (text) {
@@ -308,6 +303,10 @@ export function PromptInput({
       }
       return;
     }
+    if ((ch === "\u001b" || key.escape) && canAbort) {
+      onAbort?.();
+      return;
+    }
 
     if (key.backspace || key.delete || ch === "\x7f" || ch === "\b") {
       setInput(removeBackward);
@@ -358,7 +357,7 @@ export function PromptInput({
       onClear?.();
       return;
     }
-  });
+  }, { isActive: promptActive });
 
   const terminalWidth = stdout?.columns || 80;
   const panelWidth = Math.max(12, terminalWidth - 1);
@@ -466,15 +465,15 @@ export function PromptInput({
       )
     : null;
 
-  const hintLeft = `${activeModel || "build"} · ${disabled ? "Esc cancel" : "Enter send"}`;
-  const hintRight = disabled ? "" : "! shell · @ file · / commands · ⇧Shift+Enter newline";
+  const hintLeft = `${activeModel || "build"} · ${canAbort ? "Working · Esc cancel" : "Enter send"}`;
+  const hintRight = promptActive ? "! shell · @ file · / commands · ⇧Shift+Enter newline" : "";
 
   return h(Box, { flexDirection: "column", width: "100%" },
     fileDropdown || cmdDropdown,
     h(Panel, {
       flexDirection: "column",
       width: panelWidth,
-      tone: disabled ? "border" : "primary",
+      tone: promptActive ? "primary" : "border",
       paddingX: 0,
     },
       h(Box, {
@@ -483,9 +482,9 @@ export function PromptInput({
         backgroundColor: theme.inputBackground,
       },
         h(Box, { flexDirection: "row" },
-          h(Text, { color: disabled ? theme.muted : theme.primary, bold: !disabled }, "❯"),
+          h(Text, { color: promptActive ? theme.primary : theme.muted, bold: promptActive }, "❯"),
           h(Text, { color: theme.metadata, dimColor: true, marginLeft: 1 },
-            disabled ? " Working..." : " Ask anything..."),
+            promptActive ? " Ask anything..." : " Input unavailable"),
         ),
         ...content,
       ),
