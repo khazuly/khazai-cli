@@ -1,7 +1,6 @@
 export const DEFAULTS = {
   model: "big-cock",
   theme: "system",
-  syntaxTheme: "catppuccin-mocha",
   providers: {},
   mcp: {},
   web: {

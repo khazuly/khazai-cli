@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULTS } from "./defaults.js";
-import { isSyntaxTheme, normalizeSyntaxTheme } from "../ui/syntax-theme.js";
+import { isKnownTheme } from "../ui/theme.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "khazai-ai");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -115,6 +115,24 @@ export function loadConfig(workspace = process.cwd()) {
     }
   }
   config.model = normalizeModel(config.model);
+
+  // ── Migration: unify old theme + syntaxTheme into one theme ──────────
+  if (config.theme || config.syntaxTheme) {
+    // Prefer syntaxTheme when it matches a known unified theme
+    const syntaxCandidate = isKnownTheme(config.syntaxTheme);
+    const interfaceCandidate = isKnownTheme(config.theme);
+    if (syntaxCandidate) {
+      config.theme = syntaxCandidate;
+    } else if (interfaceCandidate) {
+      config.theme = interfaceCandidate;
+    } else {
+      config.theme = "system";
+    }
+    delete config.syntaxTheme;
+  } else if (!config.theme) {
+    config.theme = DEFAULTS.theme || "system";
+  }
+
   return config;
 }
 
@@ -138,7 +156,7 @@ export function saveReasoningEffort(effort) {
 
 export function saveTheme(theme) {
   const value = String(theme || "").toLowerCase();
-  if (!["system", "dark", "light", "mono"].includes(value)) {
+  if (!isKnownTheme(value)) {
     throw new Error(`Unknown theme "${theme}".`);
   }
   const config = loadJSON(CONFIG_PATH) || {};
@@ -146,15 +164,6 @@ export function saveTheme(theme) {
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
   return value;
-}
-
-export function saveSyntaxTheme(theme) {
-  if (!isSyntaxTheme(theme)) throw new Error(`Unknown syntax theme "${theme}".`);
-  const config = loadJSON(CONFIG_PATH) || {};
-  config.syntaxTheme = normalizeSyntaxTheme(theme);
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
-  return config.syntaxTheme;
 }
 
 export function saveProvider(id, provider) {

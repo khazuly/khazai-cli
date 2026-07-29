@@ -10,7 +10,7 @@ import { builtinTools } from "../app/builtin-tools.js";
 import { loadAgentProfiles } from "../app/agent-profiles.js";
 import { listSkills } from "../app/skills.js";
 import { lspStatus } from "../app/lsp.js";
-import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveSyntaxTheme, saveTheme } from "../config/index.js";
+import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveTheme } from "../config/index.js";
 import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
 import { loginCodex } from "../lib/codex-auth.js";
 import { listModels } from "../lib/llm.js";
@@ -25,7 +25,6 @@ import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
 import { redactSecrets } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
-import { SYNTAX_THEMES } from "./syntax-theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
 import {
   analysisActivityMessage,
@@ -141,7 +140,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [runningStartedAt, setRunningStartedAt] = useState(null);
   const [currentModel, setCurrentModel] = useState(currentSessionRef.current.model);
   const [themeName, setThemeName] = useState(initialConfig.current.theme || "system");
-  const [syntaxThemeName, setSyntaxThemeName] = useState(initialConfig.current.syntaxTheme || "catppuccin-mocha");
+  const previousThemeRef = useRef(themeName);
   const [workspaceFiles, setWorkspaceFiles] = useState(() => listWorkspaceFiles(workspace.path));
   const [sessionKey, setSessionKey] = useState(0);
   const [pendingQuestion, setPendingQuestion] = useState(null);
@@ -541,24 +540,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       try {
         const selected = saveTheme(arg);
         setThemeName(selected);
+        themePreviewRef.current = null;
         appendArchived({ id: nextId(), type: "answer", content: `Theme changed to **${selected}**.` });
-      } catch (error) {
-        appendArchived({ id: nextId(), type: "error", content: error.message });
-      }
-      return;
-    }
-    if (cmd === "/syntax-theme") {
-      try {
-        const choices = SYNTAX_THEMES.map(([value, label]) => ({ label, value }));
-        const selected = arg || await requestValue(
-          "Select syntax theme",
-          choices.map(choice => choice.label),
-          { values: choices },
-        );
-        if (!selected) return;
-        const value = saveSyntaxTheme(selected);
-        setSyntaxThemeName(value);
-        appendArchived({ id: nextId(), type: "answer", content: `Syntax theme changed to **${value}**.` });
       } catch (error) {
         appendArchived({ id: nextId(), type: "error", content: error.message });
       }
@@ -573,6 +556,26 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     if (cmd === "/collapse") setExpandedTool(null);
   }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
+
+  // Theme preview while navigating the /theme sub-command
+  const themePreviewRef = useRef(null);
+  const handleThemePreview = useCallback((cmd, value) => {
+    if (cmd !== "/theme") return;
+    // Store the original theme on first preview call
+    if (themePreviewRef.current === null) {
+      themePreviewRef.current = themeName;
+    }
+    if (value !== themeName) {
+      setThemeName(value);
+    }
+  }, [themeName]);
+
+  // When exiting the /theme sub-command without saving, restore the previous theme
+  const handleThemeExitSub = useCallback((cmd) => {
+    if (cmd !== "/theme" || themePreviewRef.current === null) return;
+    setThemeName(themePreviewRef.current);
+    themePreviewRef.current = null;
+  }, []);
 
   const submit = useCallback(async (input, options = {}) => {
     const retryProvider = Boolean(options.retryProvider);
@@ -1232,7 +1235,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const displayedActiveMessage = activeMessage;
   const showWorking = running && !activeMessage;
 
-  return h(ThemeProvider, { name: themeName, syntaxTheme: syntaxThemeName }, h(Box, { flexDirection: "column", width: "100%" },
+  return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {
       key: `history-${sessionKey}`,
       items: staticItems,
@@ -1277,6 +1280,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           onCancelOption: cancelQuestion,
           secret: Boolean(pendingQuestion?.secret),
           fileItems: workspaceFiles,
+          onPreviewChange: handleThemePreview,
+          onExitSub: handleThemeExitSub,
         },
       }),
     ),

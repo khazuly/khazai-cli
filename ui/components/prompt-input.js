@@ -7,14 +7,12 @@ import {
   COMMAND_VIEWPORT_SIZE,
   filterCommandItems,
   findSubCommands,
-  useCommandBoundaryKeys,
   useCommandViewport,
 } from "./command-viewport.js";
 import { Panel } from "./surface.js";
 import { PermissionPrompt } from "./permission-prompt.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
 
-const QUICK_COMMANDS = ["/new", "/sessions", "/model", "/agent", "/theme", "/help"];
 const PASTE_COMPRESSION_THRESHOLD = 160;
 
 export function PromptInput({
@@ -32,6 +30,8 @@ export function PromptInput({
   onCancelOption,
   secret = false,
   fileItems = [],
+  onPreviewChange,
+  onExitSub,
 }) {
   const { stdout } = useStdout();
   const theme = useTheme();
@@ -61,12 +61,7 @@ export function PromptInput({
         input.value.indexOf("/") + 1
       );
 
-  const quickCommandResults = QUICK_COMMANDS
-    .map(name => commands.find(command => command.name === name))
-    .filter(Boolean);
-  const commandResults = !inSubMode && input.value === "/" && quickCommandResults.length
-    ? quickCommandResults
-    : filtered;
+  const commandResults = filtered;
   const commandResetKey = [
     input.value,
     activeModel || "",
@@ -74,7 +69,6 @@ export function PromptInput({
   ].join("\u0001");
   const commandViewport = useCommandViewport(commandResults, commandResetKey);
   const showCmd = commandResults.length > 0 && input.value.startsWith("/");
-  useCommandBoundaryKeys(showCmd, commandResults.length - 1, commandViewport.selectIndex);
   const beforeCursor = graphemes(input.value).slice(0, input.cursor).join("");
   const fileToken = /(?:^|\s)@([^\s]*)$/.exec(beforeCursor);
   const fileQuery = fileToken?.[1]?.toLowerCase() || "";
@@ -82,6 +76,23 @@ export function PromptInput({
     ? fileItems.filter(path => path.toLowerCase().includes(fileQuery)).slice(0, 8)
     : [];
   const showFiles = matchedFiles.length > 0;
+
+  // Notify parent of sub-command preview changes (e.g. theme preview)
+  const prevSelectedRef = useRef(null);
+  const prevInSubModeRef = useRef(false);
+  useEffect(() => {
+    const selected = commandViewport.selectedItem;
+    // Detect exit from sub-command mode (user navigated away or cleared input)
+    if (prevInSubModeRef.current && !inSubMode) {
+      onExitSub?.(subInfo?.cmd?.name || "");
+    }
+    prevInSubModeRef.current = inSubMode;
+    if (inSubMode && selected && onPreviewChange && selected.name !== prevSelectedRef.current) {
+      prevSelectedRef.current = selected.name;
+      onPreviewChange(subInfo.cmd.name, selected.name);
+    }
+    if (!inSubMode) prevSelectedRef.current = null;
+  }, [commandViewport.selectedIndex, inSubMode, input.value]);
 
   const selectFile = path => {
     if (!fileToken || !path) return;
@@ -256,6 +267,14 @@ export function PromptInput({
         commandViewport.selectIndex(commandViewport.selectedIndex + COMMAND_VIEWPORT_SIZE);
         return;
       }
+      if (key.home) {
+        commandViewport.selectIndex(0);
+        return;
+      }
+      if (key.end) {
+        commandViewport.selectIndex(commandResults.length - 1);
+        return;
+      }
       if (key.tab) {
         const sel = commandViewport.selectedItem;
         if (!sel) return;
@@ -420,7 +439,7 @@ export function PromptInput({
         width: Math.max(20, Math.min(64, (process.stdout.columns || 80) - 2)),
       },
         h(Text, { color: theme.metadata, bold: true },
-          inSubMode ? subInfo.cmd.name.slice(1) : input.value === "/" ? "Quick commands" : "Commands",
+          inSubMode ? subInfo.cmd.name.slice(1) : "Commands",
           commandResults.length > COMMAND_VIEWPORT_SIZE
             ? ` · ${commandViewport.scrollOffset + 1}–${Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, commandResults.length)} of ${commandResults.length}`
             : "",

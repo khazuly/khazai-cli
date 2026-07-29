@@ -1,45 +1,56 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isSyntaxTheme, normalizeSyntaxTheme, SYNTAX_THEMES, syntaxThemeColors } from "../ui/syntax-theme.js";
-import { resolveTheme } from "../ui/theme.js";
+import { THEMES, THEME_NAMES, resolveTheme } from "../ui/theme.js";
 
-test("syntax theme picker uses the Codex built-in theme choices", () => {
-  assert.deepEqual(SYNTAX_THEMES.map(([id]) => id), [
-    "catppuccin-frappe",
-    "catppuccin-latte",
-    "catppuccin-macchiato",
-    "catppuccin-mocha",
-    "dracula",
-    "monokai-extended-bright",
-    "monokai-extended-light",
-    "solarized-dark",
-    "solarized-light",
-    "sublime-snazzy",
-    "two-dark",
-  ]);
-  assert.equal(isSyntaxTheme("dracula"), true);
-  assert.equal(normalizeSyntaxTheme("dark"), "catppuccin-mocha");
-  assert.equal(resolveTheme("solarized-light", {}).syntaxTheme, "solarized-light");
+test("unified theme list includes all syntax themes", () => {
+  assert.ok(THEME_NAMES.includes("catppuccin-frappe"));
+  assert.ok(THEME_NAMES.includes("catppuccin-latte"));
+  assert.ok(THEME_NAMES.includes("catppuccin-macchiato"));
+  assert.ok(THEME_NAMES.includes("catppuccin-mocha"));
+  assert.ok(THEME_NAMES.includes("dracula"));
+  assert.ok(THEME_NAMES.includes("monokai-extended-bright"));
+  assert.ok(THEME_NAMES.includes("monokai-extended-light"));
+  assert.ok(THEME_NAMES.includes("solarized-dark"));
+  assert.ok(THEME_NAMES.includes("solarized-light"));
+  assert.ok(THEME_NAMES.includes("sublime-snazzy"));
+  assert.ok(THEME_NAMES.includes("two-dark"));
+  assert.ok(THEME_NAMES.includes("monokai"));
 });
 
-test("syntax themes supply semantic and diff colors", () => {
-  const dark = syntaxThemeColors("catppuccin-mocha");
-  const light = syntaxThemeColors("solarized-light");
+test("unified themes supply semantic and syntax colors", () => {
+  const dark = THEMES["catppuccin-mocha"];
+  const light = THEMES["solarized-light"];
 
   for (const palette of [dark, light]) {
+    // Required canonical fields
+    for (const key of ["name", "background", "text", "muted", "subtle", "border", "borderActive", "primary", "secondary", "success", "warning", "error", "info", "user", "assistant", "toolRead", "toolSearch", "toolShell", "toolWrite", "toolEdit", "code"]) {
+      assert.ok(key in palette, `Missing field "${key}" in ${palette.name}`);
+    }
+    // Syntax palette
     for (const key of ["keyword", "type", "function", "string", "addedBackground", "deletedBackground"]) {
-      assert.match(palette[key], /^#[0-9a-f]{6}$/i);
+      assert.match(palette.syntax[key], /^#[0-9a-f]{6}$/i, `Bad syntax.${key} in ${palette.name}`);
     }
   }
-  assert.notEqual(dark.keyword, light.keyword);
+  assert.notEqual(dark.syntax.keyword, light.syntax.keyword);
 });
 
-test("syntax theme remains independent from the interface theme", () => {
-  const themed = resolveTheme("light", {}, "dracula");
-  const mono = resolveTheme("mono", {}, "dracula");
+test("resolveTheme returns the requested unified theme", () => {
+  const themed = resolveTheme("light", {});
+  const mono = resolveTheme("mono", {});
 
   assert.equal(themed.name, "light");
-  assert.equal(themed.syntaxTheme, "dracula");
-  assert.equal(themed.syntax.keyword, syntaxThemeColors("dracula").keyword);
+  assert.equal(themed.colorEnabled, true);
+  assert.equal(mono.name, "mono");
   assert.equal(mono.colorEnabled, false);
+});
+
+test("resolveTheme with NO_COLOR returns mono", () => {
+  const themed = resolveTheme("dracula", { NO_COLOR: "1" });
+  assert.equal(themed.name, "mono");
+  assert.equal(themed.colorEnabled, false);
+});
+
+test("unknown theme falls back to system", () => {
+  const theme = resolveTheme("nonexistent", {});
+  assert.equal(theme.name, "system");
 });

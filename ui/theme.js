@@ -1,14 +1,114 @@
 import { createContext, createElement as h, useContext } from "react";
-import { isSyntaxTheme, normalizeSyntaxTheme, syntaxThemeColors } from "./syntax-theme.js";
+
+// ── Syntax palette keys shared by every theme ──────────────────────────────
+const BASE_SYNTAX = {
+  text: "#d4d4d4",
+  muted: "#858585",
+  comment: "#6a9955",
+  keyword: "#c586c0",
+  type: "#4ec9b0",
+  function: "#dcdcaa",
+  string: "#ce9178",
+  number: "#b5cea8",
+  property: "#9cdcfe",
+  operator: "#d4d4d4",
+  tag: "#569cd6",
+  added: "#6a9955",
+  addedBackground: "#173b2a",
+  deleted: "#f14c4c",
+  deletedBackground: "#45232b",
+  hunk: "#4fc1ff",
+};
+
+/** Every entry must supply at minimum syntax keys that differ from BASE. */
+const SYNTAX_PALETTES = {
+  "catppuccin-frappe": { text: "#c6d0f5", muted: "#737994", comment: "#838ba7", keyword: "#ca9ee6", type: "#e5c890", function: "#8caaee", string: "#a6d189", number: "#ef9f76", property: "#99d1db" },
+  "catppuccin-latte": { text: "#4c4f69", muted: "#9ca0b0", comment: "#8c8fa1", keyword: "#8839ef", type: "#df8e1d", function: "#1e66f5", string: "#40a02b", number: "#fe640b", property: "#179299", addedBackground: "#d8f3dc", deletedBackground: "#f8d7da" },
+  "catppuccin-macchiato": { text: "#cad3f5", muted: "#6e738d", comment: "#8087a2", keyword: "#c6a0f6", type: "#eed49f", function: "#8aadf4", string: "#a6da95", number: "#f5a97f", property: "#8bd5ca" },
+  "catppuccin-mocha": { text: "#cdd6f4", muted: "#6c7086", comment: "#7f849c", keyword: "#cba6f7", type: "#f9e2af", function: "#89b4fa", string: "#a6e3a1", number: "#fab387", property: "#89dceb" },
+  dracula: { text: "#f8f8f2", muted: "#6272a4", comment: "#6272a4", keyword: "#ff79c6", type: "#8be9fd", function: "#50fa7b", string: "#f1fa8c", number: "#bd93f9", property: "#8be9fd", addedBackground: "#23452f", deletedBackground: "#4a2633" },
+  "monokai-extended-bright": { text: "#f8f8f2", muted: "#75715e", comment: "#75715e", keyword: "#f92672", type: "#66d9ef", function: "#a6e22e", string: "#e6db74", number: "#ae81ff", property: "#a6e22e" },
+  "monokai-extended-light": { text: "#272822", muted: "#8f908a", comment: "#75715e", keyword: "#f92672", type: "#66d9ef", function: "#a6e22e", string: "#e6db74", number: "#ae81ff", property: "#66d9ef", addedBackground: "#dff0d8", deletedBackground: "#f2dede" },
+  "solarized-dark": { text: "#839496", muted: "#586e75", comment: "#586e75", keyword: "#859900", type: "#b58900", function: "#268bd2", string: "#2aa198", number: "#d33682", property: "#268bd2" },
+  "solarized-light": { text: "#657b83", muted: "#93a1a1", comment: "#93a1a1", keyword: "#859900", type: "#b58900", function: "#268bd2", string: "#2aa198", number: "#d33682", property: "#268bd2", addedBackground: "#e5f1d7", deletedBackground: "#f8dddd" },
+  "sublime-snazzy": { text: "#eff0eb", muted: "#78787e", comment: "#78787e", keyword: "#ff5c57", type: "#57c7ff", function: "#ff6ac1", string: "#5af78e", number: "#ff9f43", property: "#9aedfe" },
+  "two-dark": { text: "#abb2bf", muted: "#5c6370", comment: "#5c6370", keyword: "#c678dd", type: "#e5c07b", function: "#61afef", string: "#98c379", number: "#d19a66", property: "#56b6c2" },
+};
+
+function syntaxPalette(name) {
+  return { ...BASE_SYNTAX, ...(SYNTAX_PALETTES[name] || {}) };
+}
+
+/**
+ * Build a complete unified palette by extending partial interface colours with
+ * a syntax palette and filling in derived / missing fields.
+ *
+ * The returned object satisfies both the old field names (panel, metadata,
+ * inputText, toolResult, toolTarget, codeBackground, toolThink, toolRepo) and
+ * the new canonical names (subtle, borderActive, user, assistant, toolEdit,
+ * code, syntax).
+ */
+function buildPalette(name, iface, syntaxOverlayName) {
+  const syntax = syntaxPalette(syntaxOverlayName || name);
+  const bg = iface.background;
+  const txt = iface.text;
+  const isLight = txt === "#4c4f69" || bg === "#eff1f5" || bg === "#fdf6e3" || bg === "#fdf6e3";
+  // True if the theme explicitly disables colour (mono)
+  const colorEnabled = iface.colorEnabled !== false;
+
+  const palette = {
+    name,
+    colorEnabled,
+
+    // ── Canonical new fields ───────────────────────────────────────────
+    background: bg,
+    text: iface.assistant != null ? iface.assistant : txt,
+    muted: iface.muted,
+    subtle: iface.metadata != null ? iface.metadata : iface.muted,
+    border: iface.border,
+    borderActive: iface.primary,
+    primary: iface.primary,
+    secondary: iface.secondary,
+    success: iface.success,
+    warning: iface.warning,
+    error: iface.error,
+    info: iface.info,
+    user: iface.inputText != null ? iface.inputText : txt,
+    assistant: iface.assistant != null ? iface.assistant : txt,
+    toolRead: iface.toolRead || iface.primary,
+    toolSearch: iface.toolSearch || iface.secondary,
+    toolShell: iface.toolShell || iface.warning,
+    toolWrite: iface.toolWrite || iface.secondary,
+    toolEdit: iface.toolEdit || iface.toolWrite || iface.secondary,
+    code: iface.codeBackground != null ? iface.codeBackground : (iface.panel || bg),
+    syntax,
+
+    // ── Legacy backward-compatible fields ──────────────────────────────
+    panel: iface.panel != null ? iface.panel : bg,
+    metadata: iface.metadata != null ? iface.metadata : iface.muted,
+    inputText: iface.inputText != null ? iface.inputText : txt,
+    toolResult: iface.toolResult != null ? iface.toolResult : txt,
+    toolTarget: iface.toolTarget != null ? iface.toolTarget : iface.primary,
+    codeBackground: iface.codeBackground != null ? iface.codeBackground : (iface.panel || bg),
+    toolThink: iface.toolThink != null ? iface.toolThink : iface.secondary,
+    toolRepo: iface.toolRepo != null ? iface.toolRepo : iface.success,
+  };
+
+  // Syntactic sugar: allow StatusRail / Panel to resolve tone="borderActive" etc.
+  // Also keep tone="border" working.
+  return palette;
+}
+
+// ── Interface colour definitions ───────────────────────────────────────────
+// Fields not listed per entry fall through to buildPalette defaults.
 
 const THEMES = {
-  dark: {
-    name: "dark",
+  dark: buildPalette("dark", {
     colorEnabled: true,
     background: "#1e1e2e",
     panel: "#181825",
-    text: "#cdd6f4",
     assistant: "#cdd6f4",
+    text: "#cdd6f4",
     toolResult: "#a6adc8",
     toolTarget: "#89b4fa",
     metadata: "#6c7086",
@@ -28,14 +128,14 @@ const THEMES = {
     toolShell: "#f9e2af",
     toolThink: "#b4befe",
     toolRepo: "#a6e3a1",
-  },
-  light: {
-    name: "light",
+  }, "catppuccin-mocha"),
+
+  light: buildPalette("light", {
     colorEnabled: true,
     background: "#eff1f5",
     panel: "#e6e9ef",
-    text: "#4c4f69",
     assistant: "#4c4f69",
+    text: "#4c4f69",
     toolResult: "#5c5f77",
     toolTarget: "#1e66f5",
     metadata: "#9ca0b0",
@@ -55,14 +155,14 @@ const THEMES = {
     toolShell: "#df8e1d",
     toolThink: "#7287fd",
     toolRepo: "#40a02b",
-  },
-  system: {
-    name: "system",
+  }, "catppuccin-latte"),
+
+  system: buildPalette("system", {
     colorEnabled: true,
     background: undefined,
     panel: undefined,
-    text: undefined,
     assistant: undefined,
+    text: undefined,
     toolResult: "#a6adc8",
     toolTarget: "#89b4fa",
     metadata: "#6c7086",
@@ -82,14 +182,14 @@ const THEMES = {
     toolShell: "#f9e2af",
     toolThink: "#b4befe",
     toolRepo: "#a6e3a1",
-  },
-  mono: {
-    name: "mono",
+  }, "catppuccin-mocha"),
+
+  mono: buildPalette("mono", {
     colorEnabled: false,
     background: undefined,
     panel: undefined,
-    text: undefined,
     assistant: undefined,
+    text: undefined,
     toolResult: undefined,
     toolTarget: undefined,
     metadata: undefined,
@@ -109,31 +209,369 @@ const THEMES = {
     toolShell: undefined,
     toolThink: undefined,
     toolRepo: undefined,
-  },
+  }, "catppuccin-mocha"),
+
+  // ── Syntax-derived full themes ───────────────────────────────────────
+
+  dracula: buildPalette("dracula", {
+    background: "#282a36",
+    panel: "#21222c",
+    assistant: "#f8f8f2",
+    text: "#f8f8f2",
+    toolResult: "#f8f8f2",
+    toolTarget: "#8be9fd",
+    metadata: "#6272a4",
+    muted: "#44475a",
+    border: "#44475a",
+    primary: "#ff79c6",
+    secondary: "#8be9fd",
+    info: "#8be9fd",
+    success: "#50fa7b",
+    warning: "#f1fa8c",
+    error: "#ff5555",
+    inputText: "#f8f8f2",
+    codeBackground: "#21222c",
+    toolRead: "#8be9fd",
+    toolSearch: "#ff79c6",
+    toolWrite: "#f1fa8c",
+    toolShell: "#ffb86c",
+    toolThink: "#bd93f9",
+    toolRepo: "#50fa7b",
+  }, "dracula"),
+
+  monokai: buildPalette("monokai", {
+    background: "#272822",
+    panel: "#1e1f1c",
+    assistant: "#f8f8f2",
+    text: "#f8f8f2",
+    toolResult: "#f8f8f2",
+    toolTarget: "#66d9ef",
+    metadata: "#75715e",
+    muted: "#49483e",
+    border: "#49483e",
+    primary: "#66d9ef",
+    secondary: "#a6e22e",
+    info: "#66d9ef",
+    success: "#a6e22e",
+    warning: "#e6db74",
+    error: "#f92672",
+    inputText: "#f8f8f2",
+    codeBackground: "#1e1f1c",
+    toolRead: "#66d9ef",
+    toolSearch: "#a6e22e",
+    toolWrite: "#e6db74",
+    toolShell: "#fd971f",
+    toolThink: "#ae81ff",
+    toolRepo: "#a6e22e",
+  }, "monokai-extended-bright"),
+
+  "monokai-extended-bright": buildPalette("monokai-extended-bright", {
+    background: "#272822",
+    panel: "#1e1f1c",
+    assistant: "#f8f8f2",
+    text: "#f8f8f2",
+    toolResult: "#f8f8f2",
+    toolTarget: "#66d9ef",
+    metadata: "#75715e",
+    muted: "#49483e",
+    border: "#49483e",
+    primary: "#66d9ef",
+    secondary: "#a6e22e",
+    info: "#66d9ef",
+    success: "#a6e22e",
+    warning: "#e6db74",
+    error: "#f92672",
+    inputText: "#f8f8f2",
+    codeBackground: "#1e1f1c",
+    toolRead: "#66d9ef",
+    toolSearch: "#a6e22e",
+    toolWrite: "#e6db74",
+    toolShell: "#fd971f",
+    toolThink: "#ae81ff",
+    toolRepo: "#a6e22e",
+  }, "monokai-extended-bright"),
+
+  "monokai-extended-light": buildPalette("monokai-extended-light", {
+    background: "#f9f8f5",
+    panel: "#f0efea",
+    assistant: "#272822",
+    text: "#272822",
+    toolResult: "#49483e",
+    toolTarget: "#66d9ef",
+    metadata: "#8f908a",
+    muted: "#a59f85",
+    border: "#d3cfc0",
+    primary: "#66d9ef",
+    secondary: "#a6e22e",
+    info: "#66d9ef",
+    success: "#a6e22e",
+    warning: "#e6db74",
+    error: "#f92672",
+    inputText: "#272822",
+    codeBackground: "#f0efea",
+    toolRead: "#66d9ef",
+    toolSearch: "#a6e22e",
+    toolWrite: "#e6db74",
+    toolShell: "#fd971f",
+    toolThink: "#ae81ff",
+    toolRepo: "#a6e22e",
+  }, "monokai-extended-light"),
+
+  "catppuccin-frappe": buildPalette("catppuccin-frappe", {
+    background: "#303446",
+    panel: "#292c3c",
+    assistant: "#c6d0f5",
+    text: "#c6d0f5",
+    toolResult: "#a5adce",
+    toolTarget: "#8caaee",
+    metadata: "#737994",
+    muted: "#51576d",
+    border: "#414559",
+    primary: "#8caaee",
+    secondary: "#ca9ee6",
+    info: "#99d1db",
+    success: "#a6d189",
+    warning: "#e5c890",
+    error: "#e78284",
+    inputText: "#c6d0f5",
+    codeBackground: "#292c3c",
+    toolRead: "#8caaee",
+    toolSearch: "#ca9ee6",
+    toolWrite: "#f4b8e4",
+    toolShell: "#e5c890",
+    toolThink: "#babbf1",
+    toolRepo: "#a6d189",
+  }, "catppuccin-frappe"),
+
+  "catppuccin-latte": buildPalette("catppuccin-latte", {
+    background: "#eff1f5",
+    panel: "#e6e9ef",
+    assistant: "#4c4f69",
+    text: "#4c4f69",
+    toolResult: "#5c5f77",
+    toolTarget: "#1e66f5",
+    metadata: "#9ca0b0",
+    muted: "#acb0be",
+    border: "#ccd0da",
+    primary: "#1e66f5",
+    secondary: "#8839ef",
+    info: "#04a5e5",
+    success: "#40a02b",
+    warning: "#df8e1d",
+    error: "#d20f39",
+    inputText: "#4c4f69",
+    codeBackground: "#e6e9ef",
+    toolRead: "#1e66f5",
+    toolSearch: "#8839ef",
+    toolWrite: "#ea76cb",
+    toolShell: "#df8e1d",
+    toolThink: "#7287fd",
+    toolRepo: "#40a02b",
+  }, "catppuccin-latte"),
+
+  "catppuccin-macchiato": buildPalette("catppuccin-macchiato", {
+    background: "#24273a",
+    panel: "#1e2030",
+    assistant: "#cad3f5",
+    text: "#cad3f5",
+    toolResult: "#a5adcb",
+    toolTarget: "#8aadf4",
+    metadata: "#6e738d",
+    muted: "#494d64",
+    border: "#363a4f",
+    primary: "#8aadf4",
+    secondary: "#c6a0f6",
+    info: "#8bd5ca",
+    success: "#a6da95",
+    warning: "#eed49f",
+    error: "#ed8796",
+    inputText: "#cad3f5",
+    codeBackground: "#1e2030",
+    toolRead: "#8aadf4",
+    toolSearch: "#c6a0f6",
+    toolWrite: "#f0c6c6",
+    toolShell: "#eed49f",
+    toolThink: "#b8c0e0",
+    toolRepo: "#a6da95",
+  }, "catppuccin-macchiato"),
+
+  "catppuccin-mocha": buildPalette("catppuccin-mocha", {
+    colorEnabled: true,
+    background: "#1e1e2e",
+    panel: "#181825",
+    assistant: "#cdd6f4",
+    text: "#cdd6f4",
+    toolResult: "#a6adc8",
+    toolTarget: "#89b4fa",
+    metadata: "#6c7086",
+    muted: "#585b70",
+    border: "#45475a",
+    primary: "#89b4fa",
+    secondary: "#cba6f7",
+    info: "#74c7ec",
+    success: "#a6e3a1",
+    warning: "#f9e2af",
+    error: "#f38ba8",
+    inputText: "#cdd6f4",
+    codeBackground: "#181825",
+    toolRead: "#89b4fa",
+    toolSearch: "#cba6f7",
+    toolWrite: "#f5c2e7",
+    toolShell: "#f9e2af",
+    toolThink: "#b4befe",
+    toolRepo: "#a6e3a1",
+  }, "catppuccin-mocha"),
+
+  "solarized-dark": buildPalette("solarized-dark", {
+    background: "#002b36",
+    panel: "#073642",
+    assistant: "#839496",
+    text: "#839496",
+    toolResult: "#93a1a1",
+    toolTarget: "#268bd2",
+    metadata: "#586e75",
+    muted: "#073642",
+    border: "#073642",
+    primary: "#268bd2",
+    secondary: "#b58900",
+    info: "#2aa198",
+    success: "#859900",
+    warning: "#b58900",
+    error: "#dc322f",
+    inputText: "#839496",
+    codeBackground: "#073642",
+    toolRead: "#268bd2",
+    toolSearch: "#b58900",
+    toolWrite: "#2aa198",
+    toolShell: "#cb4b16",
+    toolThink: "#6c71c4",
+    toolRepo: "#859900",
+  }, "solarized-dark"),
+
+  "solarized-light": buildPalette("solarized-light", {
+    background: "#fdf6e3",
+    panel: "#eee8d5",
+    assistant: "#657b83",
+    text: "#657b83",
+    toolResult: "#586e75",
+    toolTarget: "#268bd2",
+    metadata: "#93a1a1",
+    muted: "#eee8d5",
+    border: "#d6cbb6",
+    primary: "#268bd2",
+    secondary: "#b58900",
+    info: "#2aa198",
+    success: "#859900",
+    warning: "#b58900",
+    error: "#dc322f",
+    inputText: "#657b83",
+    codeBackground: "#eee8d5",
+    toolRead: "#268bd2",
+    toolSearch: "#b58900",
+    toolWrite: "#2aa198",
+    toolShell: "#cb4b16",
+    toolThink: "#6c71c4",
+    toolRepo: "#859900",
+  }, "solarized-light"),
+
+  "sublime-snazzy": buildPalette("sublime-snazzy", {
+    background: "#282a36",
+    panel: "#21222c",
+    assistant: "#eff0eb",
+    text: "#eff0eb",
+    toolResult: "#9a9ab0",
+    toolTarget: "#57c7ff",
+    metadata: "#78787e",
+    muted: "#4a4a52",
+    border: "#3a3a42",
+    primary: "#57c7ff",
+    secondary: "#ff6ac1",
+    info: "#9aedfe",
+    success: "#5af78e",
+    warning: "#ff9f43",
+    error: "#ff5c57",
+    inputText: "#eff0eb",
+    codeBackground: "#21222c",
+    toolRead: "#57c7ff",
+    toolSearch: "#ff6ac1",
+    toolWrite: "#5af78e",
+    toolShell: "#ff9f43",
+    toolThink: "#a64dff",
+    toolRepo: "#5af78e",
+  }, "sublime-snazzy"),
+
+  "two-dark": buildPalette("two-dark", {
+    background: "#1e1f24",
+    panel: "#181a1f",
+    assistant: "#abb2bf",
+    text: "#abb2bf",
+    toolResult: "#818896",
+    toolTarget: "#61afef",
+    metadata: "#5c6370",
+    muted: "#3e4451",
+    border: "#3e4451",
+    primary: "#61afef",
+    secondary: "#c678dd",
+    info: "#56b6c2",
+    success: "#98c379",
+    warning: "#e5c07b",
+    error: "#e06c75",
+    inputText: "#abb2bf",
+    codeBackground: "#181a1f",
+    toolRead: "#61afef",
+    toolSearch: "#c678dd",
+    toolWrite: "#98c379",
+    toolShell: "#e5c07b",
+    toolThink: "#56b6c2",
+    toolRepo: "#98c379",
+  }, "two-dark"),
 };
 
-export function resolveTheme(name = "system", environment = process.env, syntaxThemeName = "catppuccin-mocha") {
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const THEME_NAMES = Object.keys(THEMES);
+
+/** Return the normalised theme name or null if invalid. */
+export function isKnownTheme(value) {
+  const key = String(value || "").toLowerCase();
+  return THEME_NAMES.includes(key) ? key : null;
+}
+
+export function resolveTheme(name = "system", environment = process.env) {
   const requested = String(name || "").toLowerCase();
-  const selectedSyntaxTheme = isSyntaxTheme(requested) ? requested : normalizeSyntaxTheme(syntaxThemeName);
   if (environment.NO_COLOR !== undefined) {
-    return { ...THEMES.mono, syntaxTheme: selectedSyntaxTheme, syntax: {} };
+    return { ...THEMES.mono, name: "mono" };
   }
-  const base = THEMES[requested] || THEMES.system;
-  return {
-    ...base,
-    syntaxTheme: selectedSyntaxTheme,
-    syntax: syntaxThemeColors(selectedSyntaxTheme),
-  };
+  return THEMES[requested] || THEMES.system;
 }
 
 const ThemeContext = createContext(resolveTheme());
 
-export function ThemeProvider({ name, syntaxTheme, children }) {
-  return h(ThemeContext.Provider, { value: resolveTheme(name, process.env, syntaxTheme) }, children);
+export function ThemeProvider({ name, children }) {
+  return h(ThemeContext.Provider, { value: resolveTheme(name, process.env) }, children);
 }
 
 export function useTheme() {
   return useContext(ThemeContext);
 }
 
-export { THEMES };
+export { THEMES, THEME_NAMES, SYNTAX_PALETTES };
+
+export const THEME_DESCRIPTIONS = {
+  system: "Follow terminal colors (default)",
+  dark: "KhazAI dark theme",
+  light: "Light theme",
+  mono: "Monochrome (no colors)",
+  dracula: "Dracula",
+  monokai: "Monokai",
+  "monokai-extended-bright": "Monokai Extended Bright",
+  "monokai-extended-light": "Monokai Extended Light",
+  "catppuccin-frappe": "Catppuccin Frappé",
+  "catppuccin-latte": "Catppuccin Latte",
+  "catppuccin-macchiato": "Catppuccin Macchiato",
+  "catppuccin-mocha": "Catppuccin Mocha",
+  "solarized-dark": "Solarized (dark)",
+  "solarized-light": "Solarized (light)",
+  "sublime-snazzy": "Sublime Snazzy",
+  "two-dark": "TwoDark",
+};
