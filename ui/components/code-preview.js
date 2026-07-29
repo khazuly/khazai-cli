@@ -95,11 +95,18 @@ function collapseContext(rows) {
   return collapsed;
 }
 
-function SyntaxPanel({ title, language, rows, showLineNumbers = true }) {
-  return h(CodePanel, { title, language, rows, maximumRows: MAX_PREVIEW_LINES, showLineNumbers });
+function SyntaxPanel({ title, language, rows, showLineNumbers = true, width }) {
+  return h(CodePanel, {
+    title,
+    language,
+    rows,
+    maximumRows: MAX_PREVIEW_LINES,
+    showLineNumbers,
+    width,
+  });
 }
 
-export function MarkdownCodeBlock({ content, language }) {
+export function MarkdownCodeBlock({ content, language, width }) {
   const resolvedLanguage = resolveLanguage(language) || "plain";
   const rows = String(content).split("\n").map((text, index) => ({ type: "context", text, oldLine: index + 1, newLine: index + 1 }));
   return h(SyntaxPanel, {
@@ -107,6 +114,7 @@ export function MarkdownCodeBlock({ content, language }) {
     language: resolvedLanguage,
     rows,
     showLineNumbers: false,
+    width,
   });
 }
 

@@ -86,12 +86,13 @@ function CodeRow({ row, parts, gutterWidth, codeWidth, colors, colorEnabled, dif
   );
 }
 
-export function CodePanel({ title, language, rows, maximumRows = 20, showLineNumbers = true }) {
+export function CodePanel({ title, language, rows, maximumRows = 20, showLineNumbers = true, width: requestedWidth }) {
   const { stdout } = useStdout();
   const theme = useTheme();
   const colorEnabled = theme.colorEnabled;
   const colors = colorEnabled ? theme.syntax : {};
-  const width = Math.max(16, stdout?.columns || 80);
+  const terminalWidth = Math.max(16, stdout?.columns || 80);
+  const width = Math.max(8, Math.min(terminalWidth, Number(requestedWidth) || terminalWidth));
   const numbered = rowNumbers(rows);
   const visible = numbered.length > maximumRows
     ? [...numbered.slice(0, maximumRows), { type: "omitted", text: `… ${numbered.length - maximumRows} more lines` }]

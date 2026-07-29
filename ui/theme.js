@@ -83,10 +83,17 @@ function buildPalette(name, iface, syntaxOverlayName) {
     code: iface.codeBackground != null ? iface.codeBackground : (iface.panel || bg),
     syntax,
 
+    // ── Semantic input area fields ────────────────────────────────────
+    inputBackground: iface.panel != null ? iface.panel : bg,
+    inputText: iface.inputText != null ? iface.inputText : txt,
+    inputPlaceholder: iface.muted,
+    inputBorder: iface.border,
+    inputBorderActive: iface.primary,
+    cursor: iface.cursor != null ? iface.cursor : iface.primary,
+
     // ── Legacy backward-compatible fields ──────────────────────────────
     panel: iface.panel != null ? iface.panel : bg,
     metadata: iface.metadata != null ? iface.metadata : iface.muted,
-    inputText: iface.inputText != null ? iface.inputText : txt,
     toolResult: iface.toolResult != null ? iface.toolResult : txt,
     toolTarget: iface.toolTarget != null ? iface.toolTarget : iface.primary,
     codeBackground: iface.codeBackground != null ? iface.codeBackground : (iface.panel || bg),

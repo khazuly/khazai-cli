@@ -7,7 +7,7 @@ import { CodePreview } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
 import { normalizeVerticalWhitespace } from "../text-layout.js";
 import { useTheme } from "../theme.js";
-import { StatusRail } from "./surface.js";
+import { PrefixRow, StatusRail } from "./surface.js";
 
 function hasCodePreview(message) {
   if (!message.done) return false;
@@ -17,7 +17,7 @@ function hasCodePreview(message) {
 }
 
 function FormattedAnswer({ content }) {
-  return h(Markdown, { content: normalizeVerticalWhitespace(content || "") });
+  return h(Markdown, { content });
 }
 
 function RoleMessage({ role, content }) {
@@ -145,11 +145,12 @@ function SummaryDisplay({ message }) {
     tone: "warning",
   },
     h(Text, { bold: true, color: theme.warning }, "Finished with issues"),
-    ...issues.map((issue, index) => h(Text, {
+    ...issues.map((issue, index) => h(PrefixRow, {
       key: `issue-${index}`,
-      color: theme.warning,
-      wrap: "wrap",
-    }, `- ${issue}`)),
+      prefix: "•",
+      prefixWidth: 2,
+      prefixColor: theme.warning,
+    }, h(Text, { color: theme.warning, wrap: "wrap" }, issue))),
   );
 }
 

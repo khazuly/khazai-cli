@@ -16,6 +16,15 @@ const REQUEST = {
   },
 };
 
+async function waitUntil(predicate, message) {
+  const deadline = Date.now() + 1_500;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(message);
+}
+
 test("permission card keeps human-readable content aligned at narrow widths", async () => {
   const frame = await renderComponent(h(PermissionPrompt, {
     request: REQUEST,
@@ -59,15 +68,18 @@ test("permission prompt supports arrows, numeric selection, and Escape rejection
     stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false,
   });
 
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await waitUntil(() => stdout.frames.length > 0, "Permission prompt did not render.");
   stdin.push("\u001b[B");
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await waitUntil(
+    () => /› Always allow this path/.test(stripAnsi(stdout.frames.at(-1) || "")),
+    "Arrow Down did not select the second permission option.",
+  );
   stdin.push("\r");
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await waitUntil(() => selected.length === 1, "Enter did not confirm the selected permission option.");
   stdin.push("3");
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await waitUntil(() => selected.length === 2, "Numeric selection did not confirm the third permission option.");
   stdin.push("\u001b");
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await waitUntil(() => rejected === 1, "Escape did not reject the permission request.");
 
   assert.deepEqual(selected, ["Always allow this path", "Reject"]);
   assert.equal(rejected, 1);

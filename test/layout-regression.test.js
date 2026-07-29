@@ -101,6 +101,81 @@ test("markdown normalization dedents prose without changing fenced code", () => 
   assert.match(content, /    const value = 1;  /);
 });
 
+test("final markdown keeps one content column and structured hanging indents", async () => {
+  const content = [
+    "   ## Result",
+    "   A **formatted paragraph** with `inline code` that wraps cleanly on a narrow terminal.",
+    "",
+    "   - Output remains aligned when **styled content** wraps onto the next terminal row.",
+    "     - Nested content advances by exactly one marker column.",
+    "",
+    "   1. First numbered result stays aligned across wrapped rows.",
+    "   10. Tenth numbered result uses the same content column.",
+  ].join("\n");
+
+  for (const columns of [32, 40]) {
+    const frame = await renderFrame([{
+      id: `markdown-${columns}`,
+      type: "answer",
+      content,
+    }], columns, 40);
+    const lines = frame.split("\n").filter(Boolean);
+    const paragraph = lines.find(line => line.startsWith("A formatted"));
+    const bullet = lines.find(line => line.startsWith("• Output"));
+    const bulletContinuation = lines.find(line => /wraps onto/.test(line));
+    const nested = lines.find(line => /^\s+• Nested/.test(line));
+    const numbered = lines.find(line => /^1\.\s+First/.test(line));
+    const tenth = lines.find(line => /^10\.\s+Tenth/.test(line));
+
+    assert.ok(paragraph, frame);
+    assert.ok(bullet, frame);
+    assert.equal(bulletContinuation.search(/\S/), 2, frame);
+    assert.equal(nested.search(/\S/), 2, frame);
+    assert.equal(numbered.search(/\S/), 0, frame);
+    assert.equal(tenth.search(/\S/), 0, frame);
+    assert.ok(lines.every(line => stringWidth(line) <= columns), frame);
+    assert.match(frame, /formatted paragraph with\s+inline code/);
+  }
+});
+
+test("final markdown strips display ANSI and preserves fenced code indentation", async () => {
+  const content = [
+    "\u001b[31mVisible paragraph\u001b[0m",
+    "",
+    "```python",
+    "if ready:",
+    "    run_task()",
+    "```",
+  ].join("\n");
+  const frame = await renderFrame([{
+    id: "markdown-code",
+    type: "answer",
+    content,
+  }], 32, 30);
+  const lines = frame.split("\n");
+
+  assert.ok(lines.some(line => line === "Visible paragraph"), frame);
+  assert.ok(lines.some(line => line === " if ready:"), frame);
+  assert.ok(lines.some(line => line === "     run_task()"), frame);
+});
+
+test("issue summaries use the same hanging-indent layout", async () => {
+  const frame = await renderFrame([{
+    id: "wrapped-summary",
+    type: "summary",
+    unresolvedIssues: [
+      "Required verification did not complete on the narrow mobile terminal",
+    ],
+  }], 32, 20);
+  const lines = frame.split("\n");
+  const first = lines.find(line => /• Required/.test(line));
+  const continuation = lines.find(line => /not complete/.test(line));
+
+  assert.ok(first, frame);
+  assert.ok(continuation, frame);
+  assert.equal(first.indexOf("Required"), continuation.indexOf("not"), frame);
+});
+
 test("private streaming messages are never rendered", async () => {
   const frame = await renderFrame([{
     id: "stream-without-overflow-marker",

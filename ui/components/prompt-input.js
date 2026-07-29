@@ -1,12 +1,12 @@
 import { createElement as h } from "react";
 import { Text, Box, useInput, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
-import { PANEL_SPACE } from "../dark-panel.js";
 import { useTheme } from "../theme.js";
 import {
   COMMAND_VIEWPORT_SIZE,
   filterCommandItems,
   findSubCommands,
+  useCommandBoundaryKeys,
   useCommandViewport,
 } from "./command-viewport.js";
 import { Panel } from "./surface.js";
@@ -39,14 +39,14 @@ export function PromptInput({
   const [history, setHistory] = useState([]);
   const [histIdx, setHistIdx] = useState(-1);
   const [optionIdx, setOptionIdx] = useState(0);
+  const optionIdxRef = useRef(0);
   const [fileIdx, setFileIdx] = useState(0);
   const [pastePreview, setPastePreview] = useState(null);
   const textBufferRef = useRef("");
   const textTimerRef = useRef(null);
   const pasteStartRef = useRef({ start: null, characterCount: 0, hasPasteChunk: false, timer: null });
 
-  useEffect(() => setOptionIdx(0), [questionOptions]);
-
+  useEffect(() => { optionIdxRef.current = 0; setOptionIdx(0); }, [questionOptions]);
   const subInfo = findSubCommands(commands, input.value);
   const inSubMode = subInfo !== null && input.value.includes(" ");
   const filtered = inSubMode
@@ -76,13 +76,11 @@ export function PromptInput({
     ? fileItems.filter(path => path.toLowerCase().includes(fileQuery)).slice(0, 8)
     : [];
   const showFiles = matchedFiles.length > 0;
-
-  // Notify parent of sub-command preview changes (e.g. theme preview)
+  useCommandBoundaryKeys(showCmd, commandResults.length - 1, commandViewport.selectIndex);
   const prevSelectedRef = useRef(null);
   const prevInSubModeRef = useRef(false);
   useEffect(() => {
     const selected = commandViewport.selectedItem;
-    // Detect exit from sub-command mode (user navigated away or cleared input)
     if (prevInSubModeRef.current && !inSubMode) {
       onExitSub?.(subInfo?.cmd?.name || "");
     }
@@ -93,7 +91,6 @@ export function PromptInput({
     }
     if (!inSubMode) prevSelectedRef.current = null;
   }, [commandViewport.selectedIndex, inSubMode, input.value]);
-
   const selectFile = path => {
     if (!fileToken || !path) return;
     const start = beforeCursor.length - fileToken[1].length;
@@ -101,7 +98,6 @@ export function PromptInput({
     setInput({ value: next, cursor: start + path.length + 1 });
     setFileIdx(0);
   };
-
   const flushQueuedText = () => {
     if (textTimerRef.current) {
       clearTimeout(textTimerRef.current);
@@ -132,7 +128,6 @@ export function PromptInput({
     setHistIdx(-1);
     return text;
   };
-
   const queueText = text => {
     if (textBufferRef.current.length === 0 && pasteStartRef.current.start === null) {
       pasteStartRef.current.start = input.cursor;
@@ -153,12 +148,10 @@ export function PromptInput({
       pasteStartRef.current.timer = null;
     }, 120);
   };
-
   useEffect(() => () => {
     if (textTimerRef.current) clearTimeout(textTimerRef.current);
     if (pasteStartRef.current.timer) clearTimeout(pasteStartRef.current.timer);
   }, []);
-
   useInput((ch, key) => {
     if (disabled) {
       if (ch === "\u001b" || key.escape) {
@@ -166,14 +159,13 @@ export function PromptInput({
       }
       return;
     }
-
     if (questionOptions.length > 0) {
       if (key.upArrow) {
-        setOptionIdx(index => index > 0 ? index - 1 : questionOptions.length - 1);
+        setOptionIdx(index => optionIdxRef.current = index > 0 ? index - 1 : questionOptions.length - 1);
       } else if (key.downArrow) {
-        setOptionIdx(index => index < questionOptions.length - 1 ? index + 1 : 0);
+        setOptionIdx(index => optionIdxRef.current = index < questionOptions.length - 1 ? index + 1 : 0);
       } else if (key.return) {
-        onSelectOption?.(questionOptions[optionIdx]);
+        onSelectOption?.(questionOptions[optionIdxRef.current]);
       } else if (/^[1-9]$/.test(ch)) {
         const index = Number(ch) - 1;
         if (index < questionOptions.length) onSelectOption?.(questionOptions[index]);
@@ -417,17 +409,14 @@ export function PromptInput({
     const after = cursorOffset === null
       ? ""
       : row.cells.slice(cursorOffset < row.cells.length ? cursorOffset + 1 : cursorOffset).join("");
-    const visibleLength = row.cells.length + (cursorOffset === row.cells.length ? 1 : 0);
-    const padding = PANEL_SPACE.repeat(Math.max(0, innerWidth - visibleLength));
+    const hasInput = input.value !== "";
     return h(Text, {
       key: `input-line-${rowIndex}`,
       color: theme.inputText,
-      backgroundColor: theme.panel,
     },
-      input.value ? before : h(Text, { dimColor: true }, before),
+      hasInput ? before : h(Text, { color: theme.inputPlaceholder, dimColor: true }, before),
       cursorOffset === null ? null : `\u001b[5;7m${cursorCharacter}\u001b[25;27m`,
-      input.value ? after : h(Text, { dimColor: true }, after),
-      padding,
+      hasInput ? after : h(Text, { color: theme.inputPlaceholder, dimColor: true }, after),
     );
   });
 
@@ -485,16 +474,21 @@ export function PromptInput({
     h(Panel, {
       flexDirection: "column",
       width: panelWidth,
-      backgroundColor: disabled ? theme.panel : undefined,
       tone: disabled ? "border" : "primary",
       paddingX: 0,
     },
-      h(Box, { flexDirection: "row" },
-        h(Text, { color: disabled ? theme.muted : theme.primary, bold: !disabled }, "❯"),
-        h(Text, { color: theme.metadata, dimColor: true, marginLeft: 1 },
-          disabled ? " Working..." : " Ask anything..."),
+      h(Box, {
+        flexDirection: "column",
+        width: innerWidth,
+        backgroundColor: theme.inputBackground,
+      },
+        h(Box, { flexDirection: "row" },
+          h(Text, { color: disabled ? theme.muted : theme.primary, bold: !disabled }, "❯"),
+          h(Text, { color: theme.metadata, dimColor: true, marginLeft: 1 },
+            disabled ? " Working..." : " Ask anything..."),
+        ),
+        ...content,
       ),
-      ...content,
     ),
     terminalWidth < 60
       ? h(Text, { color: theme.metadata, dimColor: true, wrap: "truncate-end" }, hintLeft)

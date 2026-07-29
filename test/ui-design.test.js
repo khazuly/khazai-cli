@@ -787,10 +787,10 @@ test("command palette stays compact while searching commands", async () => {
   await new Promise(resolve => setTimeout(resolve, 80));
   const output = stripAnsi(stdout.frames.at(-1) || "").replace(/\r/g, "");
 
-  assert.match(output, /Quick commands/);
+  assert.match(output, /Commands · 1–6 of \d+/);
   assert.match(output, /\/new\s+Start a persistent session/);
-  assert.match(output, /\/model\s+Change the active model/);
-  assert.doesNotMatch(output, /\/compact|\/connect|\/collapse/);
+  assert.match(output, /\/redo\s+Redo the last undone turn/);
+  assert.doesNotMatch(output, /\/compact|\/model|\/connect|\/collapse/);
   assert.ok((output.match(/\n\s*[> ]?\s*\//g) || []).length <= 6);
   instance.unmount();
   instance.cleanup();
