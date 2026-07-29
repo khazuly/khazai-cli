@@ -63,9 +63,31 @@ function ThinkStatus({ message }) {
     );
   }
   const frame = Math.floor(now / 120) % SPINNER_FRAMES.length;
+  const next = [message.nextAction ? `Next: ${message.nextAction}` : "", message.progress]
+    .filter(Boolean)
+    .join(" · ");
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, { color: theme.metadata }, SPINNER_FRAMES[frame], " ", activity, " · ", elapsed),
-    message.step ? h(Text, { color: theme.metadata, dimColor: true }, "  ", message.step) : null,
+    h(Box, { flexDirection: "row", width: "100%" },
+      h(Text, { color: theme.metadata }, SPINNER_FRAMES[frame], " "),
+      h(Box, { flexShrink: 1 },
+        h(Text, { color: theme.metadata, wrap: "wrap" }, activity, " · ", elapsed),
+      ),
+    ),
+    message.target
+      ? h(Box, { marginLeft: 2, width: "100%" },
+          h(Text, { color: theme.metadata, dimColor: true, wrap: "wrap" }, message.target),
+        )
+      : null,
+    next
+      ? h(Box, { marginLeft: 2, width: "100%" },
+          h(Text, { color: theme.metadata, dimColor: true, wrap: "wrap" }, next),
+        )
+      : null,
+    !message.target && !next && message.step
+      ? h(Box, { marginLeft: 2 },
+          h(Text, { color: theme.metadata, dimColor: true }, message.step),
+        )
+      : null,
   );
 }
 

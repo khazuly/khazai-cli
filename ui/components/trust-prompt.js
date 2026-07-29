@@ -85,46 +85,51 @@ export function TrustPrompt({ path, onTrust }) {
   });
 
   const columns = stdout?.columns || 80;
-  const pathLines = wrapPath(path, Math.max(10, columns - 8));
+  const contentWidth = Math.max(10, columns - 6);
+  const pathLines = wrapPath(path, contentWidth);
 
   return h(Box, {
     flexDirection: "column",
-    borderStyle: "round",
-    borderColor: theme.primary,
+    borderStyle: "single",
+    borderColor: theme.border,
     paddingX: 2,
     paddingY: 1,
-    marginLeft: 1,
-    marginRight: 1,
     marginTop: 1,
+    width: columns,
   },
     // Title
     h(Text, { bold: true, color: theme.primary }, "Workspace trust"),
 
+    // Blank line
+    h(Text, " "),
+
     // Explanation
-    h(Box, { marginTop: 1 },
-      h(Text, { color: theme.text, wrap: "wrap" },
-        "KhazAI may read, modify, and run commands in this directory.",
-      ),
+    h(Text, { color: theme.text, wrap: "wrap" },
+      "KhazAI may read, modify, and run commands in this directory.",
     ),
+
+    // Blank line
+    h(Text, " "),
 
     // Directory section
-    h(Box, { marginTop: 1, flexDirection: "column" },
+    h(Box, { flexDirection: "column" },
       h(Text, { bold: true, color: theme.metadata }, "Directory"),
-      h(Box, { flexDirection: "column", marginLeft: 2, flexShrink: 1 },
-        ...pathLines.map((line, i) => h(Text, {
-          key: `${i}-${line}`,
-          color: theme.toolTarget,
-          wrap: "wrap",
-        }, line)),
-      ),
+      ...pathLines.map((line, i) => h(Text, {
+        key: `${i}-${line}`,
+        color: theme.toolTarget,
+        wrap: "wrap",
+      }, line)),
     ),
 
+    // Blank line
+    h(Text, " "),
+
     // Options
-    h(Box, { flexDirection: "column", marginTop: 1 },
+    h(Box, { flexDirection: "column" },
       ...OPTIONS.map((opt, index) =>
         h(Text, {
           key: opt.label,
-          color: index === selected ? theme.secondary : theme.muted,
+          color: index === selected ? theme.primary : theme.muted,
           bold: index === selected,
           dimColor: index !== selected,
           wrap: "wrap",
@@ -132,11 +137,12 @@ export function TrustPrompt({ path, onTrust }) {
       ),
     ),
 
+    // Blank line
+    h(Text, " "),
+
     // Keyboard hints
-    h(Box, { marginTop: 1 },
-      h(Text, { color: theme.muted, dimColor: true },
-        "↑↓ Select · Enter Confirm · Esc Exit",
-      ),
+    h(Text, { color: theme.muted, dimColor: true, wrap: "wrap" },
+      "↑↓ Select · Enter Confirm · Esc Exit",
     ),
   );
 }

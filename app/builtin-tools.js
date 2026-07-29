@@ -7,10 +7,12 @@ import { taskTool } from "../tools/task.js";
 import { webfetchTool } from "../tools/webfetch.js";
 import { createSkillTool } from "../tools/skill.js";
 import { todoWriteTool } from "../tools/todo.js";
+import { thinkTool } from "../tools/think.js";
 
 export function builtinTools(workspace) {
   return [
     questionTool,
+    thinkTool,
     bashTool,
     readTool,
     globTool,

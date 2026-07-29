@@ -10,6 +10,7 @@ import { readTool, writeTool, editTool } from "../tools/file.js";
 
 const BUILTIN_NAMES = [
   "question",
+  "think",
   "bash",
   "read",
   "glob",
@@ -23,12 +24,81 @@ const BUILTIN_NAMES = [
   "skill",
 ];
 
-test("production built-in tool surface matches OpenCode", () => {
+test("production built-in tool surface includes supported KhazAI tools", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-tool-surface-"));
   assert.deepEqual(builtinTools(workspace).map(tool => tool.name), BUILTIN_NAMES);
   assert.equal(builtinTools(workspace).some(tool =>
     ["apply_patch", "analyze", "repo", "lsp", "web"].includes(tool.name)
   ), false);
+  const think = builtinTools(workspace).find(tool => tool.name === "think");
+  assert.deepEqual(think.parameters.required, ["activity"]);
+  assert.deepEqual(Object.keys(think.parameters.properties), [
+    "activity",
+    "target",
+    "nextAction",
+    "progress",
+  ]);
+});
+
+test("Think streams only complete redacted public activity and keeps reasoning private", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-think-activity-"));
+  const registry = new Registry();
+  const think = builtinTools(workspace).find(tool => tool.name === "think");
+  registry.register(think);
+  const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  let request = 0;
+  const agent = new Agent(registry, {
+    workspace,
+    chat: async (_messages, options) => {
+      request++;
+      if (request === 1) {
+        options.onEvent?.({ type: "reasoning-delta", text: "private decision chain" });
+        options.onEvent?.({
+          type: "tool-call-delta",
+          delta: [{
+            index: 0,
+            id: "think-live",
+            function: {
+              name: "think",
+              arguments: "{\"activity\":\"Inspecting session state\",\"target\":\"",
+            },
+          }],
+        });
+        options.onEvent?.({
+          type: "tool-call-delta",
+          delta: [{
+            index: 0,
+            function: {
+              arguments: `${secret}\",\"nextAction\":\"Read the active handler\",\"progress\":\"1/3\"}`,
+            },
+          }],
+        });
+        options.onEvent?.({ type: "finish", reason: "tool-calls" });
+        return JSON.stringify({
+          tool: "think",
+          id: "think-live",
+          args: {
+            activity: "Inspecting session state",
+            target: secret,
+            nextAction: "Read the active handler",
+            progress: "1/3",
+          },
+        });
+      }
+      options.onEvent?.({ type: "text-delta", text: "Done." });
+      options.onEvent?.({ type: "finish", reason: "stop" });
+      return "Done.";
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop(`Inspect ${secret}`)) events.push(event);
+  const activities = events.filter(event => event.type === "public-activity");
+
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0].toolCallId, "think-live");
+  assert.equal(activities[0].publicActivity.target, "[REDACTED]");
+  assert.equal(events.some(event => event.type === "reasoning"), false);
+  assert.equal(events.some(event => JSON.stringify(event).includes("private decision chain")), false);
 });
 
 test("agent never rewrites read into glob", () => {

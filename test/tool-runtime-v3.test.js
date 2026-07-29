@@ -448,7 +448,9 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
     { description: "Inspect files", status: "done" },
     { description: "Run tests", status: "running" },
   ]);
-  assert.deepEqual(events.filter(event => event.type === "plan-update"), [
+  assert.deepEqual(events.filter(event => event.type === "plan-update").map(({ type, index, status }) => (
+    { type, index, status }
+  )), [
     { type: "plan-update", index: 1, status: "running" },
     { type: "plan-update", index: 1, status: "done" },
   ]);

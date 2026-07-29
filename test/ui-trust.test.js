@@ -39,13 +39,13 @@ test("trust prompt renders compact bordered layout with all sections", async () 
     50,
     14,
   );
+  const text = stripAnsi(frame).replace(/[│┌┐└┘─]+/g, " ").replace(/\s+/g, " ");
 
   // Bordered container present
   assert.match(frame, /Workspace trust/);
 
   // Explanation text (may be wrapped across lines)
-  assert.match(frame, /KhazAI may read, modify, and run commands/);
-  assert.match(frame, /in this directory/);
+  assert.match(text, /KhazAI may read, modify, and run commands in this directory/);
 
   // Directory label and path
   assert.match(frame, /Directory/);

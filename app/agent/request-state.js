@@ -2,6 +2,18 @@ import { ExecutionPolicy } from "../execution-policy.js";
 import { fallbackIntentContract, normalizeIntentContract } from "../intent-resolver.js";
 import { taskState } from "./helpers/parser.js";
 
+export function completedConversationHistory(messages) {
+  const completed = new Set(messages
+    .filter(message => message?.role === "tool" && message.tool_call_id)
+    .map(message => message.tool_call_id));
+  return messages.flatMap(message => {
+    if (message?.role !== "assistant" || !Array.isArray(message.tool_calls)) return [message];
+    const toolCalls = message.tool_calls.filter(call => completed.has(call.id));
+    if (toolCalls.length) return [{ ...message, tool_calls: toolCalls }];
+    return message.content ? [{ ...message, tool_calls: undefined }] : [];
+  });
+}
+
 export function recoverableProviderFailure(error) {
   const status = Number(error?.status);
   if ([500, 502, 503, 504].includes(status)) return true;
@@ -22,6 +34,8 @@ export function rememberProviderFailure(agent, error, model, phase) {
   agent._recoverableProviderRequest = {
     model,
     currentRequest: agent._currentRequest,
+    requestStartIndex: agent._requestStartIndex,
+    taskEpoch: agent._activeRun?.taskEpoch,
     attempts: Math.max(1, Number(error?.attempts) || 1),
     status: Number(error?.status) || null,
     streamPhase: phase,
@@ -29,17 +43,38 @@ export function rememberProviderFailure(agent, error, model, phase) {
   };
 }
 
-export function prepareProviderRetry(agent) {
+export function prepareProviderRetry(agent, scope = null) {
+  const failed = agent._recoverableProviderRequest;
+  agent._currentRequest = String(failed?.currentRequest || "");
+  const matchingRequest = agent._messages.findLastIndex(message => (
+    message.role === "user" && message.content === agent._currentRequest
+  ));
+  agent._requestStartIndex = matchingRequest >= 0
+    ? matchingRequest
+    : Math.max(0, Number(failed?.requestStartIndex) || 0);
   agent._aborted = false;
   agent._turn = 0;
-  if (agent._executionPolicy) return;
-  agent._executionPolicy = new ExecutionPolicy(fallbackIntentContract(agent._currentRequest));
-  agent._taskContract = agent._executionPolicy.contract;
-  agent._activeTask = taskState(agent._taskContract, agent._currentRequest);
+  if (!agent._executionPolicy) {
+    agent._executionPolicy = new ExecutionPolicy(fallbackIntentContract(agent._currentRequest));
+    agent._taskContract = agent._executionPolicy.contract;
+    agent._activeTask = taskState(agent._taskContract, agent._currentRequest);
+  }
+  agent._activeScope = {
+    sessionId: agent._sessionId,
+    runId: scope?.runId,
+    turnId: scope?.turnId,
+    objective: agent._currentRequest,
+    taskEpoch: scope?.taskEpoch,
+    relevantFiles: [...(agent._activeTask?.targetFiles || [])],
+    allowedTargets: [],
+    currentPlan: Array.isArray(agent._plan) ? agent._plan.map(item => ({ ...item })) : [],
+    changedFiles: [],
+  };
 }
 
-export async function initializeAgentRequest(agent, input, signal, authorizedInput = input) {
+export async function initializeAgentRequest(agent, input, signal, authorizedInput = input, scope = null) {
   agent._recoverableProviderRequest = null;
+  agent._messages = completedConversationHistory(agent._messages);
   agent._messages.push({ role: "user", content: input });
   agent._requestStartIndex = agent._messages.length - 1;
   agent._currentRequest = input;
@@ -51,6 +86,15 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._turn = 0;
   agent._aborted = false;
   agent._lastToolWasExecuted = false;
+  agent._lastToolIsRead = false;
+  agent._lastAnalysis = null;
+  agent._depsInstalled = false;
+  agent._readFiles.clear();
+  agent._autoReadDone.clear();
+  agent._consecutiveWrites = 0;
+  agent._consecutiveBash = 0;
+  agent._pendingBatchCalls = [];
+  agent._acceptedCreationOffer = null;
   agent._totalWrites = 0;
   agent._plan = null;
   agent._planIndex = 0;
@@ -75,7 +119,19 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._completionRedirects = 0;
   agent._resolvedArtifactDocumentation = false;
   agent._researchSources = [];
-  let contract = fallbackIntentContract(agent._currentRequest);
+  const objective = String(input);
+  let contract = fallbackIntentContract(objective);
+  agent._activeScope = {
+    sessionId: agent._sessionId,
+    runId: scope?.runId,
+    turnId: scope?.turnId,
+    objective,
+    taskEpoch: scope?.taskEpoch,
+    relevantFiles: [...taskState(contract, objective).targetFiles],
+    allowedTargets: [],
+    currentPlan: [],
+    changedFiles: [],
+  };
   if (agent._intentResolver?.resolve) {
     try {
       const resolved = await agent._intentResolver.resolve({
@@ -83,10 +139,13 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
         model: agent._model,
         signal,
       });
-      if (resolved) contract = normalizeIntentContract(resolved, agent._currentRequest);
+      if (resolved) contract = normalizeIntentContract(resolved, objective);
     } catch {}
   }
+  if (scope && !agent._isActiveRun(scope)) return false;
   agent._executionPolicy = new ExecutionPolicy(contract);
   agent._taskContract = agent._executionPolicy.contract;
-  agent._activeTask = taskState(agent._taskContract, agent._currentRequest);
+  agent._activeTask = taskState(agent._taskContract, objective);
+  agent._activeScope.relevantFiles = [...agent._activeTask.targetFiles];
+  return true;
 }

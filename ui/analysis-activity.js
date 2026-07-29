@@ -1,10 +1,15 @@
 const DEFAULT_TEXT = "Analyzing the execution context";
 
+function publicField(value, maximum) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maximum);
+}
+
 function matchesScope(state, scope) {
   return Boolean(
     state
     && state.runId === scope.runId
     && state.turnId === scope.turnId
+    && state.taskEpoch === scope.taskEpoch
   );
 }
 
@@ -17,10 +22,11 @@ function accumulate(state, now) {
   };
 }
 
-export function createAnalysisActivity({ runId, turnId, analysisId }) {
+export function createAnalysisActivity({ runId, turnId, taskEpoch, analysisId }) {
   return {
     runId,
     turnId,
+    taskEpoch,
     analysisId,
     status: "idle",
     accumulatedDurationMs: 0,
@@ -28,6 +34,8 @@ export function createAnalysisActivity({ runId, turnId, analysisId }) {
     phase: 0,
     text: DEFAULT_TEXT,
     step: null,
+    publicActivity: null,
+    toolCallId: null,
   };
 }
 
@@ -53,6 +61,28 @@ export function updateAnalysisActivity(state, scope, activity = {}) {
   };
 }
 
+export function updatePublicAnalysisActivity(state, scope, toolCallId, publicActivity = {}) {
+  const activity = publicField(publicActivity.activity, 120);
+  if (!matchesScope(state, scope) || !toolCallId || !activity) return state;
+  return {
+    ...state,
+    toolCallId,
+    publicActivity: {
+      activity,
+      target: publicField(publicActivity.target, 160),
+      nextAction: publicField(publicActivity.nextAction, 160),
+      progress: /^\d+\s*\/\s*\d+$/.test(String(publicActivity.progress || ""))
+        ? String(publicActivity.progress).replace(/\s+/g, "")
+        : "",
+    },
+  };
+}
+
+export function clearPublicAnalysisActivity(state, scope, toolCallId = null) {
+  if (!matchesScope(state, scope) || toolCallId && state.toolCallId !== toolCallId) return state;
+  return { ...state, publicActivity: null, toolCallId: null };
+}
+
 export function pauseAnalysisActivity(state, scope, now = Date.now()) {
   if (!matchesScope(state, scope)) return state;
   return { ...accumulate(state, now), status: "paused" };
@@ -75,11 +105,18 @@ export function clearAnalysisActivity(state, scope) {
 export function analysisActivityMessage(state) {
   if (!state || !["active", "completed", "failed"].includes(state.status)) return null;
   const failed = state.status === "failed";
+  const publicActivity = state.status === "active" ? state.publicActivity : null;
   return {
     id: state.analysisId,
     type: "think",
-    text: failed ? "Analysis timed out" : state.status === "completed" ? "Analysis completed" : state.text,
-    step: state.status === "active" ? state.step : null,
+    text: failed ? "Analysis timed out" : state.status === "completed"
+      ? "Analysis completed"
+      : publicActivity?.activity || state.text,
+    step: state.status === "active" && !publicActivity ? state.step : null,
+    target: publicActivity?.target || "",
+    nextAction: publicActivity?.nextAction || "",
+    progress: publicActivity?.progress || "",
+    toolCallId: state.toolCallId,
     done: ["completed", "failed"].includes(state.status),
     failed,
     accumulatedDurationMs: state.accumulatedDurationMs,
@@ -87,10 +124,12 @@ export function analysisActivityMessage(state) {
     phase: state.phase,
     runId: state.runId,
     turnId: state.turnId,
+    taskEpoch: state.taskEpoch,
   };
 }
 
 export function analysisEventIsCurrent(event, scope) {
   return (!event.runId || event.runId === scope.runId)
-    && (!event.turnId || event.turnId === scope.turnId);
+    && (!event.turnId || event.turnId === scope.turnId)
+    && (!event.taskEpoch || event.taskEpoch === scope.taskEpoch);
 }

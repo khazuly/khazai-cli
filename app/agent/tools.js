@@ -11,27 +11,28 @@ import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
 export class ToolMethods {
-  _protectForContext(value) {
+  _protectForContext(value, scope = this._activeRun) {
     return this._secretStore.protect(
       value,
-      this._activeRun?.runId,
-      this._activeRun?.turnId,
+      scope?.runId,
+      scope?.turnId,
     );
   }
 
-  _protectDataForContext(value) {
+  _protectDataForContext(value, scope = this._activeRun) {
     return this._secretStore.protectSerializable(
       value,
-      this._activeRun?.runId,
-      this._activeRun?.turnId,
+      scope?.runId,
+      scope?.turnId,
     );
   }
 
-  _scopedToolEvent(event) {
+  _scopedToolEvent(event, scope = this._activeRun) {
     return {
       ...event,
-      runId: this._activeRun?.runId,
-      turnId: this._activeRun?.turnId,
+      runId: scope?.runId,
+      turnId: scope?.turnId,
+      taskEpoch: scope?.taskEpoch,
     };
   }
 
@@ -84,24 +85,28 @@ export class ToolMethods {
     });
   }
 
-  *_startPlanItem() {
+  *_startPlanItem(scope = this._activeRun) {
     const plan = this._plan;
     const index = this._planIndex;
     if (!plan || index >= plan.length) return null;
     plan[index].status = "running";
-    yield { type: "plan-update", index, status: "running" };
+    if (this._activeScope?.taskEpoch === scope?.taskEpoch) this._activeScope.currentPlan = plan.map(item => ({ ...item }));
+    yield this._scopedToolEvent({ type: "plan-update", index, status: "running" }, scope);
     return { plan, index };
   }
 
-  *_finishPlanItem(tracker, succeeded) {
+  *_finishPlanItem(tracker, succeeded, scope = this._activeRun) {
     if (!tracker || this._plan !== tracker.plan) return;
     const { plan, index } = tracker;
     plan[index].status = succeeded ? "done" : "failed";
-    yield { type: "plan-update", index, status: plan[index].status };
+    if (this._activeScope?.taskEpoch === scope?.taskEpoch) this._activeScope.currentPlan = plan.map(item => ({ ...item }));
+    yield this._scopedToolEvent({ type: "plan-update", index, status: plan[index].status }, scope);
     if (succeeded) this._planIndex = index + 1;
   }
 
   async *_runReadOnlyBatch(tools) {
+    const executionScope = this._activeRun;
+    if (!this._isActiveRun(executionScope)) return true;
     const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
     const normalized = this._filterRepeatedBatchTools(candidates);
     if (this._loopRecoveryExhausted || normalized.length === 0) {
@@ -109,13 +114,14 @@ export class ToolMethods {
       return true;
     }
     if (!normalized.every(tool => PARALLEL_READ_ONLY_TOOLS.has(tool.name))) return false;
-    const planTracker = yield* this._startPlanItem();
+    const planTracker = yield* this._startPlanItem(executionScope);
     for (const call of normalized) {
-      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
+      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
     }
+    if (!this._isActiveRun(executionScope)) return true;
     const settled = [];
     const concurrency = Math.min(8, Math.max(1, Number(this._config.toolConcurrency) || 4));
-    for await (const event of this._toolExecutor().executeBatch(
+    for await (const event of this._toolExecutor(executionScope).executeBatch(
       normalized,
       { agent: this._agentProfile?.name },
       concurrency,
@@ -126,6 +132,7 @@ export class ToolMethods {
         yield event;
       }
     }
+    if (!this._isActiveRun(executionScope)) return true;
     this._messages.push({
       role: "assistant",
       content: null,
@@ -158,14 +165,16 @@ export class ToolMethods {
       this._activeTask.lastToolResult = result.slice(0, 1500);
     }
     for (const part of this._lifecycle.finishStep(this._stepBlocked ? "denied" : "tool-calls")) {
-      yield this._scopedToolEvent({ type: "tool-part", part });
+      yield this._scopedToolEvent({ type: "tool-part", part }, executionScope);
     }
     this._lastToolWasExecuted = settled.length > 0;
-    yield* this._finishPlanItem(planTracker, settled.some(entry => !resultFailed(entry.result)));
+    yield* this._finishPlanItem(planTracker, settled.some(entry => !resultFailed(entry.result)), executionScope);
     return true;
   }
 
   async *_runSequentialBatch(tools) {
+    const executionScope = this._activeRun;
+    if (!this._isActiveRun(executionScope)) return true;
     const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
     const calls = this._schedulableShellCalls(this._filterRepeatedBatchTools(candidates));
     if (this._loopRecoveryExhausted || calls.length === 0) {
@@ -186,11 +195,13 @@ export class ToolMethods {
     });
     let failed = false;
     for (const call of calls) {
-      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
-      const planTracker = call.name === "todowrite" ? null : yield* this._startPlanItem();
+      if (!this._isActiveRun(executionScope)) return true;
+      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
+      if (!this._isActiveRun(executionScope)) return true;
+      const planTracker = ["todowrite", "think"].includes(call.name) ? null : yield* this._startPlanItem(executionScope);
       let callFailed = false;
       let completedPart = null;
-      for await (const event of this._toolExecutor().execute(call, { agent: this._agentProfile?.name })) {
+      for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
         if (event.type !== "execution-result") {
           yield event;
           continue;
@@ -218,6 +229,7 @@ export class ToolMethods {
         this._lastToolResult = result;
         this._activeTask.lastToolResult = result.slice(0, 1500);
       }
+      if (!this._isActiveRun(executionScope)) return true;
       if (call.name === "todowrite" && completedPart?.state.status === "completed") {
         const todos = Array.isArray(completedPart.state.metadata?.todos) ? completedPart.state.metadata.todos : [];
         this._plan = todos.map(todo => ({
@@ -226,12 +238,13 @@ export class ToolMethods {
         }));
         const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
         this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
-        yield { type: "plan", items: this._plan.map(item => ({ ...item })) };
+        this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
+        yield this._scopedToolEvent({ type: "plan", items: this._plan.map(item => ({ ...item })) }, executionScope);
       }
-      yield* this._finishPlanItem(planTracker, !callFailed);
+      yield* this._finishPlanItem(planTracker, !callFailed, executionScope);
     }
     for (const part of this._lifecycle.finishStep(failed ? "tool-error" : "tool-calls")) {
-      yield this._scopedToolEvent({ type: "tool-part", part });
+      yield this._scopedToolEvent({ type: "tool-part", part }, executionScope);
     }
     this._lastToolWasExecuted = calls.length > 0;
     return true;
@@ -332,6 +345,8 @@ export class ToolMethods {
   }
 
   async *_runShellShortcut(input) {
+    const executionScope = this._activeRun;
+    if (!this._isActiveRun(executionScope)) return;
     const command = String(input || "").slice(1).trim();
     if (!command) {
       const answer = "Enter a command after !.";
@@ -352,6 +367,17 @@ export class ToolMethods {
     }, protectedInput);
     this._activeTask = taskState(this._taskContract, protectedInput);
     this._currentRequest = protectedInput;
+    this._activeScope = {
+      sessionId: this._sessionId,
+      runId: executionScope.runId,
+      turnId: executionScope.turnId,
+      objective: protectedInput,
+      taskEpoch: executionScope.taskEpoch,
+      relevantFiles: [],
+      allowedTargets: [],
+      currentPlan: [],
+      changedFiles: [],
+    };
     this._messages.push({ role: "user", content: protectedInput });
     this._requestStartIndex = this._messages.length - 1;
     this._toolEvidence = [];
@@ -360,14 +386,15 @@ export class ToolMethods {
     this._invalidateInspectionCache();
 
     const snapshot = this._lifecycle.startStep();
-    if (snapshot) yield this._scopedToolEvent({ type: "tool-part", part: snapshot });
+    if (snapshot) yield this._scopedToolEvent({ type: "tool-part", part: snapshot }, executionScope);
     const call = {
       id: randomUUID(),
       name: "bash",
       args: { command, workdir: this._workspace },
     };
     this._shellScheduler.reserve(call);
-    yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id });
+    yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
+    if (!this._isActiveRun(executionScope)) return;
     this._messages.push({
       role: "assistant",
       content: null,
@@ -383,7 +410,7 @@ export class ToolMethods {
     let result = "";
     let failed = false;
     let finishReason = "tool-calls";
-    for await (const event of this._toolExecutor().execute(call, { agent: this._agentProfile?.name })) {
+    for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
       if (event.type === "execution-result") {
         result = this._protectForContext(String(event.result || ""));
         failed = Boolean(event.failed);
@@ -392,6 +419,7 @@ export class ToolMethods {
         yield event;
       }
     }
+    if (!this._isActiveRun(executionScope)) return;
     this._messages.push({
       role: "tool",
       tool_call_id: call.id,
@@ -402,7 +430,7 @@ export class ToolMethods {
     this._lastToolResult = result;
     this._activeTask.lastToolResult = result.slice(0, 1500);
     for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
-      yield this._scopedToolEvent({ type: "tool-part", part: lifecyclePart });
+      yield this._scopedToolEvent({ type: "tool-part", part: lifecyclePart }, executionScope);
     }
     const exitCode = /^Exit:\s*(-?\d+)/im.exec(result)?.[1];
     const answer = failed
@@ -416,29 +444,47 @@ export class ToolMethods {
 
   _buildContext() {
     const sys = this._buildSystem();
+    const activeObjective = [
+      "ACTIVE TASK FOR THIS TURN:",
+      String(this._activeScope?.objective || this._currentRequest || ""),
+      "Treat every earlier task as completed historical context unless this user message explicitly requests continuation.",
+    ].join("\n");
     const summary = this._summary
       ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
       : [];
-    let used = countTokens(sys) + countTokens(summary[0]?.content || "");
-    const selected = [];
-    for (let index = this._messages.length - 1; index >= 0; index--) {
+    const boundary = Math.max(0, Math.min(this._requestStartIndex, this._messages.length));
+    const active = this._messages.slice(boundary)
+      .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
+    let used = countTokens(sys) + countTokens(activeObjective)
+      + countTokens(summary[0]?.content || "")
+      + active.reduce((total, message) => total
+        + countTokens(String(message.content || ""))
+        + countTokens(JSON.stringify(message.tool_calls || [])), 0);
+    const historical = [];
+    for (let index = boundary - 1; index >= 0; index--) {
       const message = this._messages[index];
       if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
       const size = countTokens(String(message.content || ""))
         + countTokens(JSON.stringify(message.tool_calls || []));
-      if (selected.length > 0 && used + size > this._config.tokenBudget) break;
-      selected.unshift(message);
+      if (historical.length > 0 && used + size > this._config.tokenBudget) break;
+      historical.unshift(message);
       used += size;
     }
-    while (selected.length > 0 && selected[0]?.role === "tool") {
-      const idx = this._messages.indexOf(selected[0]);
+    while (historical.length > 0 && historical[0]?.role === "tool") {
+      const idx = this._messages.indexOf(historical[0]);
       if (idx > 0) {
-        selected.unshift(this._messages[idx - 1]);
+        historical.unshift(this._messages[idx - 1]);
       } else {
-        selected.shift();
+        historical.shift();
       }
     }
-    const context = [{ role: "system", content: sys }, ...summary, ...selected];
+    const context = [
+      { role: "system", content: sys },
+      { role: "system", content: activeObjective },
+      ...summary,
+      ...historical,
+      ...active,
+    ];
     return this._secretStore.resolveSerializable(
       context,
       this._activeRun?.runId,

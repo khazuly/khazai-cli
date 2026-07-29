@@ -5,13 +5,16 @@ import {
   analysisActivityMessage,
   analysisEventIsCurrent,
   clearAnalysisActivity,
+  clearPublicAnalysisActivity,
   completeAnalysisActivity,
   createAnalysisActivity,
   failAnalysisActivity,
   pauseAnalysisActivity,
   startAnalysisActivity,
   updateAnalysisActivity,
+  updatePublicAnalysisActivity,
 } from "../ui/analysis-activity.js";
+import { createPublicActivityChannel } from "../app/public-activity.js";
 import { MessageList } from "../ui/components/message-list.js";
 import { ThemeProvider } from "../ui/theme.js";
 import {
@@ -63,6 +66,115 @@ test("repeated active updates do not reset the phase timer", () => {
   assert.equal(state.text, "Checking constraints");
 });
 
+test("structured public activity overrides fallback text without changing the stable row", async () => {
+  let state = startAnalysisActivity(initialState(), scope, {
+    text: "Inspecting continuation after tool results",
+  }, 1_000);
+  const id = analysisActivityMessage(state).id;
+  state = updatePublicAnalysisActivity(state, scope, "think-call-1", {
+    activity: "Inspecting trust-directory input handling",
+    target: "ui/trust-directory.js",
+    nextAction: "Update keyboard navigation and bordered layout",
+    progress: "2/4",
+  });
+  state = updateAnalysisActivity(state, scope, { text: "Preparing the implementation" });
+  const message = analysisActivityMessage(state);
+  const frame = await renderComponent(
+    h(ThemeProvider, { name: "system" }, h(MessageList, { messages: [message] }))
+  );
+
+  assert.equal(message.id, id);
+  assert.equal(message.toolCallId, "think-call-1");
+  assert.match(frame, /Inspecting trust-directory input\s+handling/);
+  assert.match(frame, /ui\/trust-directory\.js/);
+  assert.match(frame, /Next: Update keyboard navigation and\s+  bordered layout · 2\/4/);
+  assert.doesNotMatch(frame, /Inspecting continuation|Preparing the implementation/);
+
+  state = pauseAnalysisActivity(state, scope, 2_000);
+  assert.equal(analysisActivityMessage(state), null);
+  state = startAnalysisActivity(state, scope, {}, 3_000);
+  assert.equal(analysisActivityMessage(state).id, id);
+  assert.equal(analysisActivityMessage(state).text, "Inspecting trust-directory input handling");
+
+  state = clearPublicAnalysisActivity(state, scope, "think-call-1");
+  assert.equal(analysisActivityMessage(state).text, "Preparing the implementation");
+});
+
+test("public activity waits for complete tool JSON and rejects stale or malformed buffers", () => {
+  const channel = createPublicActivityChannel(scope, value => ({
+    ...value,
+    target: value.target.replace("secret-token", "[REDACTED]"),
+  }));
+  assert.deepEqual(channel.accept({
+    type: "tool-call-delta",
+    delta: [{
+      index: 0,
+      id: "think-fragmented",
+      function: {
+        name: "think",
+        arguments: "{\"activity\":\"Checking Ink \\\"exports\\\"\",\"target\":\"secret-",
+      },
+    }],
+  }), []);
+  assert.deepEqual(channel.accept({
+    type: "tool-call-delta",
+    delta: [{ index: 0, function: { arguments: "token\",\"nextAction\":\"Update import\",\"progress\":\"3/5\"}" } }],
+  }), []);
+  assert.deepEqual(channel.accept({
+    type: "finish",
+    reason: "tool-calls",
+    runId: "stale-run",
+  }), []);
+  assert.deepEqual(channel.accept({ type: "finish", reason: "tool-calls" }), [{
+    type: "public-activity",
+    toolCallId: "think-fragmented",
+    publicActivity: {
+      activity: "Checking Ink \"exports\"",
+      target: "[REDACTED]",
+      nextAction: "Update import",
+      progress: "3/5",
+    },
+  }]);
+
+  const malformed = createPublicActivityChannel(scope);
+  malformed.accept({
+    type: "tool-call-delta",
+    delta: [{
+      index: 0,
+      id: "think-malformed",
+      function: { name: "think", arguments: "{\"activity\":\"Incomplete" },
+    }],
+  });
+  assert.deepEqual(malformed.accept({ type: "finish", reason: "tool-calls" }), []);
+});
+
+test("parallel streamed tool calls keep public activity fragments isolated", () => {
+  const channel = createPublicActivityChannel(scope);
+  channel.accept({
+    type: "tool-call-delta",
+    delta: [
+      {
+        index: 0,
+        id: "think-1",
+        function: { name: "think", arguments: "{\"activity\":\"Inspecting parser\",\"target\":\"lib/" },
+      },
+      {
+        index: 1,
+        id: "read-1",
+        function: { name: "read", arguments: "{\"path\":\"README.md\"}" },
+      },
+    ],
+  });
+  channel.accept({
+    type: "tool-call-delta",
+    delta: [{ index: 0, function: { arguments: "providers.js\"}" } }],
+  });
+  const activities = channel.accept({ type: "finish", reason: "tool-calls" });
+
+  assert.equal(activities.length, 1);
+  assert.equal(activities[0].toolCallId, "think-1");
+  assert.equal(activities[0].publicActivity.target, "lib/providers.js");
+});
 test("stale run and turn updates are ignored", () => {
   const state = startAnalysisActivity(initialState(), scope, {}, 1_000);
   const staleRun = { runId: "run-old", turnId: scope.turnId };
@@ -70,6 +182,9 @@ test("stale run and turn updates are ignored", () => {
 
   assert.equal(pauseAnalysisActivity(state, staleRun, 9_000), state);
   assert.equal(startAnalysisActivity(state, staleTurn, {}, 9_000), state);
+  assert.equal(updatePublicAnalysisActivity(state, staleRun, "stale-think", {
+    activity: "Stale activity",
+  }), state);
   assert.equal(analysisEventIsCurrent({ runId: "run-old" }, scope), false);
   assert.equal(analysisEventIsCurrent({ turnId: "turn-old" }, scope), false);
   assert.equal(analysisEventIsCurrent({ type: "thinking" }, scope), true);

@@ -124,11 +124,34 @@ export class ToolLifecycle {
     this.messageId = null;
     this.snapshot = null;
     this.onPart = typeof onPart === "function" ? onPart : null;
+    this.activeScope = null;
   }
 
   _emit(part) {
+    const scope = part?.metadata?.executionScope;
+    if (scope && !this.isActiveScope(scope)) {
+      this.parts = this.parts.filter(entry => entry !== part);
+      return part;
+    }
     try { this.onPart?.(JSON.parse(JSON.stringify(part))); } catch {}
     return part;
+  }
+
+  beginScope(scope) {
+    this.activeScope = scope ? { ...scope } : null;
+    this.parts = this.parts.filter(part => (
+      part.type !== "tool"
+      || !["pending", "running"].includes(part.state?.status)
+    ));
+  }
+
+  isActiveScope(scope) {
+    return Boolean(
+      scope
+      && scope.runId === this.activeScope?.runId
+      && scope.turnId === this.activeScope?.turnId
+      && scope.taskEpoch === this.activeScope?.taskEpoch
+    );
   }
 
   startStep(messageId = id("message")) {
@@ -141,6 +164,7 @@ export class ToolLifecycle {
       messageId: this.messageId,
       type: "snapshot",
       snapshot: this.snapshot.hash,
+      metadata: this.activeScope ? { executionScope: { ...this.activeScope } } : {},
       time: { created: now() },
     };
     this.parts.push(part);
@@ -156,7 +180,10 @@ export class ToolLifecycle {
       callId: String(callId),
       tool: String(tool),
       state: { status: "pending", input: { ...input }, raw: "" },
-      metadata: { ...metadata },
+      metadata: {
+        ...metadata,
+        ...(this.activeScope ? { executionScope: { ...this.activeScope } } : {}),
+      },
     };
     this.parts.push(part);
     return this._emit(part);
@@ -221,6 +248,7 @@ export class ToolLifecycle {
         type: "patch",
         hash: hash(JSON.stringify({ before: this.snapshot?.hash, after: after?.hash, files })),
         files,
+        metadata: this.activeScope ? { executionScope: { ...this.activeScope } } : {},
         time: { created },
       };
       this.parts.push(patch);
@@ -234,6 +262,7 @@ export class ToolLifecycle {
       type: "step-finish",
       reason,
       snapshot: after?.hash,
+      metadata: this.activeScope ? { executionScope: { ...this.activeScope } } : {},
       time: { created },
     };
     this.parts.push(finish);

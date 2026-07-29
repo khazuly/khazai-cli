@@ -4,10 +4,10 @@ import { redactSecrets } from "../../lib/secrets.js";
 import { sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { getProviderPrompt } from "../prompts.js";
 import { ExecutionPolicy } from "../execution-policy.js";
-import { ToolExecutor } from "../tool-executor.js";
 import { resolve } from "node:path";
 import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
+import { completedConversationHistory } from "./request-state.js";
 
 export class StateMethods {
   _markLatency(name) {
@@ -48,9 +48,9 @@ export class StateMethods {
   restoreSessionState(state) {
     if (!isObject(state)) return false;
     if (Array.isArray(state.messages)) {
-      this._messages = state.messages
+      this._messages = completedConversationHistory(state.messages
         .filter(message => !String(message?.content || "").startsWith("[INTERNAL STEERING]"))
-        .slice(-200);
+        .slice(-200));
     }
     this._summary = typeof state.summary === "string" ? state.summary : "";
     if (state.model) this._model = String(state.model);
@@ -58,14 +58,27 @@ export class StateMethods {
       this._sessionId = String(state.sessionId);
       this._lifecycle.sessionId = this._sessionId;
     }
-    if (Array.isArray(state.parts)) this._lifecycle.parts = state.parts.slice(-200);
+    if (Array.isArray(state.parts)) {
+      this._lifecycle.parts = state.parts
+        .filter(part => (
+          part?.type !== "tool"
+          || !["pending", "running"].includes(part.state?.status)
+        ))
+        .slice(-200);
+    }
     this._permissionService.restoreApprovals(state.permissionApprovals);
     this._recoverableProviderRequest = isObject(state.recoverableProviderRequest)
       ? state.recoverableProviderRequest
       : null;
     this._pendingAction = null;
     this._pendingGitPush = null;
-    this._currentRequest = this._recoverableProviderRequest?.currentRequest || "";
+    this._currentRequest = "";
+    this._activeScope = null;
+    this._plan = null;
+    this._planIndex = 0;
+    this._pendingBatchCalls = [];
+    this._toolCallHistory = [];
+    this._completedToolResults.clear();
     return true;
   }
 
@@ -122,6 +135,14 @@ export class StateMethods {
     this._toolCallHistory.push({ signature, failed });
     if (this._toolCallHistory.length > 24) this._toolCallHistory.shift();
     if (failed) return;
+    const target = String(tool.args?.path || "");
+    if (target && this._activeScope) {
+      if (!this._activeScope.relevantFiles.includes(target)) this._activeScope.relevantFiles.push(target);
+      if (IDEMPOTENT_MUTATION_TOOLS.has(tool.name)
+        && !this._activeScope.changedFiles.includes(target)) {
+        this._activeScope.changedFiles.push(target);
+      }
+    }
     if (IDEMPOTENT_MUTATION_TOOLS.has(tool.name)) {
       this._invalidateInspectionCache();
       this._completedToolResults.set(signature, String(result));
@@ -467,31 +488,5 @@ export class StateMethods {
     }
     return args;
   }
-
-  _toolExecutor() {
-    return new ToolExecutor({
-      registry: this._registry,
-      lifecycle: this._lifecycle,
-      permissionService: this._permissionService,
-      permissionHandler: request => this._permissionHandler?.(request),
-      questionHandler: question => this._questionHandler?.(question),
-      workspace: this._workspace,
-      worktree: this._workspaceMetadata.worktree,
-      sessionId: this._sessionId,
-      normalizeCall: call => this._normalizeTool(call),
-      prepareArgs: (name, args) => this._prepareToolArgs(name, args),
-      resultFailed,
-      timeoutMs: this._config.toolTimeout,
-      signal: this._abortController?.signal,
-      taskContext: this._executionPolicy,
-      runId: this._activeRun?.runId,
-      turnId: this._activeRun?.turnId,
-      shellScheduler: this._shellScheduler,
-      protectOutput: value => this._protectForContext(value),
-      protectData: value => this._protectDataForContext(value),
-      redactOutput: value => this.redactForDisplay(value),
-    });
-  }
-
 
 };

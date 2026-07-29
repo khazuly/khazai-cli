@@ -16,4 +16,6 @@ test("prompt families follow OpenCode's model-based routing while preserving Kha
   assert.match(codex, /# Codex behavior/);
   assert.doesNotMatch(gpt, /# Codex behavior/);
   assert.match(gpt, /# GPT behavior/);
+  assert.match(gpt, /keep private reasoning internal/i);
+  assert.match(gpt, /Never put reasoning, evidence chains, secrets/i);
 });

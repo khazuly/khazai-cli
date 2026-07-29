@@ -83,13 +83,15 @@ function responseScopeMatches(state, scope) {
     state
     && state.runId === scope.runId
     && state.turnId === scope.turnId
+    && state.taskEpoch === scope.taskEpoch
   );
 }
 
-export function createResponseBuffer({ runId, turnId }) {
+export function createResponseBuffer({ runId, turnId, taskEpoch }) {
   return {
     runId,
     turnId,
+    taskEpoch,
     responsePhase: "final",
     finalBuffer: "",
     finalCommitted: false,

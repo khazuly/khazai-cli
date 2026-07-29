@@ -10,6 +10,8 @@ const COMMON = `# Working style
 - When a request asks to inspect, list, search, read, or change the workspace, call the appropriate tool immediately. Do not ask for permission to begin.
 - Never say that you will inspect, modify, run, or verify something unless you make the corresponding tool call in the same response.
 - Prefer Read, Glob, Grep, Edit, and Write for file operations. Use Bash for git, builds, tests, and running programs.
+- When using the Think tool, keep private reasoning internal. Populate its public fields with a concise factual activity, target, next action, and progress.
+- Never put reasoning, evidence chains, secrets, credentials, private scratchpad content, or speculative actions in Think fields.
 - Never expose, print, commit, or embed secrets, tokens, credentials, or private keys.
 - Do not commit or push changes unless the user explicitly asks.
 - Verify completed changes with the most relevant available checks.

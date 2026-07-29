@@ -14,6 +14,7 @@ import { ToolMethods } from "./agent/tools.js";
 import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
+import { createToolExecutor } from "./agent/tool-executor-factory.js";
 
 export class Agent {
   constructor(registry, opts = {}) {
@@ -37,6 +38,8 @@ export class Agent {
     this._turn = 0;
     this._aborted = false;
     this._activeRun = null;
+    this._taskEpoch = 0;
+    this._activeScope = null;
     this._plan = null;
     this._planIndex = 0;
     this._lastToolIsRead = false;
@@ -120,8 +123,32 @@ export class Agent {
     if (this._activeRun) this._activeRun.cancelled = true;
     this._abortController?.abort();
     this._shellScheduler.cancelActive();
+    this._lifecycle.beginScope(null);
     this._secretStore.clear();
     this._recoverableProviderRequest = null;
+    this._activeScope = null;
+  }
+  _isActiveRun(scope) {
+    const run = this._activeRun;
+    return Boolean(
+      run
+      && scope
+      && run.runId === scope.runId
+      && run.turnId === scope.turnId
+      && run.taskEpoch === scope.taskEpoch
+      && !run.cancelled
+      && !run.finalized
+    );
+  }
+  _authorizeToolCall(call, scope) {
+    if (!this._isActiveRun(scope) || this._activeScope?.taskEpoch !== scope.taskEpoch) return false;
+    const target = call?.name === "bash"
+      ? `shell:${String(call.args?.command || "")}`
+      : String(call.args?.path || "");
+    if (target && !this._activeScope.allowedTargets.includes(target)) {
+      this._activeScope.allowedTargets.push(target);
+    }
+    return true;
   }
   setModel(model) {
     if (model !== this._model) {
@@ -144,6 +171,7 @@ export class Agent {
   redactForDisplay(value) { return this._secretStore.redact(value); }
   redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
+  _toolExecutor(scope) { return createToolExecutor(this, scope); }
   compact() { this._compactMessages(true); return this.exportSessionState(); }
 }
 

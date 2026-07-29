@@ -66,14 +66,19 @@ export class ShellScheduler {
     this.activeScope = null;
   }
 
-  beginRun(runId, turnId, resume = false) {
+  beginRun(runId, turnId, taskEpoch, resume = false) {
+    if (typeof taskEpoch === "boolean") {
+      resume = taskEpoch;
+      taskEpoch = null;
+    }
     this.cancelActive();
-    this.activeScope = { runId, turnId };
+    this.activeScope = { runId, turnId, taskEpoch };
     if (!resume) this.records.clear();
     else {
       for (const record of this.records.values()) {
         record.runId = runId;
         record.turnId = turnId;
+        record.taskEpoch = taskEpoch;
       }
     }
   }
@@ -145,6 +150,7 @@ export class ShellScheduler {
       toolCallId: call.id,
       runId: scope.runId,
       turnId: scope.turnId,
+      taskEpoch: scope.taskEpoch,
       command: normalizedCommand(call.args?.command),
       cwd: resolve(this.workspace, String(call.args?.workdir || this.workspace)),
       status: "pending",
@@ -200,6 +206,7 @@ export class ShellScheduler {
 
   _scopeCurrent(record) {
     return record.runId === this.activeScope?.runId
-      && record.turnId === this.activeScope?.turnId;
+      && record.turnId === this.activeScope?.turnId
+      && record.taskEpoch === this.activeScope?.taskEpoch;
   }
 }

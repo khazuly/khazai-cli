@@ -109,6 +109,9 @@ export class ToolExecutor {
     taskContext = null,
     runId = null,
     turnId = null,
+    taskEpoch = null,
+    isActiveRun = null,
+    authorizeCall = null,
     shellScheduler = null,
     protectOutput = redactSecrets,
     protectData = value => value,
@@ -130,6 +133,9 @@ export class ToolExecutor {
     this.taskContext = taskContext;
     this.runId = runId;
     this.turnId = turnId;
+    this.taskEpoch = taskEpoch;
+    this.isActiveRun = typeof isActiveRun === "function" ? isActiveRun : null;
+    this.authorizeCall = typeof authorizeCall === "function" ? authorizeCall : null;
     this.shellScheduler = shellScheduler;
     this.protectOutput = protectOutput;
     this.protectData = protectData;
@@ -142,6 +148,7 @@ export class ToolExecutor {
       ...permission,
       runId: this.runId,
       turnId: this.turnId,
+      taskEpoch: this.taskEpoch,
       callId: call.id,
       tool: call.name,
       pattern: permission.value,
@@ -156,7 +163,16 @@ export class ToolExecutor {
   }
 
   _scoped(event) {
-    return { ...event, runId: this.runId, turnId: this.turnId };
+    return { ...event, runId: this.runId, turnId: this.turnId, taskEpoch: this.taskEpoch };
+  }
+
+  _isActive() {
+    return !this.signal?.aborted
+      && (!this.isActiveRun || this.isActiveRun({
+        runId: this.runId,
+        turnId: this.turnId,
+        taskEpoch: this.taskEpoch,
+      }));
   }
 
   _recordApproval(call, permission, source) {
@@ -184,19 +200,22 @@ export class ToolExecutor {
   }
 
   async *execute(input, extraContext = {}) {
+    if (!this._isActive()) return;
     const call = this.normalizeCall({
       ...input,
       id: input?.id || randomUUID(),
       args: { ...(input?.args || {}) },
     });
+    if (this.authorizeCall && !this.authorizeCall(call)) return;
     const tool = this.registry.get(call.name);
     const part = this.lifecycle.pending({
       callId: call.id,
       tool: call.name,
       input: this.protectData(call.args),
-      metadata: { runId: this.runId, turnId: this.turnId },
+      metadata: { runId: this.runId, turnId: this.turnId, taskEpoch: this.taskEpoch },
     });
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
+    if (!this._isActive()) return;
 
     const invalid = schemaError(tool, call.args);
     if (invalid) {
@@ -215,8 +234,10 @@ export class ToolExecutor {
         type: "permission",
         ...request,
       });
+      if (!this._isActive()) return;
       let answer = "reject";
       try { answer = await this.permissionHandler?.(request); } catch {}
+      if (!this._isActive()) return;
       if (rejected(answer)) {
         yield* this._reject(part, call, `Permission rejected: external_directory (${external.value})`);
         return;
@@ -242,8 +263,10 @@ export class ToolExecutor {
         type: "permission",
         ...request,
       });
+      if (!this._isActive()) return;
       let answer = "reject";
       try { answer = await this.permissionHandler?.(request); } catch {}
+      if (!this._isActive()) return;
       if (rejected(answer)) {
         yield* this._reject(part, call, `Permission rejected: ${permission.permission} (${permission.value})`);
         return;
@@ -256,9 +279,11 @@ export class ToolExecutor {
       this._recordApproval(call, permission, "allow-all");
     }
 
+    if (!this._isActive()) return;
     this.lifecycle.running(part, this.protectData(call.args));
     this.shellScheduler?.running(call);
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
+    if (!this._isActive()) return;
     call.args = this.prepareArgs(call.name, call.args);
     const context = {
       tool: call.name,
@@ -274,11 +299,12 @@ export class ToolExecutor {
       permissionService: this.permissionService,
       abortSignal: this.signal,
       signal: this.signal,
-      updateMetadata: metadata => this.lifecycle.metadata(part, metadata),
+      updateMetadata: metadata => this._isActive() && this.lifecycle.metadata(part, metadata),
       ...extraContext,
     };
     try {
       const before = await this.registry.trigger("tool.execute.before", context, { args: call.args });
+      if (!this._isActive()) return;
       call.args = before?.args || call.args;
       let raw;
       if (call.name === "question") {
@@ -286,7 +312,9 @@ export class ToolExecutor {
         const question = String(call.args.question || "Please choose an option.").trim();
         const options = Array.isArray(call.args.options) ? call.args.options.map(String).filter(Boolean) : [];
         yield this._scoped({ type: "question", question, options });
+        if (!this._isActive()) return;
         const answer = await this.questionHandler({ question, options });
+        if (!this._isActive()) return;
         raw = {
           title: "Question",
           output: `User answered: ${this.protectOutput(String(answer))}`,
@@ -326,8 +354,10 @@ export class ToolExecutor {
           this.signal?.removeEventListener("abort", abortBounded);
         }
       }
+      if (!this._isActive()) return;
       let output = normalizeToolOutput(raw, call.name);
       output = await this.registry.trigger("tool.execute.after", { ...context, args: call.args }, output);
+      if (!this._isActive()) return;
       const truncated = truncateOutput(
         output.output,
         this.sessionId,
@@ -343,8 +373,10 @@ export class ToolExecutor {
       if (this.resultFailed(output.output)) this.lifecycle.failed(part, output.output, output.metadata);
       else this.lifecycle.completed(part, output);
     } catch (error) {
+      if (!this._isActive()) return;
       this.lifecycle.failed(part, this.protectOutput(error?.message || String(error)));
     }
+    if (!this._isActive()) return;
     const result = part.state.status === "error" ? part.state.error : part.state.output;
     this.shellScheduler?.complete(call, result, part.state.status === "error");
     if (this.taskContext?.recordToolExecution) {

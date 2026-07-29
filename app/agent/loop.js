@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { isObject, workspaceMetadata, PARALLEL_READ_ONLY_TOOLS, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
+import { createPublicActivityChannel } from "../public-activity.js";
 export class LoopMethods {
   async *loop(input, signal, scope = {}) {
     await this._registryReady;
@@ -14,22 +15,27 @@ export class LoopMethods {
       this._activeRun.cancelled = true;
       this._abortController?.abort(new Error("Superseded by a newer turn"));
     }
-    const runId = scope.runId || randomUUID();
-    const turnId = scope.turnId || randomUUID();
-    const run = { runId, turnId, cancelled: false, finalized: false };
+    const runId = scope.runId || randomUUID(), turnId = scope.turnId || randomUUID();
+    const taskEpoch = retryProvider ? scope.taskEpoch ?? this._recoverableProviderRequest?.taskEpoch ?? this._taskEpoch
+      : Math.max(this._taskEpoch + 1, Number(scope.taskEpoch) || 0);
+    this._taskEpoch = taskEpoch;
+    const run = { sessionId: this._sessionId, runId, turnId, taskEpoch, cancelled: false, finalized: false };
     this._activeRun = run;
-    this._shellScheduler.beginRun(runId, turnId, retryProvider);
-    const isRunCurrent = () => this._activeRun === run;
-    const isRunActive = () => isRunCurrent() && !run.cancelled && !run.finalized;
-    const scoped = event => ({ ...event, runId, turnId });
+    this._lifecycle.beginScope({ runId, turnId, taskEpoch });
+    this._shellScheduler.beginRun(runId, turnId, taskEpoch, retryProvider);
+    const isRunCurrent = () => this._activeRun === run, isRunActive = () => isRunCurrent() && !run.cancelled && !run.finalized;
+    const scoped = event => ({ ...event, runId, turnId, taskEpoch });
     const finalizeRun = () => {
       if (!isRunCurrent() || run.finalized) return false;
       run.finalized = true;
       return true;
     };
-    this._abortController = new AbortController();
-    if (signal?.aborted) this._abortController.abort();
-    else signal?.addEventListener("abort", () => this._abortController.abort(), { once: true });
+    const controller = new AbortController();
+    run.controller = controller;
+    this._abortController = controller;
+    const abortRun = () => controller.abort(signal?.reason);
+    if (signal?.aborted) abortRun();
+    else signal?.addEventListener("abort", abortRun, { once: true });
     try {
     this._latency = { inputReceived: performance.now() };
     this._compactMessages();
@@ -46,14 +52,16 @@ export class LoopMethods {
         return;
       }
       this._secretStore.rebind(runId, turnId);
-      prepareProviderRetry(this);
+      prepareProviderRetry(this, run);
     } else {
-      await initializeAgentRequest(this, requestInput.protectedContent, signal, requestInput.rawContent);
+      const initialized = await initializeAgentRequest(
+        this, requestInput.protectedContent, controller.signal, requestInput.rawContent, run,
+      );
+      if (!initialized || !isRunActive()) return;
     }
-    let pendingProse = "";
-    let proseContinuations = 0;
+    let pendingProse = "", proseContinuations = 0;
     while (this._turn < this._config.maxTurns) {
-      if (this._aborted || signal?.aborted) {
+      if (!isRunActive() || this._aborted || signal?.aborted) {
         if (finalizeRun()) yield scoped({ type: "answer", content: "The task was cancelled." });
         return;
       }
@@ -61,17 +69,17 @@ export class LoopMethods {
       this._stepBlocked = false;
       const snapshotPart = this._lifecycle.startStep();
       if (snapshotPart) yield scoped({ type: "tool-part", part: snapshotPart });
+      if (!isRunActive()) return;
       const phase = this._lastToolWasExecuted
         ? "continuation"
         : this._planningPhase || this._taskContract?.category === "MODIFICATION"
           ? "implementation"
           : "context";
       yield scoped({ type: "thinking", turn: this._turn, phase });
-
+      if (!isRunActive()) return;
       const ctx = this._buildContext();
       let reply;
-      let streamMode = "pending";
-      let streamTail = "";
+      let streamMode = "pending", streamTail = "";
       let streamStarted = false;
       let streamVisibleLength = 0;
       let finalError = null;
@@ -83,6 +91,7 @@ export class LoopMethods {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         let chatErr;
         let receivedAnyToken = false;
+        const publicActivity = createPublicActivityChannel(run, value => this.redactSerializableForDisplay(value));
         const eventQueue = [];
         let eventResolve = null;
         const queueEvent = event => {
@@ -113,31 +122,24 @@ export class LoopMethods {
           if (event?.type === "text-delta" && event.text) queueEvent(event);
           if (event?.type === "reasoning-delta" && event.text) queueEvent(event);
           if (event?.type === "tool-call-delta") nativeToolStream = true;
+          for (const activity of publicActivity.accept(event)) queueEvent(activity);
         };
         const nativeTools = (await this._registry.definitions({
-          model: requestModel,
-          agent: this._agentProfile?.name,
-          directory: this._workspace,
+          model: requestModel, agent: this._agentProfile?.name, directory: this._workspace,
         })).map(tool => ({
           type: "function",
           function: {
-            name: tool.name,
-            description: tool.description || "",
+            name: tool.name, description: tool.description || "",
             parameters: tool.parameters || { type: "object", properties: {} },
           },
         }));
+        if (!isRunActive()) return;
         this._markLatency("requestDispatched");
         const chatDone = this._chat(ctx, {
-          model: requestModel,
-          onToken,
-          onEvent,
-          signal: this._abortController.signal,
-          timeoutMs: this._config.providerTimeout,
-          reasoningEffort: this._config.reasoningEffort,
-          tools: nativeTools,
-          sessionId: this._sessionId,
-          runId,
-          turnId,
+          model: requestModel, onToken, onEvent,
+          signal: controller.signal,
+          timeoutMs: this._config.providerTimeout, reasoningEffort: this._config.reasoningEffort,
+          tools: nativeTools, sessionId: this._sessionId, runId, turnId, taskEpoch,
           streamPhase: phase,
         })
           .then(result => {
@@ -156,16 +158,14 @@ export class LoopMethods {
             if (isRunCurrent()) chatErr = error;
           });
         const waitForEvent = () => new Promise(resolveEvent => { eventResolve = resolveEvent; });
-
         while (reply === undefined && chatErr === undefined) {
           const event = eventQueue.length > 0
             ? eventQueue.shift()
             : await Promise.race([waitForEvent(), chatDone.then(() => undefined)]);
+          if (!isRunActive()) return;
           if (event === undefined) continue;
-          if (event.type === "reasoning-delta") {
-            yield scoped({ type: "reasoning", token: event.text });
-            continue;
-          }
+          if (event.type === "reasoning-delta") continue;
+          if (event.type === "public-activity") { yield scoped(event); continue; }
           const token = event.text;
           if (typedProviderStream && !event.compatibility) {
             streamMode = "text";
@@ -189,10 +189,8 @@ export class LoopMethods {
         }
         while (eventQueue.length > 0) {
           const event = eventQueue.shift();
-          if (event.type === "reasoning-delta") {
-            yield scoped({ type: "reasoning", token: event.text });
-            continue;
-          }
+          if (event.type === "reasoning-delta") continue;
+          if (event.type === "public-activity") { yield scoped(event); continue; }
           const token = event.text;
           if (typedProviderStream && !event.compatibility) {
             streamMode = "text";
@@ -215,14 +213,14 @@ export class LoopMethods {
           }
         }
         await chatDone.catch(() => {});
+        if (!isRunActive()) return;
         if (!chatErr) break;
-
         finalError = chatErr;
         if (streamStarted || receivedAnyToken || /request timed out|timeout|timed out/i.test(String(chatErr?.message || chatErr))) break;
         if (attempt < maxAttempts - 1) {
           if (!isRunActive()) break;
           try {
-            await this._resetSession({ signal });
+            await this._resetSession({ signal: controller.signal });
             if (!isRunActive()) break;
             reply = undefined;
             streamTail = "";
@@ -270,7 +268,7 @@ export class LoopMethods {
             yield scoped({ type: "tool-part", part: lifecyclePart });
           }
           try {
-            await this._resetSession({ signal });
+            await this._resetSession({ signal: controller.signal });
             continue;
           } catch (resetError) {
             this._debugToolRecovery("empty_response_reset", resetError?.message || String(resetError));
@@ -286,7 +284,6 @@ export class LoopMethods {
         return;
       }
       this._emptyResponses = 0;
-
       let parsed = nativeToolStream ? this._extractNativeTool(reply) : this._extractTool(reply);
       const commitProseBeforeTool = function* (tool) {
         if (!typedProviderStream) {
@@ -330,7 +327,6 @@ export class LoopMethods {
           tool = null;
         }
       }
-
       if (parsed.error) {
         yield scoped({ type: "stream-discard" });
         this._debugToolRecovery(parsed.kind || "malformed_json", parsed.error);
@@ -358,7 +354,6 @@ export class LoopMethods {
         continue;
       }
       this._invalidToolResponses = 0;
-
       if (!tool) {
         let visibleReply = pendingProse ? joinProseContinuation(pendingProse, reply) : reply;
         const displayReply = visibleReply;
@@ -387,7 +382,8 @@ export class LoopMethods {
         return;
       }
       yield* commitProseBeforeTool(tool);
-      const auxiliaryTool = tool.name === "todowrite";
+      if (!isRunActive()) return;
+      const auxiliaryTool = ["todowrite", "think"].includes(tool.name);
       tool.id ||= randomUUID();
       const loopRecovery = tool.name === "bash" ? this._shellScheduler.reserve(tool) : this._toolLoopRecovery(tool);
       if (loopRecovery) {
@@ -411,6 +407,7 @@ export class LoopMethods {
         continue;
       }
       yield scoped({ type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id });
+      if (!isRunActive()) return;
       this._messages.push({
         role: "assistant",
         content: null,
@@ -420,11 +417,11 @@ export class LoopMethods {
           function: { name: tool.name, arguments: JSON.stringify(this._secretStore.protectSerializable(publicToolArgs(tool.args), runId, turnId)) },
         }],
       });
-      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem();
+      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem(run);
       let result;
       let part;
       let finishReason = "tool-calls";
-      for await (const event of this._toolExecutor().execute(tool, { agent: this._agentProfile?.name })) {
+      for await (const event of this._toolExecutor(run).execute(tool, { agent: this._agentProfile?.name })) {
         if (event.type === "execution-result") {
           part = event.part;
           result = event.result;
@@ -436,6 +433,7 @@ export class LoopMethods {
           yield event;
         }
       }
+      if (!isRunActive()) return;
       if (!part) continue;
       if (tool.name === "todowrite" && part.state.status === "completed") {
         const todos = Array.isArray(part.state.metadata?.todos) ? part.state.metadata.todos : [];
@@ -445,7 +443,8 @@ export class LoopMethods {
         }));
         const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
         this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
-        yield { type: "plan", items: this._plan.map(item => ({ ...item })) };
+        this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
+        yield scoped({ type: "plan", items: this._plan.map(item => ({ ...item })) });
       }
       const protectedResult = this._secretStore.protect(result, runId, turnId);
       result = this._secretStore.redact(protectedResult);
@@ -487,13 +486,14 @@ export class LoopMethods {
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });
       }
-      yield* this._finishPlanItem(planTracker, part.state.status === "completed" && !resultFailed(result));
+      yield* this._finishPlanItem(planTracker, part.state.status === "completed" && !resultFailed(result), run);
     }
     this._finishLatency();
     if (finalizeRun()) {
       yield scoped({ type: "error", content: `Maximum step count reached (${this._config.maxTurns}).` });
     }
     } finally {
+      signal?.removeEventListener("abort", abortRun);
       if (!this._recoverableProviderRequest) this._secretStore.clear(runId, turnId);
     }
   }

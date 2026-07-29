@@ -31,12 +31,14 @@ import {
   analysisActivityMessage,
   analysisEventIsCurrent,
   clearAnalysisActivity,
+  clearPublicAnalysisActivity,
   completeAnalysisActivity,
   createAnalysisActivity,
   failAnalysisActivity,
   pauseAnalysisActivity,
   startAnalysisActivity,
   updateAnalysisActivity,
+  updatePublicAnalysisActivity,
 } from "./analysis-activity.js";
 import {
   appendResponseDelta,
@@ -157,6 +159,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const structuredCallsRef = useRef(new Set());
   const analysisRef = useRef(null);
   const cancelledRunIdRef = useRef(null);
+  const taskEpochRef = useRef(0);
   const submitRef = useRef(null);
 
   if (!agentRef.current) {
@@ -198,6 +201,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   }), []);
 
   const loadStoredSession = useCallback(session => {
+    agentRef.current?.abort();
+    activeScopeRef.current = null;
+    questionResolverRef.current?.resolve("");
+    questionResolverRef.current = null;
     currentSessionRef.current = session;
     agentSessionRef.current = session.agentState || null;
     autoApproveRef.current = session.permissionMode === "allow-all";
@@ -213,6 +220,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     completedRef.current = session.messages || [];
     activeRef.current = null;
     analysisRef.current = null;
+    taskEpochRef.current = 0;
     responseBufferRef.current = null;
     setCompletedMessages(session.messages || []);
     setActiveMessage(null);
@@ -582,7 +590,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const sessionBefore = currentSessionRef.current;
     const runId = nextId();
     const turnId = `${sessionBefore?.id || "session"}-${runId}`;
-    const analysisScope = { runId, turnId };
+    if (!retryProvider) taskEpochRef.current++;
+    const analysisScope = { runId, turnId, taskEpoch: taskEpochRef.current };
     activeScopeRef.current = analysisScope;
     cancelledRunIdRef.current = null;
     analysisRef.current = createAnalysisActivity({
@@ -622,6 +631,21 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (activeRef.current?.id === analysisRef.current?.analysisId) {
         activate(analysisActivityMessage(analysisRef.current));
       }
+    };
+    const showPublicAnalysis = (toolCallId, publicActivity) => {
+      analysisRef.current = startAnalysisActivity(
+        analysisRef.current,
+        analysisScope,
+        thinkActivityFromPlan(planRef.current),
+      );
+      analysisRef.current = updatePublicAnalysisActivity(
+        analysisRef.current,
+        analysisScope,
+        toolCallId,
+        publicActivity,
+      );
+      const message = analysisActivityMessage(analysisRef.current);
+      if (message) activate(message);
     };
     const finishReadBatch = (failed, failurePreview = "") => {
       const current = activeRef.current;
@@ -715,6 +739,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         !current
         || request.runId !== current.runId
         || request.turnId !== current.turnId
+        || request.taskEpoch !== current.taskEpoch
         || cancelledRunIdRef.current === request.runId
       ) {
         resolve("");
@@ -723,7 +748,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       questionResolverRef.current = {
         kind: "permission",
         resolve,
-        scope: { runId: request.runId, turnId: request.turnId },
+        scope: { runId: request.runId, turnId: request.turnId, taskEpoch: request.taskEpoch },
       };
     }));
     try {
@@ -742,6 +767,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         resetStreaming();
         finishReadBatch(false);
         showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase));
+        continue;
+      }
+
+      if (ev.type === "public-activity") {
+        showPublicAnalysis(
+          ev.toolCallId,
+          agent.redactSerializableForDisplay(ev.publicActivity || {}),
+        );
         continue;
       }
 
@@ -810,6 +843,23 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (!part || part.type !== "tool") continue;
         if (part.tool === "question") continue;
         structuredCallsRef.current.add(part.callId);
+        if (part.tool === "think") {
+          if (part.state.status === "pending" || part.state.status === "running") {
+            showPublicAnalysis(
+              part.callId,
+              agent.redactSerializableForDisplay(part.state.input || {}),
+            );
+          } else if (part.state.status === "error") {
+            analysisRef.current = clearPublicAnalysisActivity(
+              analysisRef.current,
+              analysisScope,
+              part.callId,
+            );
+            pauseAnalysis();
+            clearActive();
+          }
+          continue;
+        }
         if (part.state.status === "pending" || part.state.status === "running") {
           resetStreaming();
           if (part.tool === "read") {
@@ -886,6 +936,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         if (ev.tool === "question") continue;
         resetStreaming();
+        if (ev.tool === "think") {
+          finishReadBatch(false);
+          showPublicAnalysis(
+            ev.callId,
+            agent.redactSerializableForDisplay(ev.args || {}),
+          );
+          continue;
+        }
         if (ev.tool === "read") {
           startRead(ev.callId, agent.redactSerializableForDisplay(ev.args || {}));
           continue;
@@ -930,6 +988,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "tool-result") {
+        if (ev.tool === "think") continue;
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         const current = activeRef.current;
         const duration = current?.startedAt ? Date.now() - current.startedAt : null;
@@ -1102,7 +1161,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const current = activeScopeRef.current;
     if (
       pending.scope
-      && (!current || current.runId !== pending.scope.runId || current.turnId !== pending.scope.turnId)
+      && (!current
+        || current.runId !== pending.scope.runId
+        || current.turnId !== pending.scope.turnId
+        || current.taskEpoch !== pending.scope.taskEpoch)
     ) {
       questionResolverRef.current = null;
       pending.resolve("");

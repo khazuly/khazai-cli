@@ -15,7 +15,7 @@ const BUILT_INS = {
     name: "plan",
     role: "primary",
     description: "Read-only planning and investigation agent.",
-    tools: ["read", "glob", "grep", "bash", "websearch", "webfetch", "question", "task", "skill", "todowrite", "mcp_*"],
+    tools: ["read", "glob", "grep", "bash", "websearch", "webfetch", "question", "think", "task", "skill", "todowrite", "mcp_*"],
     instructions: "Inspect and plan only. Do not modify workspace files.",
   },
   explore: {
