@@ -169,6 +169,65 @@ test("completed tools expose concise result previews from real output", () => {
   }
 });
 
+test("test execution metadata distinguishes completion, failure, timeout, and hanging", () => {
+  const completed = presentTool({
+    tool: "bash",
+    args: { command: "npm test" },
+    content: "Exit: 0",
+    done: true,
+    metadata: {
+      testExecution: { outcome: "passed", passed: 303, failed: 0, cancelled: 0, durationMs: 52587 },
+    },
+  });
+  const timedOut = presentTool({
+    tool: "bash",
+    args: { command: "npm test" },
+    content: "Exit: -1\nTest suite timed out after 120s",
+    done: true,
+    metadata: { testExecution: { outcome: "timeout", timeoutMs: 120000 } },
+  });
+  const failed = presentTool({
+    tool: "bash",
+    args: { command: "npm test" },
+    content: "Exit: 1",
+    done: true,
+    metadata: {
+      testExecution: {
+        outcome: "failed",
+        passed: 302,
+        failed: 1,
+        cancelled: 0,
+        durationMs: 50000,
+        firstFailure: "✖ rejects invalid input",
+      },
+    },
+  });
+  const exitError = presentTool({
+    tool: "bash",
+    args: { command: "npm test" },
+    content: "Exit: 2",
+    done: true,
+    metadata: { testExecution: { outcome: "exit-error", exitCode: 2 } },
+  });
+  const hanging = presentTool({
+    tool: "bash",
+    args: { command: "npm test" },
+    content: "Exit: -1\nTest process did not exit after completed output",
+    done: true,
+    metadata: {
+      testExecution: { outcome: "hanging", timeoutMs: 120000, passed: 303, failed: 0, cancelled: 0 },
+    },
+  });
+  assert.deepEqual(completed.resultPreview.lines, ["303 passed, 0 failed, 0 cancelled · 52.6s"]);
+  assert.deepEqual(failed.resultPreview.lines, [
+    "302 passed, 1 failed, 0 cancelled · 50.0s",
+    "First failure: ✖ rejects invalid input",
+  ]);
+  assert.deepEqual(exitError.resultPreview.lines, ["Test command exited with code 2"]);
+  assert.deepEqual(timedOut.resultPreview.lines, ["Test suite timed out after 120s"]);
+  assert.deepEqual(hanging.resultPreview.lines, ["Test process did not exit after completed output · 120s"]);
+});
+
 test("plan previews use structured status counts", () => {
   const view = presentTool({
     tool: "todowrite",

@@ -190,22 +190,34 @@ export class ToolMethods {
     ), 0);
   }
 
+  _contextLimitKnown() {
+    const model = this._model || "";
+    // Only known-limit models get percentage-based handling
+    if (/codex|anthropic|claude|gpt|gemini/i.test(model)) return true;
+    return false;
+  }
+
   contextUsage() {
     const usedTokens = this._messageTokenUsage();
-    const contextLimit = Math.max(1, Number(this._config.tokenBudget) || 24000);
+    const known = this._contextLimitKnown();
+    const contextLimit = known
+      ? Math.max(1, Number(this._config.tokenBudget) || 24000)
+      : Math.max(1, Number(this._config.tokenBudget) || 24000);
+    // Always compute percentage for backward compat, but tag known status
     const usagePercent = Math.min(100, Math.floor((usedTokens / contextLimit) * 100));
     const projectedTokens = usedTokens + Math.min(Math.floor(usedTokens * 0.15), 2000);
     return {
       usedTokens,
       contextLimit,
+      contextLimitKnown: known,
       usagePercent,
       // backward compatible field names
       tokens: usedTokens,
       budget: contextLimit,
       percent: usagePercent,
       projectedTokens,
-      compactionPending: Boolean(this._compactionPending),
-      compacting: Boolean(this._compacting),
+      compactionPending: this._compaction.status === "pending",
+      compacting: this._compaction.status === "compacting" || this._compaction.status === "committing",
     };
   }
 
@@ -213,10 +225,18 @@ export class ToolMethods {
     return this._compactMessages(false);
   }
 
-  _compactMessages(force = false) {
+  /**
+   * Build a compacted message list in a separate buffer without modifying
+   * the live messages. Returns the new message array or null if no compaction
+   * was needed.
+   */
+  _buildCompactedMessages(force = false) {
     const usage = this._messageTokenUsage();
-    if (!force && usage < this._config.tokenBudget * this._config.compactThreshold) return false;
-    if (this._messages.length < 2) return false;
+    if (!force) {
+      const threshold = this._config.tokenBudget * this._config.compactThreshold;
+      if (usage < threshold) return null;
+    }
+    if (this._messages.length < 2) return null;
 
     const target = this._config.tokenBudget * (force ? 0.2 : 0.45);
     let keptTokens = 0;
@@ -232,15 +252,30 @@ export class ToolMethods {
     while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
 
     const earlier = this._messages.slice(0, keepFrom);
+    // Build summary transcript from earlier messages, using read-only data
     const transcript = earlier
       .filter(message => ["user", "assistant"].includes(message.role) && message.content)
       .map(message => `${message.role === "user" ? "User" : "Assistant"}: ${String(message.content)}`)
       .join("\n")
       .slice(-6000);
-    if (transcript) {
-      this._summary = [this._summary, transcript].filter(Boolean).join("\n").slice(-8000);
+
+    const newSummary = transcript
+      ? [this._summary, transcript].filter(Boolean).join("\n").slice(-8000)
+      : this._summary;
+
+    // Return new message list (immutable buffer)
+    const kept = this._messages.slice(keepFrom);
+    if (newSummary) {
+      kept.unshift({ role: "assistant", content: `Earlier conversation summary:\n${newSummary}` });
     }
-    this._messages = this._messages.slice(keepFrom);
+    return { messages: kept, summary: newSummary };
+  }
+
+  _compactMessages(force = false) {
+    const result = this._buildCompactedMessages(force);
+    if (!result) return false;
+    this._messages = result.messages;
+    this._summary = result.summary;
     return true;
   }
 
@@ -400,27 +435,30 @@ export class ToolMethods {
     const boundary = Math.max(0, Math.min(this._requestStartIndex, this._messages.length));
     const active = this._messages.slice(boundary)
       .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
+    const limit = this._contextLimitKnown() ? this._config.tokenBudget : 0;
     let used = countTokens(sys) + countTokens(activeObjective)
       + countTokens(summary[0]?.content || "")
       + active.reduce((total, message) => total
         + countTokens(String(message.content || ""))
         + countTokens(JSON.stringify(message.tool_calls || [])), 0);
     const historical = [];
-    for (let index = boundary - 1; index >= 0; index--) {
-      const message = this._messages[index];
-      if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-      const size = countTokens(String(message.content || ""))
-        + countTokens(JSON.stringify(message.tool_calls || []));
-      if (historical.length > 0 && used + size > this._config.tokenBudget) break;
-      historical.unshift(message);
-      used += size;
-    }
-    while (historical.length > 0 && historical[0]?.role === "tool") {
-      const idx = this._messages.indexOf(historical[0]);
-      if (idx > 0) {
-        historical.unshift(this._messages[idx - 1]);
-      } else {
-        historical.shift();
+    if (limit > 0) {
+      for (let index = boundary - 1; index >= 0; index--) {
+        const message = this._messages[index];
+        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+        const size = countTokens(String(message.content || ""))
+          + countTokens(JSON.stringify(message.tool_calls || []));
+        if (historical.length > 0 && used + size > limit) break;
+        historical.unshift(message);
+        used += size;
+      }
+      while (historical.length > 0 && historical[0]?.role === "tool") {
+        const idx = this._messages.indexOf(historical[0]);
+        if (idx > 0) {
+          historical.unshift(this._messages[idx - 1]);
+        } else {
+          historical.shift();
+        }
       }
     }
     const context = [

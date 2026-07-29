@@ -13,6 +13,9 @@ test("prompt families follow OpenCode's model-based routing while preserving Kha
   assert.match(codex, /You are KhazAI/);
   assert.match(codex, /call the appropriate tool immediately/);
   assert.match(codex, /Prefer Read, Glob, Grep, Edit, and Write for file operations/);
+  assert.match(codex, /syntax or typecheck first/);
+  assert.match(codex, /Never pipe test output through grep or tail/);
+  assert.match(codex, /Never use git stash, git reset, or git checkout/);
   assert.match(codex, /# Codex behavior/);
   assert.doesNotMatch(gpt, /# Codex behavior/);
   assert.match(gpt, /# GPT behavior/);

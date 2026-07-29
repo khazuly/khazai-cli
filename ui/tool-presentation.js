@@ -296,6 +296,30 @@ function resultSummary(tool, args, content, state, metadata) {
     ? `${TOOL_LABELS[tool] || tool} failed`
     : `${TOOL_LABELS[tool] || tool} completed with no output`;
   if (tool === "bash") {
+    const test = metadata?.testExecution;
+    if (test) {
+      const seconds = Math.round(Number(test.timeoutMs || 0) / 1000);
+      if (test.outcome === "timeout") {
+        return concisePreview([`Test suite timed out after ${seconds}s`], "Test suite timed out");
+      }
+      if (test.outcome === "hanging") {
+        return concisePreview([`Test process did not exit after completed output · ${seconds}s`], "Test process did not exit");
+      }
+      if (test.outcome === "exit-error") {
+        return concisePreview(
+          [`Test command exited with code ${test.exitCode}`, test.firstFailure ? `First failure: ${test.firstFailure}` : ""],
+          "Test command failed",
+        );
+      }
+      const duration = Number.isFinite(Number(test.durationMs))
+        ? ` · ${(Number(test.durationMs) / 1000).toFixed(1)}s`
+        : "";
+      const summary = `${test.passed || 0} passed, ${test.failed || 0} failed, ${test.cancelled || 0} cancelled${duration}`;
+      return concisePreview(
+        [summary, test.firstFailure ? `First failure: ${test.firstFailure}` : ""],
+        failed ? "Test command failed" : "Tests completed",
+      );
+    }
     if (/timed out|timeout/i.test(content)) {
       const text = /\b(?:test|pytest|jest|vitest)\b/i.test(args.command || "")
         ? "Timed out while running the test suite"

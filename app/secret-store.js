@@ -8,7 +8,7 @@ const VALUE_PATTERNS = [
   { type: "authorization", pattern: /\bBearer\s+([A-Za-z0-9._~+/-]{12,})\b/gi, group: 1 },
   {
     type: "credential",
-    pattern: /\b(?:api[_ -]?key|token|password|credential|secret|cookie|authorization)\s*(?:is\s*)?(?:[:=]|\s)\s*["']?([^\s"'&,;]{4,})/gi,
+    pattern: /\b(?:api[_ -]?key|token|password|credential|secret|cookie|authorization)\s*(?:is\s*)?[:=]\s*["']?([^\s"'&,;]{4,})/gi,
     group: 1,
   },
 ];

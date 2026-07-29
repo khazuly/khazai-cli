@@ -16,6 +16,8 @@ import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
 import { createToolExecutor } from "./agent/tool-executor-factory.js";
 
+const COMPACTION_TIMEOUT_MS = 30_000;
+
 export class Agent {
   constructor(registry, opts = {}) {
     this._workspace = opts.workspace || process.cwd();
@@ -106,9 +108,24 @@ export class Agent {
     this._chatHandlesRetries = opts.chatHandlesRetries ?? !opts.chat;
     this._resetSession = opts.resetSession || resetSession;
     this._recoverableProviderRequest = null;
-    this._compactionPending = false;
-    this._compacting = false;
-    this._compactionStarted = false;
+    this._compaction = {
+      status: "idle", // idle | pending | compacting | committing | completed | failed
+      runId: null,
+      turnId: null,
+      taskEpoch: null,
+      compactionId: null,
+      startedAt: null,
+      error: null,
+    };
+    this._progress = {
+      lastProgressAt: Date.now(),
+      repeatedSearches: 0,
+      repeatedReads: 0,
+      lastSearchSignature: null,
+      lastReadSignature: null,
+      compactionAttempt: 0,
+      continuationQueued: false,
+    };
     this._shellScheduler = new ShellScheduler(this._workspace);
     this._secretStore = new SecretStore();
     const configuredResolver = opts.intentResolver;
@@ -130,6 +147,7 @@ export class Agent {
     this._secretStore.clear();
     this._recoverableProviderRequest = null;
     this._activeScope = null;
+    this._clearCompaction();
   }
   _isActiveRun(scope) {
     const run = this._activeRun;
@@ -175,9 +193,40 @@ export class Agent {
   redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
   _toolExecutor(scope) { return createToolExecutor(this, scope); }
-  isCompacting() { return this._compacting; }
-  isCompactionPending() { return this._compactionPending; }
-  compact() { this._compactMessages(true); return this.exportSessionState(); }
+  isCompacting() {
+    return this._compaction.status === "compacting" || this._compaction.status === "committing";
+  }
+  isCompactionPending() { return this._compaction.status === "pending"; }
+  compact() {
+    this._compactMessages(true);
+    return this.exportSessionState();
+  }
+  _clearCompaction() {
+    this._compaction = {
+      status: "idle",
+      runId: null,
+      turnId: null,
+      taskEpoch: null,
+      compactionId: null,
+      startedAt: null,
+      error: null,
+    };
+  }
+  _compactionActiveFor(run) {
+    return this._compaction.runId === run?.runId
+      && this._compaction.turnId === run?.turnId
+      && this._compaction.taskEpoch === run?.taskEpoch;
+  }
+  _recordProgress() {
+    this._progress.lastProgressAt = Date.now();
+  }
+  _checkNoProgress() {
+    const elapsed = Date.now() - this._progress.lastProgressAt;
+    if (elapsed > 60_000 && this._compaction.status === "compacting") {
+      return true; // compaction taking too long
+    }
+    return false;
+  }
 }
 
 for (const source of [StateMethods, ToolMethods, LoopMethods]) {

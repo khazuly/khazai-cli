@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
+import { ShellScheduler } from "../app/shell-scheduler.js";
+import { execAsync } from "../lib/exec-async.js";
+import {
+  parseTestReport,
+  shellTimeoutMs,
+  testExecutionProfile,
+} from "../lib/shell-command-policy.js";
 import { bashTool } from "../tools/shell.js";
 
 function intent(kind = "answer") {
@@ -131,7 +138,7 @@ test("successful identical shell commands reuse one execution until files change
   assert.equal(events.filter(event => event.type === "tool-call" && event.tool === "bash").length, 2);
 });
 
-test("failed identical shell commands allow one justified retry", async () => {
+test("failed identical targeted tests allow one justified retry", async () => {
   const registry = new Registry();
   let executions = 0;
   registry.register({
@@ -144,7 +151,7 @@ test("failed identical shell commands allow one justified retry", async () => {
   const call = (id, args = {}) => JSON.stringify({
     tool: "bash",
     id,
-    args: { command: "npm test", ...args },
+    args: { command: "node --test test/example.test.js", ...args },
   });
   const agent = new Agent(registry, {
     workspace: mkdtempSync(join(tmpdir(), "khazai-shell-retry-")),
@@ -152,11 +159,72 @@ test("failed identical shell commands allow one justified retry", async () => {
     chat: scripted([
       call("shell-1"),
       call("shell-blocked"),
-      call("shell-2", { timeout: 120, retryReason: "The first attempt timed out before the suite completed." }),
-      call("shell-blocked-again", { timeout: 180, retryReason: "Retry again." }),
+      call("shell-2", { timeout: 180, retryReason: "The first attempt timed out before the suite completed." }),
+      call("shell-blocked-again", { timeout: 240, retryReason: "Retry again." }),
       "Verification remains blocked after two attempts.",
     ]),
   });
   for await (const _event of agent.loop("run the tests")) {}
   assert.equal(executions, 2);
+});
+
+test("full and targeted test commands receive distinct bounded timeouts", () => {
+  const full = testExecutionProfile("npm test", process.cwd());
+  const direct = testExecutionProfile("node --test test/*.test.js", process.cwd());
+  const targeted = testExecutionProfile("node --test test/execution-policy.test.js", process.cwd());
+  assert.deepEqual([full.scope, direct.scope, targeted.scope], ["full", "full", "targeted"]);
+  assert.equal(full.testFileCount, 40);
+  assert.equal(shellTimeoutMs("npm test", process.cwd(), 60), 120_000);
+  assert.equal(shellTimeoutMs("node --test test/execution-policy.test.js", process.cwd()), 60_000);
+});
+
+test("shell pipelines preserve the failing command exit status", async () => {
+  await assert.rejects(
+    execAsync("sh -c 'exit 7' | tail -n 1", { pipefail: true }),
+    error => error.status === 7,
+  );
+  const filtered = await bashTool.execute({ command: "node --test test/example.test.js | tail -n 1" });
+  assert.match(filtered, /^Exit: 2/);
+  assert.match(filtered, /can hide the test runner exit status/);
+});
+
+test("test reports preserve counts, duration, and the first failure", () => {
+  const report = parseTestReport([
+    "✖ rejects invalid input",
+    "# tests 4",
+    "# pass 3",
+    "# fail 1",
+    "# cancelled 0",
+    "# duration_ms 1234.5",
+  ].join("\n"));
+  assert.deepEqual(report, {
+    passed: 3,
+    failed: 1,
+    cancelled: 0,
+    durationMs: 1234.5,
+    firstFailure: "✖ rejects invalid input",
+  });
+});
+
+test("full-suite timeouts require a cleanup change before another launch", () => {
+  const scheduler = new ShellScheduler(process.cwd());
+  const first = { id: "suite-1", name: "bash", args: { command: "npm test" } };
+  scheduler.beginRun("run-1", "turn-1", 1);
+  assert.equal(scheduler.reserve(first), null);
+  assert.equal(scheduler.running(first), true);
+  scheduler.complete(first, "Exit: -1\nTest suite timed out after 120s", true);
+  const duplicate = scheduler.reserve({
+    id: "suite-2",
+    name: "bash",
+    args: { command: "npm test", timeout: 180, retryReason: "Retry the suite." },
+  });
+  assert.match(duplicate.result, /requires a concrete cleanup change/);
+  scheduler.complete({ name: "edit" }, "Edited test cleanup", false);
+  assert.equal(scheduler.reserve({ id: "suite-3", name: "bash", args: { command: "npm test" } }), null);
+});
+
+test("verification commands cannot mutate Git state", async () => {
+  const result = await bashTool.execute({ command: "git stash && npm test" });
+  assert.match(result, /^Exit: 2/);
+  assert.match(result, /Git working-tree mutation is not allowed/);
 });

@@ -77,20 +77,55 @@ export class LoopMethods {
           : "context";
       yield scoped({ type: "thinking", turn: this._turn, phase });
       if (!isRunActive()) return;
-      let ctx = this._buildContext();
-      // Preflight compaction check: compact before provider request if needed
-      if ((this._compactionPending || this._messageTokenUsage() >= this._config.tokenBudget) && !this._compactionStarted) {
-        this._compactionStarted = true;
-        this._compacting = true;
-        yield scoped({ type: "compaction-start" });
-        if (!isRunActive()) return;
-        this._compactMessages(true);
-        this._compactionPending = false;
-        this._compacting = false;
-        this._compactionStarted = false;
-        yield scoped({ type: "compaction-end" });
-        ctx = this._buildContext();
+      // Handle pending compaction before provider request
+      if (this._compaction.status === "pending") {
+        // Compaction timeout check
+        if (this._compaction.startedAt && Date.now() - this._compaction.startedAt > 30_000) {
+          this._clearCompaction();
+          yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
+          if (finalizeRun()) return;
+        }
+        if (this._compaction.status === "compacting" || this._compaction.status === "committing") {
+          // Idempotent guard: already compacting — skip
+        } else if (this._compactionActiveFor(run)) {
+          // Already compacted for this scope — skip
+        } else {
+          // Start compaction for this run scope
+          const compactionId = randomUUID();
+          this._compaction = {
+            status: "compacting",
+            runId: run.runId,
+            turnId: run.turnId,
+            taskEpoch: run.taskEpoch,
+            compactionId,
+            startedAt: Date.now(),
+            error: null,
+          };
+          yield scoped({ type: "compaction-start" });
+          if (!isRunActive()) return;
+          // Build compacted history in immutable buffer
+          const compacted = this._buildCompactedMessages(true);
+          if (compacted) {
+            this._compaction.status = "committing";
+            // Atomic commit: only replace messages after successful build
+            this._messages = compacted.messages;
+            this._summary = compacted.summary;
+            this._compaction.status = "completed";
+            this._recordProgress();
+          } else {
+            this._compaction.status = "failed";
+            this._compaction.error = "Compaction produced no result";
+          }
+          yield scoped({ type: "compaction-end" });
+          if (this._compaction.status === "failed") {
+            // Preserve original history, clear compaction state
+            this._clearCompaction();
+            yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
+            if (finalizeRun()) return;
+          }
+        }
       }
+      let ctx = this._buildContext();
       let reply;
       let streamMode = "pending", streamTail = "";
       let streamStarted = false;
@@ -254,12 +289,40 @@ export class LoopMethods {
         if (streamStarted && streamMode === "text") {
           yield scoped({ type: "stream-discard" });
         }
-        this._debugToolRecovery("transport_failure", finalError?.message || String(finalError));
+        const message = finalError?.message || String(finalError);
+        // Check for context-length error (even for unknown-limit models)
+        const isContextLength = /context\s*length|context_length_exceeded|maximum\s*context|token\s*limit/i.test(message);
+        if (isContextLength && this._compaction.status === "idle" && isRunActive()) {
+          // Schedule compaction and retry once
+          this._compaction = {
+            status: "pending",
+            runId: run.runId,
+            turnId: run.turnId,
+            taskEpoch: run.taskEpoch,
+            compactionId: null,
+            startedAt: Date.now(),
+            error: null,
+          };
+          // Don't finalize — the loop will compact and retry
+          yield scoped({ type: "compaction-start" });
+          const compacted = this._buildCompactedMessages(true);
+          if (compacted) {
+            this._messages = compacted.messages;
+            this._summary = compacted.summary;
+            this._compaction.status = "completed";
+            this._recordProgress();
+            yield scoped({ type: "compaction-end" });
+            // Retry immediately by continuing the loop
+            continue;
+          }
+          this._clearCompaction();
+          yield scoped({ type: "compaction-end" });
+        }
+        this._debugToolRecovery("transport_failure", message);
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
         }
         this._finishLatency();
-        const message = finalError?.message || String(finalError);
         const recoverable = recoverableProviderFailure(finalError);
         if (recoverable) rememberProviderFailure(this, finalError, requestModel, phase);
         const content = recoverable
@@ -482,8 +545,52 @@ export class LoopMethods {
         name: tool.name,
         content: protectedResult,
       });
-      if (this._messageTokenUsage() >= this._config.tokenBudget) {
-        this._compactionPending = true;
+      // Track repeated inspection tools for no-progress detection
+      if (["read", "glob", "grep"].includes(tool.name)) {
+        const sig = `${tool.name}:${JSON.stringify(tool.args)}`;
+        if (sig === this._progress.lastReadSignature || sig === this._progress.lastSearchSignature) {
+          if (tool.name === "read") this._progress.repeatedReads++;
+          else this._progress.repeatedSearches++;
+        } else {
+          if (tool.name === "read") {
+            this._progress.repeatedReads = 0;
+            this._progress.lastReadSignature = sig;
+          } else {
+            this._progress.repeatedSearches = 0;
+            this._progress.lastSearchSignature = sig;
+          }
+        }
+      } else {
+        // Non-inspection tool execution counts as progress
+        this._progress.repeatedSearches = 0;
+        this._progress.repeatedReads = 0;
+      }
+      if (this._progress.repeatedSearches > 10 || this._progress.repeatedReads > 10) {
+        // Repeated identical searches/reads — no progress
+        this._finishLatency();
+        if (finalizeRun()) {
+          yield scoped({ type: "error", content: "No progress: repeated identical searches without meaningful change." });
+        }
+        return;
+      }
+      // Schedule compaction if projected tokens exceed the budget
+      const shouldCompact = (() => {
+        if (!this._contextLimitKnown()) return false;
+        const usedTokens = this._messageTokenUsage();
+        const limit = Math.max(1, Number(this._config.tokenBudget) || 24000);
+        const usageRatio = usedTokens / limit;
+        return usageRatio >= 1;
+      })();
+      if (shouldCompact && this._compaction.status === "idle") {
+        this._compaction = {
+          status: "pending",
+          runId: run.runId,
+          turnId: run.turnId,
+          taskEpoch: run.taskEpoch,
+          compactionId: null,
+          startedAt: Date.now(),
+          error: null,
+        };
       }
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });

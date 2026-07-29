@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { redactSecrets } from "../lib/secrets.js";
+import { shellTimeoutMs } from "../lib/shell-command-policy.js";
 import { normalizeToolOutput } from "./tool-lifecycle.js";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
@@ -285,6 +286,13 @@ export class ToolExecutor {
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
     if (!this._isActive()) return;
     call.args = this.prepareArgs(call.name, call.args);
+    if (call.name === "bash") {
+      call.args.timeout = shellTimeoutMs(
+        call.args.command,
+        call.args.workdir || this.workspace,
+        call.args.timeout,
+      ) / 1_000;
+    }
     const context = {
       tool: call.name,
       sessionId: this.sessionId,

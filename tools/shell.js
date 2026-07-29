@@ -1,5 +1,12 @@
 import { resolve } from "node:path";
 import { execAsync } from "../lib/exec-async.js";
+import {
+  mutatesGitForVerification,
+  parseTestReport,
+  shellTimeoutMs,
+  testExecutionProfile,
+  unsafeTestPipeline,
+} from "../lib/shell-command-policy.js";
 
 const CMD_FIXES = [
   { from: /python3?\s+-m\s+ht\b(?!\.server)/g, to: "python3 -m http.server" },
@@ -15,6 +22,29 @@ function fixCommand(cmd) {
     }
   }
   return fixed;
+}
+
+function testResultMetadata(profile, report, outcome, timeoutMs, exitCode, elapsedMs) {
+  if (!profile) return {};
+  return {
+    testExecution: {
+      scope: profile.scope,
+      outcome,
+      timeoutMs,
+      exitCode,
+      passed: report?.passed || 0,
+      failed: report?.failed || 0,
+      cancelled: report?.cancelled || 0,
+      durationMs: report?.durationMs ?? elapsedMs,
+      firstFailure: report?.firstFailure || "",
+    },
+  };
+}
+
+function testResultLine(report, elapsedMs) {
+  if (!report) return "";
+  const durationMs = report.durationMs ?? elapsedMs;
+  return `Test results: ${report.passed} passed, ${report.failed} failed, ${report.cancelled} cancelled · ${(durationMs / 1000).toFixed(1)}s`;
 }
 
 // Non-interactive shell inspection is allowed so the agent can behave like a
@@ -46,23 +76,41 @@ If no token provided, guide the user: \`git remote set-url origin https://<TOKEN
     },
     required: ["command"],
   },
-  async execute({ command, timeout = 60, workdir, env }, context = {}) {
+  async execute({ command, timeout, workdir, env }, context = {}) {
     const cwd = workdir ? resolve(process.cwd(), String(workdir)) : process.cwd();
     const fixed = fixCommand(command);
-    const timeoutMs = Math.max(1_000, Number(timeout) * 1000 || 60_000);
+    const profile = testExecutionProfile(fixed, cwd);
+    const timeoutMs = Math.max(1_000, shellTimeoutMs(fixed, cwd, timeout));
 
     if (INTERACTIVE_PAGER.test(fixed)) {
       return "Error: interactive pagers are not supported";
     }
+    if (unsafeTestPipeline(fixed)) {
+      return "Exit: 2\nRun test commands directly; grep and tail pipelines can hide the test runner exit status.";
+    }
+    if (mutatesGitForVerification(fixed)) {
+      return "Exit: 2\nGit working-tree mutation is not allowed during test verification.";
+    }
 
+    const startedAt = Date.now();
     try {
-      const { stdout: out } = await execAsync(fixed, {
+      const { stdout, stderr } = await execAsync(fixed, {
         cwd,
         timeoutMs,
         env,
         signal: context.signal,
+        pipefail: true,
       });
-      return `Exit: 0\n${out.slice(0, 5000)}${out.length > 5000 ? `\n... (${out.length - 5000} more)` : ""}`;
+      const output = [stdout, stderr].filter(Boolean).join("\n");
+      const report = profile ? parseTestReport(output) : null;
+      const summary = testResultLine(report, Date.now() - startedAt);
+      if (!profile) return `Exit: 0\n${output}`;
+      const outcome = report?.failed ? "failed" : "passed";
+      const exitCode = report?.failed ? 1 : 0;
+      return {
+        output: `Exit: ${exitCode}\n${[summary, report?.firstFailure, output].filter(Boolean).join("\n")}`,
+        metadata: testResultMetadata(profile, report, outcome, timeoutMs, exitCode, Date.now() - startedAt),
+      };
     } catch (lastErr) {
       const stderr = lastErr.stderr?.trim() ?? "";
       const stdout = lastErr.stdout?.trim() ?? "";
@@ -70,8 +118,25 @@ If no token provided, guide the user: \`git remote set-url origin https://<TOKEN
       if (code === 1 && /^(?:rg|grep)\b/i.test(fixed.trim()) && !stderr) {
         return `No matches found${stdout ? `\n${stdout.slice(0, 5000)}` : ""}`;
       }
-      const details = [stdout, stderr].filter(Boolean).join("\n").slice(0, 5000);
-      return `Exit: ${code}\n${details || lastErr.message}`;
+      const details = [stdout, stderr].filter(Boolean).join("\n");
+      const report = profile ? parseTestReport(details) : null;
+      const timedOut = lastErr.killed && /timed out/i.test(lastErr.message);
+      const hanging = timedOut && report && report.failed === 0 && report.durationMs !== null;
+      const outcome = hanging ? "hanging" : timedOut ? "timeout" : report?.failed ? "failed" : "exit-error";
+      const seconds = Math.round(timeoutMs / 1000);
+      const headline = hanging
+        ? `Test process did not exit after completed output · ${seconds}s`
+        : timedOut && profile?.scope === "full"
+          ? `Test suite timed out after ${seconds}s`
+          : timedOut
+            ? `Test command timed out after ${seconds}s`
+            : testResultLine(report, Date.now() - startedAt);
+      const firstFailure = report?.firstFailure ? `First failure: ${report.firstFailure}` : "";
+      if (!profile) return `Exit: ${code}\n${details || lastErr.message}`;
+      return {
+        output: `Exit: ${code}\n${[headline, firstFailure, details || lastErr.message].filter(Boolean).join("\n")}`,
+        metadata: testResultMetadata(profile, report, outcome, timeoutMs, code, Date.now() - startedAt),
+      };
     }
   },
 };

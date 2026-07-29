@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { shellTimeoutMs, testExecutionProfile } from "../lib/shell-command-policy.js";
 
 function normalizedCommand(value) {
   const source = String(value || "").trim();
@@ -53,9 +54,9 @@ function verificationCommand(command) {
     .test(source);
 }
 
-function requestedTimeout(args) {
-  const seconds = Number(args?.timeout);
-  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : 60_000;
+function requestedTimeout(args, workspace) {
+  const cwd = resolve(workspace, String(args?.workdir || workspace));
+  return shellTimeoutMs(args?.command, cwd, args?.timeout);
 }
 
 export class ShellScheduler {
@@ -138,7 +139,14 @@ export class ShellScheduler {
           terminal: previous.attempt >= 2,
         };
       }
-      if (previous.timedOut && requestedTimeout(call.args) <= previous.timeoutMs) {
+      if (previous.testScope === "full" && previous.timedOut) {
+        return {
+          result: "Full test suite retry requires a concrete cleanup change after the timeout.",
+          failed: true,
+          blocked: true,
+        };
+      }
+      if (previous.timedOut && requestedTimeout(call.args, this.workspace) <= previous.timeoutMs) {
         return {
           result: `Shell retry requires a timeout longer than ${previous.timeoutMs}ms.`,
           failed: true,
@@ -159,8 +167,9 @@ export class ShellScheduler {
       completedAt: null,
       exitCode: null,
       error: "",
-      timeoutMs: requestedTimeout(call.args),
+      timeoutMs: requestedTimeout(call.args, this.workspace),
       timedOut: false,
+      testScope: testExecutionProfile(call.args?.command, resolve(this.workspace, String(call.args?.workdir || this.workspace)))?.scope || null,
       verification: verificationCommand(call.args?.command),
       revision: this.revision,
       result: "",
@@ -191,7 +200,7 @@ export class ShellScheduler {
     record.completedAt = Date.now();
     record.exitCode = Number(/^Exit:\s*(-?\d+)/im.exec(text)?.[1] ?? (failed ? -1 : 0));
     record.error = failed ? text.split("\n").slice(1).join("\n").trim() : "";
-    record.timedOut = /timed out after \d+ms/i.test(text);
+    record.timedOut = /timed out after|did not exit after/i.test(text);
     record.result = text;
     if (!failed && !record.verification) this.revision++;
     record.revision = this.revision;
