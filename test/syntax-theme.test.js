@@ -22,11 +22,11 @@ test("unified themes supply semantic and syntax colors", () => {
   const light = THEMES["solarized-light"];
 
   for (const palette of [dark, light]) {
-    // Required canonical fields
+
     for (const key of ["name", "background", "text", "muted", "subtle", "border", "borderActive", "primary", "secondary", "success", "warning", "error", "info", "user", "assistant", "toolRead", "toolSearch", "toolShell", "toolWrite", "toolEdit", "code"]) {
       assert.ok(key in palette, `Missing field "${key}" in ${palette.name}`);
     }
-    // Syntax palette
+
     for (const key of ["keyword", "type", "function", "string", "addedBackground", "deletedBackground"]) {
       assert.match(palette.syntax[key], /^#[0-9a-f]{6}$/i, `Bad syntax.${key} in ${palette.name}`);
     }

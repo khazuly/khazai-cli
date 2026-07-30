@@ -227,7 +227,6 @@ function detectDeadCode(path, content, ext) {
     let count = 0;
     let match;
     while ((match = re.exec(content)) !== null) {
-      // skip the definition line itself
       const matchLine = content.slice(0, match.index).split("\n").length;
       if (matchLine !== defLine) count++;
     }
@@ -292,7 +291,7 @@ export const analyzeTool = {
     const deadCode = [];
     const duplicates = [];
 
-    // Read all files first (fast, sync is fine)
+
     for (const file of files) {
       try {
         const source = readFileSync(file, "utf-8");
@@ -302,7 +301,7 @@ export const analyzeTool = {
       }
     }
 
-    // Process syntax checks with concurrency to keep UI responsive
+
     const jobs = [...files];
     let completed = 0;
     const total = jobs.length;

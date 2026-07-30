@@ -41,31 +41,31 @@ test("trust prompt renders compact bordered layout with all sections", async () 
   );
   const text = stripAnsi(frame).replace(/[│┌┐└┘─]+/g, " ").replace(/\s+/g, " ");
 
-  // Bordered container present
+
   assert.match(frame, /Workspace trust/);
 
-  // Explanation text (may be wrapped across lines)
+
   assert.match(text, /KhazAI may read, modify, and run commands in this directory/);
 
-  // Directory label and path
+
   assert.match(frame, /Directory/);
   assert.match(frame, /\/root\/spam-otp/);
 
-  // Both options present
+
   assert.match(frame, /Trust and continue/);
   assert.match(frame, /Exit without trusting/);
 
-  // Keyboard hints
+
   assert.match(frame, /Select/);
   assert.match(frame, /Confirm/);
   assert.match(frame, /Exit/);
 
-  // Bottom area has keyboard hints
+
   assert.match(frame, /↑↓ Select · Enter Confirm · Esc Exit/);
 });
 
 test("trust prompt highlights only the selected option", async () => {
-  // Default selected index is 0 (Trust and continue)
+
   const frame = await renderComponent(
     h(TrustPrompt, { path: "/tmp", onTrust: () => {} }),
     50,
@@ -75,15 +75,15 @@ test("trust prompt highlights only the selected option", async () => {
   const lines = frame.split("\n");
   const optionLines = lines.filter(l => l.includes("Trust and continue") || l.includes("Exit without trusting"));
 
-  // Should have exactly 2 option lines
+
   assert.equal(optionLines.length, 2);
 
-  // First option should have the "›" marker (selected)
+
   assert.match(optionLines[0], /›/);
-  // "Trust and continue" should be on first line
+
   assert.match(optionLines[0], /Trust and continue/);
 
-  // Second option should not have "›"
+
   assert.doesNotMatch(optionLines[1], /›/);
 });
 
@@ -96,9 +96,9 @@ test("trust prompt wraps long paths", async () => {
   );
 
   assert.match(frame, /Directory/);
-  // The path should appear but may be wrapped
+
   assert.match(frame, /very|long|path|wrap|wrapping/);
-  // No path segments should exceed the available width
+
   const lines = frame.split("\n");
   for (const line of lines) {
     if (line.includes(longPath) || line.includes("/very") || line.includes("/long")) {
@@ -117,7 +117,7 @@ test("trust prompt prevents double confirmation", async () => {
     50,
     14,
   );
-  // The component renders; actual key input simulation is done in interaction tests
+
   assert.ok(frame.includes("Trust and continue"));
 });
 
@@ -131,16 +131,16 @@ test("isDirectoryTrusted returns false for non-existent path", () => {
 test("isDirectoryTrusted returns true after marking trusted", async () => {
   const tmpDir = mkdtempSync(join(tmpdir(), "khazai-trust-test-"));
   try {
-    // Build the config path the same way workspace.js does
+
     const { homedir } = await import("node:os");
     const { join } = await import("node:path");
     const key = Buffer.from(tmpDir).toString("base64url");
     const globalDir = join(homedir(), ".config", "khazai-ai", "workspaces");
     const cfgPath = join(globalDir, `${key}.json`);
 
-    // Mark trusted using the exported function (writes using the dir path as key)
-    // But markTrusted expects a cfgPath, not a dir path
-    // Let's test isDirectoryTrusted by directly writing a config
+
+
+
     const { mkdirSync, writeFileSync } = await import("node:fs");
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(cfgPath, JSON.stringify({ trusted: true, trustedAt: new Date().toISOString() }), "utf-8");
@@ -152,7 +152,7 @@ test("isDirectoryTrusted returns true after marking trusted", async () => {
 });
 
 test("symlink resolution normalizes trusted path", async () => {
-  // Skip on Windows
+
   if (process.platform === "win32") return;
 
   const baseDir = mkdtempSync(join(tmpdir(), "khazai-symlink-"));
@@ -162,12 +162,12 @@ test("symlink resolution normalizes trusted path", async () => {
   symlinkSync(realDir, linkDir);
 
   try {
-    // Trust via the real path
+
     const { getWorkspace, markTrusted } = await import("../config/workspace.js");
 
-    // Simulate trust by directly using workspace config
-    // The getWorkspace relies on process.cwd() so we can't easily test it
-    // Instead, verify realPath resolution by checking config file naming
+
+
+
     const { realpathSync } = await import("node:fs");
     const resolved = realpathSync(linkDir);
     assert.equal(resolved, realDir);

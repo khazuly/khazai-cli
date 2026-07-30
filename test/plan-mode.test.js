@@ -178,12 +178,12 @@ test("footer reports Plan and approved Build lifecycle modes", async () => {
   }), 70, 12);
   assert.match(planning, /Plan Mode · Waiting for decision/);
   assert.match(building, /Build Mode · Running verification/);
-  // Mode info appears in activity bar above prompt
+
   assert.ok(planning.indexOf("Plan Mode · Waiting for decision") < planning.indexOf("Ask anything..."),
     "plan mode status should appear above the prompt");
   assert.ok(building.indexOf("Build Mode · Running verification") < building.indexOf("Ask anything..."),
     "build mode status should appear above the prompt");
-  // Model still appears once below the prompt in footer
+
   assert.equal(planning.match(/big-cock/g)?.length, 1, "model appears exactly once in footer");
   assert.equal(building.match(/big-cock/g)?.length, 1, "model appears exactly once in footer");
 });

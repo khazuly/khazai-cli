@@ -27,7 +27,7 @@ for await (const ev of agent.loop("check the code for bugs and duplicates")) {
     continue;
   }
   if (ev.type === "plan-update") {
-    // console.log(`[PLAN-UPDATE] item ${ev.index} → ${ev.status}`);
+
     continue;
   }
   if (ev.type === "tool-call") {

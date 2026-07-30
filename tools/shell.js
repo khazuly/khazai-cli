@@ -47,8 +47,6 @@ function testResultLine(report, elapsedMs) {
   return `Test results: ${report.passed} passed, ${report.failed} failed, ${report.cancelled} cancelled · ${(durationMs / 1000).toFixed(1)}s`;
 }
 
-// Non-interactive shell inspection is allowed so the agent can behave like a
-// normal CLI. Keep blocking pagers because they can wait for terminal input.
 const INTERACTIVE_PAGER = /(?:^|[;&|]\s*)\s*(?:less|more)\b/i;
 
 export const bashTool = {

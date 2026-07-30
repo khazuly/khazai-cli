@@ -53,7 +53,7 @@ export function PromptInput({
   const subInfo = findSubCommands(commands, input.value);
   const inSubMode = subInfo !== null && input.value.includes(" ");
 
-  // Filter commands – use canonical visible commands with alias resolution
+
   let commandResults;
   if (inSubMode) {
     commandResults = filterCommandItems(subInfo.items, input.value, input.value.lastIndexOf(" ") + 1);
@@ -305,7 +305,7 @@ export function PromptInput({
       if (value) {
         if (value.startsWith("/")) {
           const [command, ...rest] = value.split(/\s+/);
-          // Resolve alias to canonical command + optional arg
+
           const resolved = resolveCommand(command);
           const arg = resolved.arg || rest.join(" ");
           onCommand?.(resolved.command, arg);
@@ -427,7 +427,7 @@ export function PromptInput({
     );
   });
 
-  // Build grouped command dropdown
+
   const cmdDropdown = showCmd && !showFiles
     ? h(CommandDropdown, {
         commandResults,
@@ -480,9 +480,9 @@ export function PromptInput({
   );
 }
 
-/**
- * Categorized command dropdown with scroll indicator.
- */
+
+
+
 function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, activeModel, theme }) {
   const label = inSubMode ? subInfo.cmd.name.slice(1) : "Commands";
   const total = commandResults.length;
@@ -491,7 +491,7 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
     ? Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, total)
     : null;
 
-  // Group by category when not in subcommand mode
+
   const renderItems = () => {
     if (inSubMode) {
       return commandViewport.visibleItems.map((item, i) =>
@@ -499,7 +499,7 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
       );
     }
 
-    // Build category-grouped visible items
+
     const visibleItems = commandViewport.visibleItems;
     let currentCategory = null;
     const rows = [];

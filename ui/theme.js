@@ -1,6 +1,6 @@
 import { createContext, createElement as h, useContext } from "react";
 
-// ── Syntax palette keys shared by every theme ──────────────────────────────
+
 const BASE_SYNTAX = {
   text: "#d4d4d4",
   muted: "#858585",
@@ -20,7 +20,7 @@ const BASE_SYNTAX = {
   hunk: "#4fc1ff",
 };
 
-/** Every entry must supply at minimum syntax keys that differ from BASE. */
+
 const SYNTAX_PALETTES = {
   "catppuccin-frappe": { text: "#c6d0f5", muted: "#737994", comment: "#838ba7", keyword: "#ca9ee6", type: "#e5c890", function: "#8caaee", string: "#a6d189", number: "#ef9f76", property: "#99d1db" },
   "catppuccin-latte": { text: "#4c4f69", muted: "#9ca0b0", comment: "#8c8fa1", keyword: "#8839ef", type: "#df8e1d", function: "#1e66f5", string: "#40a02b", number: "#fe640b", property: "#179299", addedBackground: "#d8f3dc", deletedBackground: "#f8d7da" },
@@ -39,28 +39,28 @@ function syntaxPalette(name) {
   return { ...BASE_SYNTAX, ...(SYNTAX_PALETTES[name] || {}) };
 }
 
-/**
- * Build a complete unified palette by extending partial interface colours with
- * a syntax palette and filling in derived / missing fields.
- *
- * The returned object satisfies both the old field names (panel, metadata,
- * inputText, toolResult, toolTarget, codeBackground, toolThink, toolRepo) and
- * the new canonical names (subtle, borderActive, user, assistant, toolEdit,
- * code, syntax).
- */
+
+
+
+
+
+
+
+
+
 function buildPalette(name, iface, syntaxOverlayName) {
   const syntax = syntaxPalette(syntaxOverlayName || name);
   const bg = iface.background;
   const txt = iface.text;
   const isLight = txt === "#4c4f69" || bg === "#eff1f5" || bg === "#fdf6e3" || bg === "#fdf6e3";
-  // True if the theme explicitly disables colour (mono)
+
   const colorEnabled = iface.colorEnabled !== false;
 
   const palette = {
     name,
     colorEnabled,
 
-    // ── Canonical new fields ───────────────────────────────────────────
+
     background: bg,
     text: iface.assistant != null ? iface.assistant : txt,
     muted: iface.muted,
@@ -83,7 +83,7 @@ function buildPalette(name, iface, syntaxOverlayName) {
     code: iface.codeBackground != null ? iface.codeBackground : (iface.panel || bg),
     syntax,
 
-    // ── Semantic input area fields ────────────────────────────────────
+
     inputBackground: iface.panel != null ? iface.panel : bg,
     inputText: iface.inputText != null ? iface.inputText : txt,
     inputPlaceholder: iface.muted,
@@ -91,7 +91,7 @@ function buildPalette(name, iface, syntaxOverlayName) {
     inputBorderActive: iface.primary,
     cursor: iface.cursor != null ? iface.cursor : iface.primary,
 
-    // ── Legacy backward-compatible fields ──────────────────────────────
+
     panel: iface.panel != null ? iface.panel : bg,
     metadata: iface.metadata != null ? iface.metadata : iface.muted,
     toolResult: iface.toolResult != null ? iface.toolResult : txt,
@@ -101,13 +101,13 @@ function buildPalette(name, iface, syntaxOverlayName) {
     toolRepo: iface.toolRepo != null ? iface.toolRepo : iface.success,
   };
 
-  // Syntactic sugar: allow StatusRail / Panel to resolve tone="borderActive" etc.
-  // Also keep tone="border" working.
+
+
   return palette;
 }
 
-// ── Interface colour definitions ───────────────────────────────────────────
-// Fields not listed per entry fall through to buildPalette defaults.
+
+
 
 const THEMES = {
   dark: buildPalette("dark", {
@@ -218,7 +218,7 @@ const THEMES = {
     toolRepo: undefined,
   }, "catppuccin-mocha"),
 
-  // ── Syntax-derived full themes ───────────────────────────────────────
+
 
   dracula: buildPalette("dracula", {
     background: "#282a36",
@@ -534,11 +534,11 @@ const THEMES = {
   }, "two-dark"),
 };
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+
 
 const THEME_NAMES = Object.keys(THEMES);
 
-/** Return the normalised theme name or null if invalid. */
+
 export function isKnownTheme(value) {
   const key = String(value || "").toLowerCase();
   return THEME_NAMES.includes(key) ? key : null;

@@ -271,7 +271,7 @@ export function validateToolArguments(tool, registry) {
       if (schema.additionalProperties === false && !["_agentWorkspace", "_allowExternal"].includes(key)) {
         return { kind: "schema_validation", detail: `argument \"${key}\" is not allowed` };
       }
-      continue; // Tools may accept runtime-only agent metadata.
+      continue;
     }
     const type = definition.type;
     const matches = !type

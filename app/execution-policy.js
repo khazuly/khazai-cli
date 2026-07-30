@@ -75,7 +75,6 @@ export class ExecutionPolicy {
     this.evidence = [];
     this.answerAttempts = 0;
 
-    // Task-aware state tracking
     this.mutatedWorkspace = false;
     this.ranValidation = false;
     this.ranInspection = false;
@@ -218,7 +217,6 @@ export class ExecutionPolicy {
       }
     }
 
-    // Fallback: generic guidance for any remaining gap
     return {
       detectedIntent: this.contract.intent,
       proposedAction: `early completion with missing evidence: ${gapKinds.join(", ")}`,

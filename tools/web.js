@@ -167,7 +167,6 @@ async function assertPublicTarget(url) {
     }
   } catch (error) {
     if (/private|loopback/i.test(error.message)) throw error;
-    // Let fetch report DNS/connectivity failures, and keep mocked transports testable.
   }
 }
 

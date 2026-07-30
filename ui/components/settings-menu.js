@@ -23,36 +23,36 @@ import {
 
 const VIEWPORT_SIZE = 6;
 
-// ── Shared SettingRow component ─────────────────────────────────────────
 
-/**
- * A two‑column row for settings labels and values.
- *
- * Props:
- *   marker    – optional selection marker string ("›" or " ")
- *   label     – setting name (Text child)
- *   value     – optional value string to display in the right column
- *   valueColor – colour for the value text (defaults to theme.secondary)
- *   selected  – whether the row is currently selected
- *   dimValue  – whether the value should be dimmed
- */
+
+
+
+
+
+
+
+
+
+
+
+
 function SettingRow({ marker, label, value, valueColor, selected, dimValue }) {
   const theme = useTheme();
   return h(Box, { width: "100%" },
-    // ── Fixed‑width marker column ───────────────────────────────────
+
     marker !== undefined
       ? h(Box, { width: 2, flexShrink: 0 },
           h(Text, { color: selected ? theme.primary : theme.text }, marker),
         )
       : null,
-    // ── Label column (flexes to fill remaining width) ───────────────
+
     h(Box, { flexGrow: 1, minWidth: 0 },
       h(Text, {
         color: selected ? theme.primary : theme.text,
         bold: selected,
       }, label),
     ),
-    // ── Value column (right‑aligned, no shrink) ─────────────────────
+
     value !== undefined && value !== null
       ? h(Box, { marginLeft: 2, flexShrink: 0 },
           h(Text, {
@@ -64,14 +64,14 @@ function SettingRow({ marker, label, value, valueColor, selected, dimValue }) {
   );
 }
 
-// ── Helper: clamp index ─────────────────────────────────────────────────
+
 
 function clampIndex(index, count) {
   if (count === 0) return -1;
   return Math.max(0, Math.min(count - 1, index));
 }
 
-// ── Scrolling hook ───────────────────────────────────────────────────────
+
 
 function useScrollable(items) {
   const [selectedIndex, setSelectedIndex] = useState(items.length ? 0 : -1);
@@ -102,7 +102,7 @@ function useScrollable(items) {
   };
 }
 
-// ── Main settings menu ───────────────────────────────────────────────────
+
 
 function MainMenu({ model, onOpenSection, onClose }) {
   const theme = useTheme();
@@ -139,7 +139,7 @@ function MainMenu({ model, onOpenSection, onClose }) {
       h(Text, { bold: true, color: theme.primary }, "Model Settings"),
     ),
     h(Box, { flexDirection: "column" },
-      // Active model row
+
       h(Box, { marginBottom: 1 },
         h(SettingRow, {
           label: "Active model",
@@ -168,7 +168,7 @@ function MainMenu({ model, onOpenSection, onClose }) {
   );
 }
 
-// ── Section settings view ────────────────────────────────────────────────
+
 
 function SectionView({ model, sectionId, onBack, onEditSetting, onResetSection }) {
   const theme = useTheme();
@@ -176,7 +176,7 @@ function SectionView({ model, sectionId, onBack, onEditSetting, onResetSection }
   const sectionDef = SETTING_SECTIONS[sectionId] || AUTO_FREE_SECTIONS[sectionId];
 
   if (!sectionDef) {
-    // Reset section - handle inline
+
     return h(ResetView, { model, sectionId: null, onBack, onResetSection });
   }
 
@@ -241,7 +241,7 @@ function SectionView({ model, sectionId, onBack, onEditSetting, onResetSection }
   );
 }
 
-// ── Reset view ───────────────────────────────────────────────────────────
+
 
 function ResetView({ model, sectionId, onBack, onResetSection, onConfirm, onCancel }) {
   const theme = useTheme();
@@ -298,13 +298,13 @@ function ResetView({ model, sectionId, onBack, onResetSection, onConfirm, onCanc
   );
 }
 
-// ── Value editor ─────────────────────────────────────────────────────────
+
 
 function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
   const theme = useTheme();
   const caps = resolveProviderCapabilities(model);
 
-  // Build options based on setting type
+
   const buildOptions = () => {
     const key = setting.key;
 
@@ -356,7 +356,7 @@ function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
       }));
     }
 
-    // For integer/float types: show current value and custom option
+
     return [
       { label: `Current: ${formatSettingValue(key, currentValue, model)}`, value: currentValue, info: true },
       { label: "Custom value", value: "__custom__" },
@@ -377,7 +377,7 @@ function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
   useInput((ch, key) => {
     if (customMode) {
       if (key.return) {
-        // Submit custom value
+
         const { valid, value, message } = validateSetting(setting.key, customInputRef.current, model);
         if (!valid) {
           setError(message);
@@ -485,21 +485,21 @@ function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
   );
 }
 
-// ── Main export ──────────────────────────────────────────────────────────
 
-/**
- * SettingsMenu – interactive Ink component for managing model settings.
- *
- * Props:
- *   model          – active model name (e.g. "big-cock")
- *   initialSection – optional section to open directly ("generation", etc.)
- *   onClose        – called when the user closes the menu
- *   onSettingChange – called when a setting changes (key, value)
- */
+
+
+
+
+
+
+
+
+
+
 export function SettingsMenu({ model, initialSection, onClose, onSettingChange }) {
   const isAutoFree = String(model).toLowerCase() === "auto-free";
 
-  // Determine initial view
+
   const initReset = initialSection === "reset";
   const initSection = initReset || (initialSection && (SETTING_SECTIONS[initialSection] || AUTO_FREE_SECTIONS[initialSection]))
     ? initialSection
@@ -553,7 +553,7 @@ export function SettingsMenu({ model, initialSection, onClose, onSettingChange }
     resetModelSettings(model, resetSection || undefined);
     setResetMode(false);
     setView("main");
-    // Notify parent of reset
+
     onSettingChange?.("__reset__", resetSection || null);
   }, [model, resetSection, onSettingChange]);
 

@@ -11,14 +11,14 @@ function compactTokens(value) {
   return `${(tokens / 1_000).toFixed(tokens < 100_000 ? 1 : 0)}k`;
 }
 
-/**
- * Simplified footer bar displayed below the prompt input.
- *
- * Left:  active model (plus "· Enter send" when idle)
- * Right: context usage (e.g. "Context 57.6k / 128k · 45%")
- *
- * On narrow terminals the two sections stack vertically.
- */
+
+
+
+
+
+
+
+
 export function StatusBar({
   running = false,
   model = "",
@@ -35,7 +35,7 @@ export function StatusBar({
   const name = model || "KhazAI";
   const modelStatus = running ? name : `${name} · Enter send`;
 
-  // Context display
+
   const tokenDisplay = compactTokens(currentContextTokens);
   const limitDisplay = contextLimit ? compactTokens(contextLimit) : null;
   const usagePercent = contextLimitKnown && contextLimit > 0

@@ -390,7 +390,6 @@ export async function handleSessionCommand(cmd, arg, context) {
     appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     return;
   }
-  // Backward-compatible hidden aliases
   if (cmd === "/expand") {
     const tools = recentToolMessages(completedRef.current);
     setInspectedTool(tools[0] || null);

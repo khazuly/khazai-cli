@@ -47,7 +47,7 @@ test("2. task one grows context from baseline", async () => {
   const agent = new Agent(new Registry(), agentOpts());
   const baseline = agent.contextUsage().currentContextTokens;
 
-  // Simulate one complete task turn: a few messages appended
+
   agent._messages.push({ role: "user", content: "Task 1: inspect the workspace" });
   agent._messages.push({
     role: "assistant",
@@ -68,7 +68,7 @@ test("3. task two increases existing context instead of resetting", async () => 
   const agent = new Agent(new Registry(), agentOpts());
   const baseline = agent.contextUsage().currentContextTokens;
 
-  // Task 1 with substantial messages
+
   agent._messages.push({ role: "user", content: "Task 1: find the bug " + "x".repeat(500) });
   agent._messages.push({ role: "assistant", content: "Found it in main.js " + "y".repeat(300) });
   const afterTask1 = agent.contextUsage();
@@ -77,17 +77,17 @@ test("3. task two increases existing context instead of resetting", async () => 
     `Context after task 1 (${afterTask1.currentContextTokens}) should be > baseline (${baseline}) + 150`,
   );
 
-  // Task 2 — append more messages (simulating a new turn)
+
   agent._messages.push({ role: "user", content: "Task 2: fix the bug " + "z".repeat(200) });
   agent._messages.push({ role: "assistant", content: "Fixed it. " + "w".repeat(150) });
   const afterTask2 = agent.contextUsage();
 
-  // Context should grow, not reset
+
   assert.ok(
     afterTask2.currentContextTokens > afterTask1.currentContextTokens,
     `Context after task 2 (${afterTask2.currentContextTokens}) should be > after task 1 (${afterTask1.currentContextTokens})`,
   );
-  // Context should be significantly larger than baseline
+
   assert.ok(
     afterTask2.currentContextTokens > baseline + 300,
     `Context after task 2 (${afterTask2.currentContextTokens}) should include historical messages (baseline ${baseline})`,
@@ -97,26 +97,26 @@ test("3. task two increases existing context instead of resetting", async () => 
 test("4. turn usage resets without resetting current context", async () => {
   const agent = new Agent(new Registry(), agentOpts());
 
-  // Simulate first turn usage
+
   agent._usageTracker.record({ requestId: "req-1", inputTokens: 200, outputTokens: 50 }, { runId: "run-1", turnId: "turn-1" });
   const turn1Usage = agent.contextUsage();
   assert.equal(turn1Usage.currentTurnInputTokens, 200);
   assert.equal(turn1Usage.currentTurnOutputTokens, 50);
 
-  // Reset turn
+
   agent._usageTracker.resetTurn();
 
-  // Second turn
+
   agent._messages.push({ role: "user", content: "Second request" });
   agent._usageTracker.record({ requestId: "req-2", inputTokens: 100, outputTokens: 20 }, { runId: "run-2", turnId: "turn-2" });
   const turn2Usage = agent.contextUsage();
 
-  // Turn usage reset
+
   assert.equal(turn2Usage.currentTurnInputTokens, 100, "Turn input reset");
   assert.equal(turn2Usage.currentTurnOutputTokens, 20, "Turn output reset");
-  // Session totals cumulative
+
   assert.ok(turn2Usage.sessionInputTokens >= 300, "Session totals cumulative");
-  // Current context has grown (still includes previous messages)
+
   assert.ok(
     turn2Usage.currentContextTokens >= turn1Usage.currentContextTokens,
     "Current context should not reset with turn",
@@ -126,19 +126,19 @@ test("4. turn usage resets without resetting current context", async () => {
 test("5. saving and resuming preserves context", async () => {
   const agent = new Agent(new Registry(), agentOpts());
 
-  // Build some context
+
   agent._messages.push({ role: "user", content: "Task 1: original task" });
   agent._messages.push({ role: "assistant", content: "Completed task 1 with detailed analysis." });
   const before = agent.contextUsage().currentContextTokens;
 
-  // Export state (simulate saving)
+
   const state = agent.exportSessionState();
 
-  // Create a new agent with this state (simulate resume)
+
   const resumed = new Agent(new Registry(), agentOpts({ sessionState: state }));
   const after = resumed.contextUsage().currentContextTokens;
 
-  // Context should be approximately the same (within 50% margin for tokenizer differences)
+
   assert.ok(
     Math.abs(after - before) / Math.max(before, 1) < 0.5,
     `Resumed context (${after}) should approximate saved context (${before})`,
@@ -160,7 +160,7 @@ test("6. real compaction reduces context", async () => {
   const before = agent.contextUsage().currentContextTokens;
   assert.ok(before > 2000, `Context before compaction (${before}) should be substantial`);
 
-  // Compact
+
   agent._config.tokenBudget = 1000;
   const compacted = agent._compactMessages(true);
   assert.ok(compacted, "Compaction should succeed");
@@ -176,7 +176,7 @@ test("7. unknown limits never produce fake percentages", () => {
   const tracker = new ContextUsageTracker();
   const snapshot = tracker.snapshot(
     [{ role: "user", content: "test" }],
-    null, // unknown limit
+    null,
   );
   assert.equal(snapshot.contextLimit, null);
   assert.equal(snapshot.contextLimitKnown, false);
@@ -214,10 +214,10 @@ test("9. config.models contextLimit is resolved", () => {
 test("10. stale recount callbacks cannot overwrite newer history", async () => {
   const agent = new Agent(new Registry(), agentOpts());
 
-  // Capture a revision
+
   const rev1 = agent._historyRevision;
 
-  // Add substantial messages to enable compaction
+
   agent._messages.push({ role: "user", content: "First task " + "a".repeat(800) });
   agent._messages.push({ role: "assistant", content: "First response " + "b".repeat(800) });
   agent._messages.push({ role: "user", content: "Second task " + "c".repeat(800) });
@@ -225,11 +225,11 @@ test("10. stale recount callbacks cannot overwrite newer history", async () => {
   agent._messages.push({ role: "user", content: "Third task " + "e".repeat(800) });
   agent._messages.push({ role: "assistant", content: "Third response " + "f".repeat(800) });
 
-  // The older callback should not apply
+
   const rev2 = agent._historyRevision;
   assert.equal(rev1, rev2, "Revision unchanged by message append alone");
 
-  // Compact to bump revision — use a small budget to force compaction
+
   agent._config.tokenBudget = 3000;
   const originalLen = agent._messages.length;
   const compacted = agent._compactMessages(true);
@@ -245,14 +245,14 @@ test("10. stale recount callbacks cannot overwrite newer history", async () => {
 test("11. compactThreshold uses ratio comparison (not percentage)", async () => {
   const agent = new Agent(new Registry(), agentOpts());
 
-  // Set a known limit
+
   agent._config.contextLimit = 10000;
   agent._config.compactThreshold = 0.5;
 
   const usage = agent.contextUsage();
   assert.equal(usage.contextLimitKnown, true);
 
-  // Verify ratio comparison: projectedRequestTokens / contextLimit vs compactThreshold
+
   const projectedRatio = usage.projectedRequestTokens / usage.contextLimit;
   // compactThreshold is 0.5, if ratio < 0.5, compactIfNeeded returns false
   if (projectedRatio < 0.5) {

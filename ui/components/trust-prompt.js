@@ -53,7 +53,7 @@ export function TrustPrompt({ path, onTrust }) {
   useInput((input, key) => {
     if (confirmed.current) return;
 
-    // Arrow keys change selection
+
     if (key.upArrow || key.leftArrow) {
       setSelected(prev => (prev === 0 ? OPTIONS.length - 1 : prev - 1));
       return;
@@ -63,19 +63,19 @@ export function TrustPrompt({ path, onTrust }) {
       return;
     }
 
-    // Enter confirms
+
     if (key.return) {
       handleConfirm();
       return;
     }
 
-    // Escape or n exits
+
     if (key.escape || input === "n" || input === "N") {
       handleExit();
       return;
     }
 
-    // y confirms trust
+
     if (input === "y" || input === "Y") {
       if (confirmed.current) return;
       confirmed.current = true;
@@ -97,21 +97,21 @@ export function TrustPrompt({ path, onTrust }) {
     marginTop: 1,
     width: columns,
   },
-    // Title
+
     h(Text, { bold: true, color: theme.primary }, "Workspace trust"),
 
-    // Blank line
+
     h(Text, " "),
 
-    // Explanation
+
     h(Text, { color: theme.text, wrap: "wrap" },
       "KhazAI may read, modify, and run commands in this directory.",
     ),
 
-    // Blank line
+
     h(Text, " "),
 
-    // Directory section
+
     h(Box, { flexDirection: "column" },
       h(Text, { bold: true, color: theme.metadata }, "Directory"),
       ...pathLines.map((line, i) => h(Text, {
@@ -121,10 +121,10 @@ export function TrustPrompt({ path, onTrust }) {
       }, line)),
     ),
 
-    // Blank line
+
     h(Text, " "),
 
-    // Options
+
     h(Box, { flexDirection: "column" },
       ...OPTIONS.map((opt, index) =>
         h(Text, {
@@ -137,10 +137,10 @@ export function TrustPrompt({ path, onTrust }) {
       ),
     ),
 
-    // Blank line
+
     h(Text, " "),
 
-    // Keyboard hints
+
     h(Text, { color: theme.muted, dimColor: true, wrap: "wrap" },
       "↑↓ Select · Enter Confirm · Esc Exit",
     ),

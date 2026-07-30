@@ -9,10 +9,10 @@ import {
 
 test("execution policy tracks required evidence and completion gaps", () => {
   const policy = new ExecutionPolicy("fix app.js and run tests");
-  // Contract requires mutation evidence (change intent)
+
   assert.ok(policy.completionGaps().length > 0, "should report missing mutation evidence before any mutation");
   policy.record("edit", { path: "app.js" }, "Edited", false);
-  // edit tool counts as mutation evidence
+
   assert.ok(policy.mutatedWorkspace, "edit tool counts as mutation");
   assert.ok(!policy.completionGaps().some(g => g.kind === "mutation"), "mutation evidence filled by edit");
   policy.record("bash", { command: "echo fix" }, "fixed", false);

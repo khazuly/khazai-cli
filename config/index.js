@@ -125,7 +125,6 @@ export function loadConfig(workspace = process.cwd()) {
   config.model = normalizeModel(config.model);
   config.theme = committedTheme;
   delete config.syntaxTheme;
-
   return config;
 }
 

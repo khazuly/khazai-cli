@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { bashTool } from "../tools/shell.js";
-
 function intent(intent = "answer") {
   return async ({ input }) => ({
     intent,

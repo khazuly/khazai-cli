@@ -9,14 +9,14 @@ function clampIndex(index, itemCount) {
   return Math.max(0, Math.min(itemCount - 1, index));
 }
 
-/**
- * Find a command by its canonical name or alias, supporting subcommands.
- */
+
+
+
 export function findSubCommands(commands, input) {
   const slashIndex = input.indexOf("/");
   if (slashIndex < 0) return null;
   const commandName = input.slice(slashIndex).split(" ")[0];
-  // Resolve alias to canonical command
+
   const canonical = canonicalCommand(commandName);
   const cmd = canonical || commands.find(item => item.name === commandName);
   return cmd?.sub ? { cmd, items: cmd.sub } : null;
@@ -31,10 +31,10 @@ export function filterCommandItems(items, input, prefixLength) {
   );
 }
 
-/**
- * Filter visible commands, resolving aliases so a user typing "/ex"
- * can still see "/details" if it has "/expand" as an alias.
- */
+
+
+
+
 export function filterCanonicalCommands(commands, input) {
   if (!input.startsWith("/")) return [];
   const partial = input.slice(input.indexOf("/") + 1).toLowerCase();
@@ -44,7 +44,7 @@ export function filterCanonicalCommands(commands, input) {
     if (c.visible === false) return false;
     const canonicalName = c.name.slice(1).toLowerCase();
     if (canonicalName.startsWith(partial)) return true;
-    // Check aliases too so partial alias input still surfaces the canonical command
+
     if (c.aliases?.some(a => a.slice(1).toLowerCase().startsWith(partial) || a.toLowerCase().startsWith("/" + partial))) return true;
     return false;
   });

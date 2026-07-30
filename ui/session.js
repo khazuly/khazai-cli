@@ -707,7 +707,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       } else if (detailArg === "off" || detailArg === "collapse") {
         setExpandedTool(null);
       } else {
-        // toggle or no argument
         setExpandedTool(current => current ? null : latest ? { ...latest, id: `expanded-${latest.id}`, expanded: true } : null);
       }
       return;
@@ -821,7 +820,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/help") {
       appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     }
-    // /expand and /collapse are resolved by alias in prompt-input and redirected to /details
   }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
 
   const handleThemePreview = useCallback((cmd, value) => {

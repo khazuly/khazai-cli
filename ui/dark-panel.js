@@ -2,8 +2,8 @@ export const GITHUB_DARK_BACKGROUND = "#0f0f10";
 export const GITHUB_DARK_TEXT = "#e6edf3";
 export const PANEL_HORIZONTAL_PADDING = 2;
 export const PANEL_SPACE = " ";
-// Ink trims trailing spaces. This zero-width sentinel keeps those cells in
-// the render tree without producing a visible glyph in Termux fonts.
+
+
 export const PANEL_END = "\u200b";
 
 export function panelBlankLine(width) {

@@ -28,7 +28,7 @@ export const COMMAND_CATEGORIES = [
   { id: "help", label: "Help" },
 ];
 
-// Legacy groups used by groupedCommands() and formatCommandHelp()
+
 export const COMMAND_GROUPS = [
   { id: "session", label: "Session" },
   { id: "workspace", label: "Workspace" },
@@ -36,22 +36,22 @@ export const COMMAND_GROUPS = [
   { id: "settings", label: "Settings" },
 ];
 
-/**
- * Command entry fields:
- *  name        – canonical command name (e.g. "/details")
- *  description – short description shown in menus
- *  category    – COMMAND_CATEGORIES id ("core", "execution", "workspace", "help")
- *  aliases     – hidden aliases that resolve to this command
- *  visible     – whether to show in menus (true) or hide (false)
- *  available   – optional availability hint:
- *                "submitting" – only while a run is active
- *                "tools"      – only when tool results exist
- *                null/omitted – always available
- *  sub         – optional array of subcommand descriptors
- *  group       – legacy group id (kept for groupedCommands / formatCommandHelp)
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export const COMMANDS = [
-  // ── Core ──────────────────────────────────────────────────────────────
+
   { name: "/new", description: "Start a new session", category: "core", aliases: [], visible: true, group: "session" },
   { name: "/sessions", description: "Resume or manage sessions", category: "core", aliases: [], visible: true, group: "session", sub: [
     { name: "clear", description: "Delete all saved sessions in this folder" },
@@ -79,7 +79,7 @@ export const COMMANDS = [
   { name: "/lsp", description: "Show language server status", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/reasoning", description: "Set Codex reasoning effort", category: "core", aliases: [], visible: false, group: "view" },
 
-  // ── Execution ─────────────────────────────────────────────────────────
+
   { name: "/cancel", description: "Cancel the active run", category: "execution", aliases: [], visible: true, available: "submitting", group: "session" },
   { name: "/allow-all", description: "Toggle automatic permission approval", category: "execution", aliases: ["/auto"], visible: true, group: "settings" },
   { name: "/details", description: "Toggle tool result details", category: "execution", aliases: ["/expand", "/collapse"], visible: true, available: "tools", group: "view", sub: [
@@ -88,37 +88,37 @@ export const COMMANDS = [
     { name: "toggle", description: "Toggle the latest tool result" },
   ] },
 
-  // ── Help ──────────────────────────────────────────────────────────────
+
   { name: "/help", description: "Show command reference", category: "help", aliases: [], visible: true, group: "settings" },
   { name: "/exit", description: "Exit KhazAI", category: "help", aliases: [], visible: false, group: "settings" },
 ];
 
-/**
- * Map alias (e.g. "/expand") to its canonical command entry.
- * Returns the canonical command object, or undefined if not found.
- */
+
+
+
+
 export function resolveAlias(input) {
   const cmd = canonicalCommand(input);
   return cmd || null;
 }
 
-/**
- * Return the canonical command entry for a given command name or alias.
- */
+
+
+
 export function canonicalCommand(name) {
-  // Direct match first
+
   const direct = COMMANDS.find(c => c.name === name);
   if (direct) return direct;
-  // Alias match
+
   return COMMANDS.find(c => c.aliases.includes(name));
 }
 
-/**
- * Return visible commands, optionally filtered by availability context.
- * Context is an object with optional flags:
- *   submitting – agent run is active
- *   hasTools   – tool results exist
- */
+
+
+
+
+
+
 export function visibleCommands(context = {}) {
   return COMMANDS.filter(c => {
     if (!c.visible) return false;
@@ -128,9 +128,9 @@ export function visibleCommands(context = {}) {
   });
 }
 
-/**
- * Legacy: group commands by the deprecated `group` property.
- */
+
+
+
 export function groupedCommands(commands = COMMANDS) {
   return COMMAND_GROUPS.map(group => ({
     ...group,
@@ -138,9 +138,9 @@ export function groupedCommands(commands = COMMANDS) {
   })).filter(group => group.commands.length > 0);
 }
 
-/**
- * Group visible commands by category for the command-list UI.
- */
+
+
+
 export function groupedVisibleCommands(context = {}) {
   const visible = visibleCommands(context);
   return COMMAND_CATEGORIES.map(cat => ({
@@ -156,19 +156,19 @@ export function formatCommandHelp(commands = COMMANDS) {
   ].join("\n")).join("\n\n");
 }
 
-/**
- * Map of alias → { command, arg } for aliases that resolve to a
- * canonical command with a specific subcommand argument.
- */
+
+
+
+
 const ALIAS_ACTIONS = {
   "/expand": { command: "/details", arg: "on" },
   "/collapse": { command: "/details", arg: "off" },
 };
 
-/**
- * Resolve a command name (canonical or alias) to its canonical name and
- * an optional subcommand argument. Returns { command, arg }.
- */
+
+
+
+
 export function resolveCommand(input) {
   const action = ALIAS_ACTIONS[input];
   if (action) return action;

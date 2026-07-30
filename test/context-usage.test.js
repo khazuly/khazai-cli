@@ -43,7 +43,7 @@ test("context limits come only from trusted configuration metadata", () => {
   });
   assert.equal(resolved.limit, 64_000);
   assert.equal(resolved.source, "config");
-  // Test config.models[modelName].contextLimit
+
   resolved = resolveContextLimit("big-cock", {
     model: "big-cock",
     providers: {},

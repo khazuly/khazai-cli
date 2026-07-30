@@ -296,7 +296,7 @@ export class Agent {
   _checkNoProgress() {
     const elapsed = Date.now() - this._progress.lastProgressAt;
     if (elapsed > 60_000 && this._compaction.status === "compacting") {
-      return true; // compaction taking too long
+      return true;
     }
     return false;
   }

@@ -35,7 +35,7 @@ export class StateMethods {
       version: 5,
       sessionId: this._sessionId,
       messages: this._messages.slice(-200),
-      canonicalProviderMessages: null, // filled from provider messages separately
+      canonicalProviderMessages: null,
       summary: this._summary,
       model: this._model,
       agent: this._agentProfile?.name || "build",

@@ -632,7 +632,6 @@ export class LoopMethods {
         content: protectedResult,
       });
       yield scoped({ type: "context-usage", usage: this.contextUsage() });
-      // Track repeated inspection tools for no-progress detection
       if (["read", "glob", "grep"].includes(tool.name)) {
         const sig = `${tool.name}:${JSON.stringify(tool.args)}`;
         if (sig === this._progress.lastReadSignature || sig === this._progress.lastSearchSignature) {
@@ -648,12 +647,10 @@ export class LoopMethods {
           }
         }
       } else {
-        // Non-inspection tool execution counts as progress
         this._progress.repeatedSearches = 0;
         this._progress.repeatedReads = 0;
       }
       if (this._progress.repeatedSearches > 10 || this._progress.repeatedReads > 10) {
-        // Repeated identical searches/reads — no progress
         this._finishLatency();
         if (finalizeRun()) {
           yield scoped({ type: "error", content: "No progress: repeated identical searches without meaningful change." });

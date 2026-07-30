@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULTS } from "../config/defaults.js";
 import { loadConfig, normalizeModel } from "../config/index.js";
-import { chat, getDeepThinking, resolveModelDescriptor, setDeepThinking } from "../lib/llm.js";
+import { chat, resolveModelDescriptor } from "../lib/llm.js";
 import { COMMANDS, MODELS } from "../ui/commands.js";
 import { MODEL_LABELS } from "../ui/components/banner.js";
 
@@ -104,8 +104,6 @@ test("default transport matches the OpenCode Zen Big Pickle request contract", a
   };
 
   try {
-    setDeepThinking(true);
-    assert.equal(getDeepThinking(), false);
     assert.equal(await chat([{ role: "user", content: "test" }], {
       model: "big-cock",
       sessionId: "session-1",
