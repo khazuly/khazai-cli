@@ -187,7 +187,7 @@ export class LoopMethods {
       let typedProviderStream = false;
       const deferProse = Boolean(pendingProse);
       const requestModel = this._model;
-      const maxAttempts = this._chatHandlesRetries || /(?:claude|anthropic)/i.test(String(requestModel)) ? 1 : 2;
+      const maxAttempts = this._chatHandlesRetries ? 1 : 2;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const providerRequestId = randomUUID();
         let chatErr;
@@ -223,6 +223,10 @@ export class LoopMethods {
             }
             return;
           }
+          if (event?.type === "provider-fallback") {
+            queueEvent(event);
+            return;
+          }
           typedProviderStream = true;
           if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
             this._markLatency("providerFirstDelta");
@@ -244,7 +248,6 @@ export class LoopMethods {
         }));
         if (!isRunActive()) return;
         this._markLatency("requestDispatched");
-        // Load model-specific settings from the settings store
         let temperature, topP, maxTokens;
         try {
           const mod = await import("../../config/model-settings.js");
@@ -267,6 +270,8 @@ export class LoopMethods {
           maxTokens,
           tools: nativeTools, sessionId: this._sessionId, runId, turnId, taskEpoch,
           requestId: providerRequestId,
+          isActive: () => isRunActive(),
+          bypassProviderHealth: retryProvider,
           streamPhase: phase,
         })
           .then(result => {
@@ -291,6 +296,13 @@ export class LoopMethods {
             : await Promise.race([waitForEvent(), chatDone.then(() => undefined)]);
           if (!isRunActive()) return;
           if (event === undefined) continue;
+          if (event.type === "provider-fallback") {
+            yield scoped({
+              type: "answer",
+              content: `Primary model unavailable. Continuing with ${event.model}.`,
+            });
+            continue;
+          }
           if (event.type === "reasoning-delta") continue;
           if (event.type === "public-activity") { yield scoped(event); continue; }
           const token = event.text;
@@ -391,11 +403,14 @@ export class LoopMethods {
         this._finishLatency();
         const recoverable = recoverableProviderFailure(finalError);
         if (recoverable) rememberProviderFailure(this, finalError, requestModel, phase);
+        const failedModel = finalError?.resolvedModel || requestModel;
         const content = recoverable
-          ? providerFailureContent(finalError)
+          ? providerFailureContent(finalError, failedModel)
           : /request timed out|timeout|timed out/i.test(message)
           ? "Analysis timed out"
-          : `Provider error: ${redactSecrets(message)}`;
+          : finalError?.failureClass || finalError?.status
+            ? providerFailureContent(finalError, failedModel)
+            : `Provider error: ${redactSecrets(message)}`;
         if (finalizeRun()) yield scoped({ type: "error", content, recoverable });
         return;
       }

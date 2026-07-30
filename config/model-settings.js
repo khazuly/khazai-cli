@@ -1,18 +1,9 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
-import { loadConfig } from "./index.js";
-import { DEFAULTS } from "./defaults.js";
+import {
+  configRevision,
+  readConfigFile,
+  updateConfigFile,
+} from "./store.js";
 
-const CONFIG_DIR = join(homedir(), ".config", "khazai-ai");
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
-
-// ── Setting definitions with metadata ───────────────────────────────────────
-
-/**
- * Providers and their supported features.
- * Each provider lists which settings it supports.
- */
 const PROVIDER_CAPABILITIES = {
   opencode: {
     supportsTemperature: true,
@@ -22,18 +13,22 @@ const PROVIDER_CAPABILITIES = {
     supportsReasoningEffort: false,
     supportsParallelTools: false,
     supportsToolCalling: true,
+    supportsToolChoice: false,
+    supportsStreamOptions: true,
     outputLimit: 128_000,
     temperatureRange: [0, 2],
     topPRange: [0, 1],
   },
   codex: {
-    supportsTemperature: true,
-    supportsTopP: true,
-    supportsMaxTokens: true,
+    supportsTemperature: false,
+    supportsTopP: false,
+    supportsMaxTokens: false,
     supportsStreaming: true,
     supportsReasoningEffort: true,
     supportsParallelTools: false,
     supportsToolCalling: true,
+    supportsToolChoice: true,
+    supportsStreamOptions: false,
     outputLimit: 16_384,
     temperatureRange: [0, 2],
     topPRange: [0, 1],
@@ -46,6 +41,8 @@ const PROVIDER_CAPABILITIES = {
     supportsReasoningEffort: false,
     supportsParallelTools: false,
     supportsToolCalling: true,
+    supportsToolChoice: true,
+    supportsStreamOptions: false,
     outputLimit: 4_096,
     temperatureRange: [0, 2],
     topPRange: [0, 1],
@@ -60,14 +57,13 @@ const DEFAULT_CAPABILITIES = {
   supportsReasoningEffort: false,
   supportsParallelTools: false,
   supportsToolCalling: true,
+  supportsToolChoice: true,
+  supportsStreamOptions: false,
   outputLimit: null,
   temperatureRange: [0, 2],
   topPRange: [0, 1],
 };
 
-/**
- * Get provider ID from a model name using the descriptor resolution logic.
- */
 function resolveProviderId(model) {
   if (!model) return "opencode";
   const lower = String(model).toLowerCase();
@@ -79,21 +75,23 @@ function resolveProviderId(model) {
   return "opencode";
 }
 
-/**
- * Return the provider ID for a given model name.
- */
 export function providerIdFromModel(model) {
   return resolveProviderId(model);
 }
 
-/**
- * Return capability map for the provider of a given model.
- */
-export function resolveProviderCapabilities(model) {
-  return PROVIDER_CAPABILITIES[resolveProviderId(model)] || DEFAULT_CAPABILITIES;
+export function resolveProviderCapabilities(model, definition = {}) {
+  const base = PROVIDER_CAPABILITIES[resolveProviderId(model)] || DEFAULT_CAPABILITIES;
+  const configured = definition.capabilities || {};
+  return {
+    ...base,
+    ...configured,
+    ...(configured.streaming !== undefined ? { supportsStreaming: Boolean(configured.streaming) } : {}),
+    ...(configured.tools !== undefined ? { supportsToolCalling: Boolean(configured.tools) } : {}),
+    ...(configured.parallelTools !== undefined
+      ? { supportsParallelTools: Boolean(configured.parallelTools) }
+      : {}),
+  };
 }
-
-// ── Global default values for each setting ───────────────────────────────
 
 export const GLOBAL_DEFAULTS = {
   temperature: 0.7,
@@ -127,7 +125,6 @@ export const GLOBAL_DEFAULTS = {
   toolResultPreviewSize: 2_000,
   duplicateToolProtection: true,
 
-  // auto-free specific
   routingStrategy: "latency",
   fallbackEnabled: true,
   maxModelAttempts: 3,
@@ -136,9 +133,6 @@ export const GLOBAL_DEFAULTS = {
   skipUnhealthyRoutes: true,
 };
 
-/**
- * Provider-specific overrides to global defaults.
- */
 export function providerDefaults(providerId) {
   if (providerId === "auto-free") {
     return {
@@ -156,8 +150,6 @@ export function providerDefaults(providerId) {
   }
   return {};
 }
-
-// ── Section definitions ──────────────────────────────────────────────────
 
 export const SETTING_SECTIONS = {
   generation: {
@@ -213,7 +205,6 @@ export const SETTING_SECTIONS = {
   },
 };
 
-// Special section for auto-free router settings
 export const AUTO_FREE_SECTIONS = {
   routing: {
     label: "Routing",
@@ -228,11 +219,14 @@ export const AUTO_FREE_SECTIONS = {
   },
 };
 
-// ── Validation helpers ───────────────────────────────────────────────────
-
 function positiveInt(value) {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 && Number.isInteger(n) ? n : null;
+}
+
+function strictPositiveInt(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 && Number.isInteger(n) ? n : null;
 }
 
 function positiveFloat(value) {
@@ -263,7 +257,7 @@ const VALIDATORS = {
   },
   contextLimit(value) {
     if (value === null || value === "provider" || value === "") return { valid: true, value: null };
-    const n = positiveInt(value);
+    const n = strictPositiveInt(value);
     if (n === null) return { valid: false, message: "Context limit must be a positive integer or null." };
     return { valid: true, value: n };
   },
@@ -308,8 +302,6 @@ export function validateSetting(key, value, model) {
   }
 }
 
-// ── Setting value helpers ────────────────────────────────────────────────
-
 export function settingIsSupported(key, model) {
   const caps = resolveProviderCapabilities(model);
   switch (key) {
@@ -334,126 +326,118 @@ export function settingIsAutoFreeOnly(key) {
     "skipUnhealthyRoutes"].includes(key);
 }
 
-// ── Persistence ──────────────────────────────────────────────────────────
-
-function loadSettingsConfig() {
-  try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-function writeSettingsConfig(data) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2) + "\n", "utf-8");
-}
-
-/**
- * Load settings for a specific model from persistent storage.
- */
 export function loadModelSettings(model) {
   if (!model) return {};
-  const config = loadSettingsConfig();
+  const config = readConfigFile();
   return config.modelSettings?.[model] || {};
 }
 
-/**
- * Save settings for a specific model to persistent storage.
- * Only stores non-default, non-null values.
- */
 export function saveModelSettings(model, settings) {
   if (!model) return;
-  const config = loadSettingsConfig();
-  if (!config.modelSettings) config.modelSettings = {};
-  // Clean undefined values
+  if (settings.contextLimit !== undefined && settings.contextLimit !== null) {
+    const validation = validateSetting("contextLimit", settings.contextLimit, model);
+    if (!validation.valid) throw new Error(validation.message);
+  }
   const cleaned = {};
   for (const [key, value] of Object.entries(settings)) {
     if (value !== undefined && value !== null) {
       cleaned[key] = value;
     }
   }
-  config.modelSettings[model] = cleaned;
-  writeSettingsConfig(config);
+  updateConfigFile(config => ({
+    ...config,
+    modelSettings: {
+      ...(config.modelSettings || {}),
+      [model]: cleaned,
+    },
+  }), { reason: `model-settings:${model}` });
 }
 
-/**
- * Reset settings for a model. If section is provided, reset only that section.
- */
 export function resetModelSettings(model, section) {
   if (!model) return;
-  const config = loadSettingsConfig();
-  if (!config.modelSettings) config.modelSettings = {};
-
-  if (section) {
-    const sectionDef = SETTING_SECTIONS[section] || AUTO_FREE_SECTIONS[section];
-    if (!sectionDef) return;
-    const current = config.modelSettings[model] || {};
-    for (const setting of sectionDef.settings) {
-      delete current[setting.key];
+  updateConfigFile(config => {
+    const modelSettings = { ...(config.modelSettings || {}) };
+    if (section) {
+      const sectionDef = SETTING_SECTIONS[section] || AUTO_FREE_SECTIONS[section];
+      if (!sectionDef) return config;
+      const current = { ...(modelSettings[model] || {}) };
+      for (const setting of sectionDef.settings) delete current[setting.key];
+      modelSettings[model] = current;
+    } else {
+      delete modelSettings[model];
     }
-    config.modelSettings[model] = current;
-  } else {
-    delete config.modelSettings[model];
-  }
-  writeSettingsConfig(config);
+    return { ...config, modelSettings };
+  }, { reason: `model-settings:${model}` });
 }
 
-// ── Resolution ───────────────────────────────────────────────────────────
-
-/**
- * Resolve effective setting value for a given model and key.
- *
- * Priority: sessionOverrides → modelDefaults → providerDefaults → GLOBAL_DEFAULTS
- */
-export function resolveEffectiveSetting(model, key, { sessionOverrides = {} } = {}) {
-  // 1. Session overrides
-  if (sessionOverrides[key] !== undefined) return sessionOverrides[key];
-
-  // 2. Model defaults (persisted)
-  const modelDefaults = loadModelSettings(model);
-  if (modelDefaults[key] !== undefined) return modelDefaults[key];
-
-  // 3. Provider defaults
-  const pv = providerDefaults(resolveProviderId(model));
-  if (pv[key] !== undefined) return pv[key];
-
-  // 4. Global defaults
-  if (GLOBAL_DEFAULTS[key] !== undefined) return GLOBAL_DEFAULTS[key];
-
-  return undefined;
+function contextMetadata(model, config, providerMetadata) {
+  const requested = String(model || "");
+  const providerId = resolveProviderId(requested);
+  const modelId = requested.includes("/") ? requested.slice(requested.indexOf("/") + 1) : requested;
+  const exactId = providerId === "opencode" && ["big-cock", "cock"].includes(requested.toLowerCase())
+    ? "opencode/big-pickle"
+    : requested;
+  const metadata = providerMetadata?.contextLimit
+    ?? config?.modelMetadata?.[exactId]?.contextLimit
+    ?? config?.modelMetadata?.[requested]?.contextLimit
+    ?? config?.providers?.[providerId]?.contextLimits?.[modelId]
+    ?? config?.providers?.[providerId]?.contextLimit;
+  return strictPositiveInt(metadata);
 }
 
-/**
- * Resolve all effective settings for a given model.
- */
-export function resolveEffectiveSettings(model, { sessionOverrides = {} } = {}) {
-  const modelDefaults = loadModelSettings(model);
+export function resolveEffectiveSettings(model, {
+  sessionOverrides = {},
+  config,
+  providerMetadata = {},
+} = {}) {
+  const persisted = config === undefined ? readConfigFile() : config;
+  const modelDefaults = persisted?.modelSettings?.[model] || {};
   const pv = providerDefaults(resolveProviderId(model));
   const result = { ...GLOBAL_DEFAULTS };
 
-  // Apply provider defaults
   for (const [key, value] of Object.entries(pv)) {
     if (value !== undefined) result[key] = value;
   }
 
-  // Apply model defaults
   for (const [key, value] of Object.entries(modelDefaults)) {
     if (value !== undefined) result[key] = value;
   }
 
-  // Apply session overrides
   for (const [key, value] of Object.entries(sessionOverrides)) {
     if (value !== undefined) result[key] = value;
   }
+  if (
+    sessionOverrides.compactionThreshold === undefined
+    && modelDefaults.compactionThreshold === undefined
+    && persisted?.compactThreshold !== undefined
+  ) {
+    result.compactionThreshold = persisted.compactThreshold;
+  }
 
+  const sessionLimit = strictPositiveInt(sessionOverrides.contextLimit);
+  const modelLimit = strictPositiveInt(modelDefaults.contextLimit)
+    || strictPositiveInt(persisted?.models?.[model]?.contextLimit);
+  const providerLimit = contextMetadata(model, persisted, providerMetadata);
+  const applicationLimit = strictPositiveInt(persisted?.contextLimit)
+    || strictPositiveInt(GLOBAL_DEFAULTS.contextLimit);
+  result.contextLimit = sessionLimit || modelLimit || providerLimit || applicationLimit || null;
+  result.contextLimitSource = sessionLimit
+    ? "session"
+    : modelLimit
+      ? "config"
+      : providerLimit
+        ? "provider"
+        : applicationLimit
+          ? "config"
+          : "unknown";
+  result.settingsRevision = configRevision();
   return result;
 }
 
-/**
- * Format a setting value for display.
- */
+export function resolveEffectiveSetting(model, key, options = {}) {
+  return resolveEffectiveSettings(model, options)[key];
+}
+
 export function formatSettingValue(key, value, model) {
   if (value === null || value === undefined) return "Not set";
 
@@ -479,23 +463,14 @@ export function formatSettingValue(key, value, model) {
   }
 }
 
-/**
- * Return recent value suggestions for a setting (context-limit).
- */
 export function suggestedContextLimits() {
-  return [null, 32_000, 64_000, 128_000]; // null means "provider metadata"
+  return [null, 32_000, 64_000, 128_000];
 }
 
-/**
- * Return recent value suggestions for temperature.
- */
 export function suggestedTemperatureValues() {
   return [0, 0.2, 0.7, 1.0, "custom", "provider default"];
 }
 
-/**
- * Return whether a setting has a "recommended" value.
- */
 export function isRecommendedValue(key, value) {
   if (key === "temperature" && value === 0.7) return true;
   if (key === "topP" && value === 1.0) return true;

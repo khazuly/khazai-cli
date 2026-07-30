@@ -96,7 +96,7 @@ function DetailRows({ rows, state, theme, width }) {
   );
 }
 
-function ReadGroupCall({ count, currentFile, done, duration, failed, status, totalLines, failurePreview }) {
+function ReadGroupCall({ count, currentFile, done, duration, failed, status, failedCount }) {
   const { stdout } = useStdout();
   const [frame, setFrame] = useState(0);
   const theme = useTheme();
@@ -106,36 +106,31 @@ function ReadGroupCall({ count, currentFile, done, duration, failed, status, tot
     timer.unref?.();
     return () => clearInterval(timer);
   }, [done, status]);
-  const files = `${count} ${count === 1 ? "file" : "files"}`;
-  const icon = failed ? "[×]" : done ? "[✓]" : ["pending", "awaiting-approval"].includes(status) ? "[ ]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-  const heading = failed
-    ? `Read · failed${duration ? ` · ${formatDuration(duration)}` : ""}`
-    : done
-      ? ["Read", "completed", formatDuration(duration)].filter(Boolean).join(" · ")
-      : status === "awaiting-approval"
-        ? "Read · awaiting approval"
-        : status === "pending"
-          ? "Read · pending"
-        : "Read · running";
-  const failureLines = failed
-    ? presentTool({ tool: "read", content: failurePreview || "Error: Read failed", done: true }).resultPreview.lines
-    : [];
+  const label = `Read ${count} ${count === 1 ? "file" : "files"}`;
+  const elapsed = duration ? ` · ${formatDuration(duration)}` : "";
+  let icon;
+  let heading;
+  if (failed) {
+    icon = "[×]";
+    const failurePart = failedCount ? ` · ${failedCount} failed` : "";
+    heading = `${label}${failurePart} · ${currentFile || ""}${elapsed}`;
+  } else if (done) {
+    icon = "[✓]";
+    heading = `${label}${elapsed}`;
+  } else {
+    icon = ["pending", "awaiting-approval"].includes(status) ? "[ ]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+    heading = `${label} · ${currentFile || ""}`;
+  }
   const width = Math.max(13, Number(stdout?.columns || 80) - 7);
-  const rows = [
-    currentFile ? { label: "Path", value: currentFile } : null,
-    ...failureLines.map(value => ({ label: "Error", value })),
-    done && !failed ? { label: "Result", value: totalLines ? `Read ${totalLines} lines from ${files}` : `Read ${files}` } : null,
-  ].filter(Boolean);
   return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
     h(PrefixRow, { prefix: icon, prefixColor: failed ? theme.error : done ? theme.success : theme.primary },
       h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, heading),
-      h(DetailRows, { rows, state: failed ? "failed" : "success", theme, width }),
     ),
   );
 }
 
-export function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview }) {
-  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed, status, totalLines, failurePreview });
+export function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview, failedCount }) {
+  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed, status, failedCount });
   const { stdout } = useStdout();
   const theme = useTheme();
   const [frame, setFrame] = useState(0);

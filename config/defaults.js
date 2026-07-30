@@ -12,6 +12,8 @@ export const DEFAULTS = {
   },
   toolTimeout: 60000,
   providerTimeout: 300000,
+  providerFallback: false,
+  fallbackModel: null,
   reasoningEffort: "medium",
   permission: {},
   lsp: false,

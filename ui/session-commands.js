@@ -339,7 +339,18 @@ export async function handleSessionCommand(cmd, arg, context) {
     appendArchived({ id: nextId(), type: "answer", content: `Session exported to ${path}.` });
     return;
   }
-  if (cmd === "/details") return showToolDetails(arg, context);
+  if (cmd === "/details") {
+    const detailArg = String(arg || "").trim().toLowerCase();
+    if (detailArg === "on" || detailArg === "expand") {
+      const tools = recentToolMessages(context.completedRef.current);
+      context.setInspectedTool(tools[0] || null);
+    } else if (detailArg === "off" || detailArg === "collapse") {
+      context.setInspectedTool(null);
+    } else {
+      return showToolDetails(arg, context);
+    }
+    return;
+  }
   if (cmd === "/agent") return selectAgent(arg, context);
   if (cmd === "/skills") {
     const permissions = new PermissionService(workspacePath);
@@ -367,9 +378,9 @@ export async function handleSessionCommand(cmd, arg, context) {
   if (cmd === "/mcp") return manageMcp(arg, context);
   if (cmd === "/theme" && arg) {
     try {
-      const selected = saveTheme(arg);
+      const selected = await saveTheme(arg);
       setThemeName(selected);
-      appendArchived({ id: nextId(), type: "answer", content: `Theme changed to **${selected}**.` });
+      appendArchived({ id: nextId(), type: "answer", content: `Theme saved: **${selected}**.` });
     } catch (error) {
       appendArchived({ id: nextId(), type: "error", content: error.message });
     }
@@ -379,9 +390,14 @@ export async function handleSessionCommand(cmd, arg, context) {
     appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     return;
   }
+  // Backward-compatible hidden aliases
   if (cmd === "/expand") {
-    setInspectedTool(recentToolMessages(completedRef.current)[0] || null);
+    const tools = recentToolMessages(completedRef.current);
+    setInspectedTool(tools[0] || null);
     return;
   }
-  if (cmd === "/collapse") setInspectedTool(null);
+  if (cmd === "/collapse") {
+    setInspectedTool(null);
+    return;
+  }
 }

@@ -244,7 +244,8 @@ test("Big Cock retries a transient provider error without changing models", asyn
     assert.equal(requests[0].headers["x-opencode-session"], "stable-session");
     assert.match(requests[1].headers["x-opencode-session"], /^stable-session-[0-9a-f]{4}$/);
     assert.notEqual(requests[1].headers["x-opencode-session"], requests[0].headers["x-opencode-session"]);
-    assert.ok(requests.every(request => request.headers["x-opencode-request"] === "stable-run"));
+    assert.equal(requests[0].headers["x-opencode-request"], "stable-run");
+    assert.notEqual(requests[1].headers["x-opencode-request"], "stable-run");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;

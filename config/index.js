@@ -1,11 +1,16 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { DEFAULTS } from "./defaults.js";
 import { isKnownTheme } from "../ui/theme.js";
+import {
+  GLOBAL_CONFIG_PATH,
+  readConfigFile,
+  subscribeConfig,
+  updateConfigFile,
+} from "./store.js";
 
-const CONFIG_DIR = join(homedir(), ".config", "khazai-ai");
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+const CONFIG_PATH = GLOBAL_CONFIG_PATH;
 const PROJECT_FILES = [".khazai-ai.json", ".khazai-airc"];
 const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 const OPENCODE_GLOBAL_FILES = ["opencode.json", "opencode.jsonc"];
@@ -79,7 +84,10 @@ function openCodeMcp(workspace) {
 export function loadConfig(workspace = process.cwd()) {
   const config = { ...DEFAULTS };
   const openCodeMcpConfig = openCodeMcp(workspace);
-  const global = loadJSON(CONFIG_PATH);
+  const global = readConfigFile(CONFIG_PATH);
+  const committedTheme = isKnownTheme(global.theme)
+    || (!Object.hasOwn(global, "theme") && isKnownTheme(global.syntaxTheme))
+    || DEFAULTS.theme;
   if (global) Object.assign(config, global);
   config.mcp = { ...DEFAULTS.mcp, ...openCodeMcpConfig, ...(global?.mcp || {}) };
   config._permissionLayers = global?.permission === undefined ? [] : [global.permission];
@@ -115,54 +123,36 @@ export function loadConfig(workspace = process.cwd()) {
     }
   }
   config.model = normalizeModel(config.model);
-
-  // ── Migration: unify old theme + syntaxTheme into one theme ──────────
-  if (config.theme || config.syntaxTheme) {
-    // Prefer syntaxTheme when it matches a known unified theme
-    const syntaxCandidate = isKnownTheme(config.syntaxTheme);
-    const interfaceCandidate = isKnownTheme(config.theme);
-    if (syntaxCandidate) {
-      config.theme = syntaxCandidate;
-    } else if (interfaceCandidate) {
-      config.theme = interfaceCandidate;
-    } else {
-      config.theme = "system";
-    }
-    delete config.syntaxTheme;
-  } else if (!config.theme) {
-    config.theme = DEFAULTS.theme || "system";
-  }
+  config.theme = committedTheme;
+  delete config.syntaxTheme;
 
   return config;
 }
 
 export function saveModel(model) {
   const normalized = normalizeModel(model);
-  const config = loadJSON(CONFIG_PATH) || {};
-  config.model = normalized;
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  updateConfigFile(config => ({ ...config, model: normalized }), { reason: "model" });
 }
 
 export function saveReasoningEffort(effort) {
   const value = String(effort || "").toLowerCase();
   if (!["low", "medium", "high", "xhigh"].includes(value)) throw new Error(`Unknown reasoning effort "${effort}".`);
-  const config = loadJSON(CONFIG_PATH) || {};
-  config.reasoningEffort = value;
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  updateConfigFile(config => ({ ...config, reasoningEffort: value }), {
+    reason: "reasoning-effort",
+  });
   return value;
 }
 
-export function saveTheme(theme) {
+export async function saveTheme(theme) {
   const value = String(theme || "").toLowerCase();
   if (!isKnownTheme(value)) {
     throw new Error(`Unknown theme "${theme}".`);
   }
-  const config = loadJSON(CONFIG_PATH) || {};
-  config.theme = value;
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  updateConfigFile(config => {
+    const next = { ...config, theme: value };
+    delete next.syntaxTheme;
+    return next;
+  }, { reason: "theme" });
   return value;
 }
 
@@ -180,31 +170,30 @@ export {
 
 export function saveProvider(id, provider) {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(String(id || ""))) throw new Error("Invalid provider ID.");
-  const config = loadJSON(CONFIG_PATH) || {};
-  config.providers = { ...(config.providers || {}), [id]: { ...provider } };
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
-}
-
-function writeGlobalConfig(config, path = CONFIG_PATH) {
-  mkdirSync(dirname(resolve(path)), { recursive: true });
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+  updateConfigFile(config => ({
+    ...config,
+    providers: { ...(config.providers || {}), [id]: { ...provider } },
+  }), { reason: `provider:${id}` });
 }
 
 export function saveMcpServer(id, definition, path = CONFIG_PATH) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(String(id || ""))) {
     throw new Error("MCP server names may contain only letters, numbers, hyphens, and underscores.");
   }
-  const config = loadJSON(path) || {};
-  config.mcp = { ...(config.mcp || {}), [id]: definition };
-  writeGlobalConfig(config, path);
+  updateConfigFile(config => ({
+    ...config,
+    mcp: { ...(config.mcp || {}), [id]: definition },
+  }), { path, reason: `mcp:${id}` });
 }
 
 export function removeMcpServer(id, path = CONFIG_PATH) {
-  const config = loadJSON(path) || {};
-  config.mcp = { ...(config.mcp || {}), [id]: null };
-  writeGlobalConfig(config, path);
+  updateConfigFile(config => ({
+    ...config,
+    mcp: { ...(config.mcp || {}), [id]: null },
+  }), { path, reason: `mcp:${id}` });
 }
+
+export { subscribeConfig };
 
 export function configuredModels() {
   const config = loadConfig();

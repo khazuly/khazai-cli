@@ -14,6 +14,7 @@ const SYSTEM_BASELINE_MAX = 1500;
 function agentOpts(overrides = {}) {
   return {
     workspace: mkdtempSync(join(tmpdir(), "khazai-context-")),
+    config: { modelSettings: {}, models: {}, contextLimit: null },
     intentResolver: async () => ({
       intent: "answer",
       category: "ANSWER",

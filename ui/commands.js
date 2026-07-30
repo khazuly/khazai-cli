@@ -21,6 +21,14 @@ const MCP_COMMANDS = [
   { name: "reload", description: "Reload MCP configuration" },
 ];
 
+export const COMMAND_CATEGORIES = [
+  { id: "core", label: "Core" },
+  { id: "execution", label: "Execution" },
+  { id: "workspace", label: "Workspace" },
+  { id: "help", label: "Help" },
+];
+
+// Legacy groups used by groupedCommands() and formatCommandHelp()
 export const COMMAND_GROUPS = [
   { id: "session", label: "Session" },
   { id: "workspace", label: "Workspace" },
@@ -28,40 +36,101 @@ export const COMMAND_GROUPS = [
   { id: "settings", label: "Settings" },
 ];
 
+/**
+ * Command entry fields:
+ *  name        – canonical command name (e.g. "/details")
+ *  description – short description shown in menus
+ *  category    – COMMAND_CATEGORIES id ("core", "execution", "workspace", "help")
+ *  aliases     – hidden aliases that resolve to this command
+ *  visible     – whether to show in menus (true) or hide (false)
+ *  available   – optional availability hint:
+ *                "submitting" – only while a run is active
+ *                "tools"      – only when tool results exist
+ *                null/omitted – always available
+ *  sub         – optional array of subcommand descriptors
+ *  group       – legacy group id (kept for groupedCommands / formatCommandHelp)
+ */
 export const COMMANDS = [
-  { name: "/new", description: "Start a persistent session", group: "session" },
-  { name: "/sessions", description: "Resume a session in this folder", group: "session" },
-  { name: "/continue", description: "Resume the latest folder session", group: "session" },
-  { name: "/fork", description: "Fork the current session", group: "session" },
-  { name: "/undo", description: "Undo the last compatible turn", group: "session" },
-  { name: "/redo", description: "Redo the last undone turn", group: "session" },
-  { name: "/compact", description: "Compact session context", group: "session" },
-  { name: "/retry", description: "Retry the latest failed model continuation", group: "session" },
-  { name: "/cancel", description: "Cancel the active run", group: "session" },
-  { name: "/queue", description: "Show or clear queued messages", group: "session" },
-  { name: "/export", description: "Export this session to Markdown", group: "session" },
-  { name: "/connect", description: "Connect an OpenAI-compatible provider", group: "workspace" },
-  { name: "/agent", description: "Select a primary agent", group: "workspace" },
-  { name: "/skills", description: "List available workspace skills", group: "workspace" },
-  { name: "/lsp", description: "Show language server status", group: "workspace" },
-  { name: "/mcp", description: "Manage MCP servers", group: "workspace", sub: MCP_COMMANDS },
-  { name: "/model", description: "Change the active model", group: "view", sub: MODELS },
-  { name: "/models", description: "Select a configured model", group: "view" },
-  { name: "/setting", description: "Configure model settings interactively", group: "view", sub: [
+  // ── Core ──────────────────────────────────────────────────────────────
+  { name: "/new", description: "Start a new session", category: "core", aliases: [], visible: true, group: "session" },
+  { name: "/sessions", description: "Resume or manage sessions", category: "core", aliases: [], visible: true, group: "session", sub: [
+    { name: "clear", description: "Delete all saved sessions in this folder" },
+  ] },
+  { name: "/continue", description: "Resume the latest session", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/fork", description: "Fork the current session", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/undo", description: "Undo the last compatible turn", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/redo", description: "Redo the last undone turn", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/compact", description: "Compact session context", category: "workspace", aliases: [], visible: false, group: "session" },
+  { name: "/retry", description: "Retry the latest failed model continuation", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/queue", description: "Show or clear queued messages", category: "core", aliases: [], visible: false, group: "session" },
+  { name: "/export", description: "Export session to Markdown", category: "workspace", aliases: [], visible: false, group: "session" },
+  { name: "/model", description: "Select the active model", category: "core", aliases: ["/models"], visible: true, group: "view", sub: MODELS },
+  { name: "/agent", description: "Change agent mode", category: "core", aliases: [], visible: true, group: "workspace" },
+  { name: "/setting", description: "Configure model behavior", category: "core", aliases: [], visible: true, group: "view", sub: [
     { name: "show", description: "Display effective settings for the active model" },
     { name: "model", description: "Open model-specific settings" },
     { name: "reset", description: "Reset all settings to provider defaults" },
   ] },
-  { name: "/theme", description: "Change the interface theme", group: "view", sub: THEMES },
-  { name: "/reasoning", description: "Set Codex reasoning effort", group: "view" },
-  { name: "/details", description: "Toggle tool result details", group: "view" },
-  { name: "/expand", description: "Expand the latest tool result", group: "view" },
-  { name: "/collapse", description: "Collapse tool details", group: "view" },
-  { name: "/allow-all", description: "Allow tool permissions for this session", group: "settings" },
-  { name: "/help", description: "Show command reference", group: "settings" },
-  { name: "/exit", description: "Exit KhazAI", group: "settings" },
+  { name: "/usage", description: "Show context and session token usage", category: "core", aliases: [], visible: true, group: "view" },
+  { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", sub: THEMES },
+  { name: "/mcp", description: "Manage MCP servers", category: "core", aliases: [], visible: true, group: "workspace", sub: MCP_COMMANDS },
+  { name: "/connect", description: "Connect a provider", category: "workspace", aliases: [], visible: false, group: "workspace" },
+  { name: "/skills", description: "List workspace skills", category: "workspace", aliases: [], visible: false, group: "workspace" },
+  { name: "/lsp", description: "Show language server status", category: "workspace", aliases: [], visible: false, group: "workspace" },
+  { name: "/reasoning", description: "Set Codex reasoning effort", category: "core", aliases: [], visible: false, group: "view" },
+
+  // ── Execution ─────────────────────────────────────────────────────────
+  { name: "/cancel", description: "Cancel the active run", category: "execution", aliases: [], visible: true, available: "submitting", group: "session" },
+  { name: "/allow-all", description: "Toggle automatic permission approval", category: "execution", aliases: ["/auto"], visible: true, group: "settings" },
+  { name: "/details", description: "Toggle tool result details", category: "execution", aliases: ["/expand", "/collapse"], visible: true, available: "tools", group: "view", sub: [
+    { name: "on", description: "Expand the latest tool result" },
+    { name: "off", description: "Collapse tool details" },
+    { name: "toggle", description: "Toggle the latest tool result" },
+  ] },
+
+  // ── Help ──────────────────────────────────────────────────────────────
+  { name: "/help", description: "Show command reference", category: "help", aliases: [], visible: true, group: "settings" },
+  { name: "/exit", description: "Exit KhazAI", category: "help", aliases: [], visible: false, group: "settings" },
 ];
 
+/**
+ * Map alias (e.g. "/expand") to its canonical command entry.
+ * Returns the canonical command object, or undefined if not found.
+ */
+export function resolveAlias(input) {
+  const cmd = canonicalCommand(input);
+  return cmd || null;
+}
+
+/**
+ * Return the canonical command entry for a given command name or alias.
+ */
+export function canonicalCommand(name) {
+  // Direct match first
+  const direct = COMMANDS.find(c => c.name === name);
+  if (direct) return direct;
+  // Alias match
+  return COMMANDS.find(c => c.aliases.includes(name));
+}
+
+/**
+ * Return visible commands, optionally filtered by availability context.
+ * Context is an object with optional flags:
+ *   submitting – agent run is active
+ *   hasTools   – tool results exist
+ */
+export function visibleCommands(context = {}) {
+  return COMMANDS.filter(c => {
+    if (!c.visible) return false;
+    if (c.available === "submitting" && !context.submitting) return false;
+    if (c.available === "tools" && !context.hasTools) return false;
+    return true;
+  });
+}
+
+/**
+ * Legacy: group commands by the deprecated `group` property.
+ */
 export function groupedCommands(commands = COMMANDS) {
   return COMMAND_GROUPS.map(group => ({
     ...group,
@@ -69,11 +138,43 @@ export function groupedCommands(commands = COMMANDS) {
   })).filter(group => group.commands.length > 0);
 }
 
+/**
+ * Group visible commands by category for the command-list UI.
+ */
+export function groupedVisibleCommands(context = {}) {
+  const visible = visibleCommands(context);
+  return COMMAND_CATEGORIES.map(cat => ({
+    ...cat,
+    commands: visible.filter(c => c.category === cat.id),
+  })).filter(g => g.commands.length > 0);
+}
+
 export function formatCommandHelp(commands = COMMANDS) {
   return groupedCommands(commands).map(group => [
     `**${group.label}**`,
     ...group.commands.map(command => `\`${command.name}\` — ${command.description}`),
   ].join("\n")).join("\n\n");
+}
+
+/**
+ * Map of alias → { command, arg } for aliases that resolve to a
+ * canonical command with a specific subcommand argument.
+ */
+const ALIAS_ACTIONS = {
+  "/expand": { command: "/details", arg: "on" },
+  "/collapse": { command: "/details", arg: "off" },
+};
+
+/**
+ * Resolve a command name (canonical or alias) to its canonical name and
+ * an optional subcommand argument. Returns { command, arg }.
+ */
+export function resolveCommand(input) {
+  const action = ALIAS_ACTIONS[input];
+  if (action) return action;
+  const canonical = canonicalCommand(input);
+  if (canonical) return { command: canonical.name, arg: "" };
+  return { command: input, arg: "" };
 }
 
 export { MODELS, THEMES };

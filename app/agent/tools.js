@@ -5,7 +5,6 @@ import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { redactSecrets } from "../../lib/secrets.js";
 import { ToolExecutor } from "../tool-executor.js";
-import { resolveContextLimit, resolveContextLimitValue } from "../context-usage.js";
 import { normalizeIntentContract } from "../intent-resolver.js";
 import { randomUUID } from "node:crypto";
 import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
@@ -186,13 +185,13 @@ export class ToolMethods {
   }
 
   _contextLimitKnown() {
-    return Boolean(resolveContextLimitValue(this._model, this._config));
+    return Boolean(this._applyEffectiveSettings().contextLimit);
   }
 
   contextUsage() {
-    const resolved = resolveContextLimit(this._model, this._config);
-    const contextLimit = this._providerContextLimit || resolved.limit;
-    const source = this._providerContextLimit ? "provider" : resolved.source;
+    const effective = this._applyEffectiveSettings();
+    const contextLimit = effective.contextLimit;
+    const source = effective.contextLimitSource;
     this._usageTracker.setContextLimitSource(source);
     const context = this._buildContext();
     const snapshot = this._usageTracker.snapshot(context, contextLimit, {
@@ -217,7 +216,7 @@ export class ToolMethods {
   _buildCompactedMessages(force = false) {
     const contextUsage = this.contextUsage();
     const usage = contextUsage.currentContextTokens;
-    const contextLimit = resolveContextLimitValue(this._model, this._config)
+    const contextLimit = this._applyEffectiveSettings().contextLimit
       || Math.max(1, Number(this._config.tokenBudget) || 24_000);
     if (!force) {
       const threshold = contextLimit * this._config.compactThreshold;
@@ -421,7 +420,7 @@ export class ToolMethods {
     const summary = this._summary
       ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
       : [];
-    const limit = resolveContextLimitValue(this._model, this._config) || 0;
+    const limit = this._applyEffectiveSettings().contextLimit || 0;
 
     // When limit is unknown, include all messages without active/historical split
     if (limit <= 0) {

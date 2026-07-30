@@ -752,10 +752,10 @@ test("command palette stays compact while searching commands", async () => {
   const output = stripAnsi(stdout.frames.at(-1) || "").replace(/\r/g, "");
 
   assert.match(output, /Commands · 1–6 of \d+/);
-  assert.match(output, /\/new\s+Start a persistent session/);
-  assert.match(output, /\/redo\s+Redo the last undone turn/);
-  assert.doesNotMatch(output, /\/compact|\/model|\/connect|\/collapse/);
-  assert.ok((output.match(/\n\s*[> ]?\s*\//g) || []).length <= 6);
+  assert.match(output, /\/new\s+Start a new session/);
+  assert.match(output, /\/model\s+Select the active model/);
+  assert.doesNotMatch(output, /\/redo|\/compact|\/connect|\/collapse/);
+  assert.ok((output.match(/\n\s*[> ›]?\s*\//g) || []).length <= 6);
   instance.unmount();
   instance.cleanup();
   stdin.destroy();
@@ -815,6 +815,7 @@ test("working state is removed as soon as the agent becomes idle", async () => {
   await new Promise(resolve => setTimeout(resolve, 60));
   const latest = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).at(-1) || "";
   assert.doesNotMatch(latest, /Working/);
+  assert.doesNotMatch(latest, /Esc cancel/, "Esc cancel must not appear in idle state");
   assert.match(latest, /Ask anything/);
 
   instance.unmount();

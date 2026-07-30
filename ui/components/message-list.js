@@ -194,8 +194,7 @@ export function MessageList({ messages }) {
           h(ToolCall, {
             readGroup: true, count: m.count, currentFile: m.currentFile,
             done: m.done, duration: m.duration, failed: m.failed,
-            status: m.status, totalLines: m.totalLines,
-            failurePreview: m.failurePreview,
+            status: m.status, failedCount: m.failedCount,
           }),
         );
       case "answer":

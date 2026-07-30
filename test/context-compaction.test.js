@@ -9,6 +9,7 @@ import { Registry } from "../app/registry.js";
 function agentWithState(state) {
   return new Agent(new Registry(), {
     workspace: mkdtempSync(join(tmpdir(), "khazai-compact-")),
+    config: { modelSettings: {}, models: {}, contextLimit: null },
     sessionState: state,
   });
 }

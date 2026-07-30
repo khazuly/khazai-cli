@@ -86,64 +86,6 @@ test("interactive startup keeps native scrollback and avoids alternate screen", 
   assert.doesNotMatch(raw, /\u001b\[\?1049h/);
 });
 
-test("session footer renders one working status below the editable prompt", async () => {
-  const frame = await renderComponent(h(SessionFooter, {
-    running: true,
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps: {
-      onSubmit() {}, onCommand() {}, commands: [], canAbort: true,
-    },
-  }), 72, 14);
-  const promptIndex = frame.indexOf("Ask anything...");
-  const footerIndex = frame.indexOf("big-cock · Working · Esc cancel");
-  assert.ok(promptIndex >= 0 && footerIndex > promptIndex);
-  assert.equal(frame.match(/big-cock/g)?.length, 1);
-  assert.equal(frame.match(/Esc cancel/g)?.length, 1);
-  assert.match(frame, /big-cock · Working · Esc cancel\s+Context 14 \/ 100 · 14%/);
-});
-
-test("session footer handles idle, queued, compacting, and narrow layouts", async () => {
-  const promptProps = { onSubmit() {}, onCommand() {}, commands: [] };
-  const idle = await renderComponent(h(SessionFooter, {
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.match(idle, /big-cock · Enter send\s+Context 14 \/ 100 · 14%/);
-
-  const queued = await renderComponent(h(SessionFooter, {
-    running: true,
-    queueCount: 2,
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 42, 14);
-  assert.match(queued, /big-cock · Working · 2 queued · Esc cancel/);
-  assert.match(queued, /\n\s+Context 14 \/ 100 · 14%/);
-
-  const compacting = await renderComponent(h(SessionFooter, {
-    running: true,
-    model: "big-cock",
-    contextUsage: {
-      currentContextTokens: 91_000,
-      contextLimit: 100_000,
-      compactionStatus: "summarizing",
-      compactionStartedAt: Date.now(),
-    },
-    promptProps,
-  }), 72, 12);
-  assert.match(compacting, /big-cock · ⠋ Compacting context · 0s\s+Context 91\.0k \/ 100k · 91%/);
-
-  const unknown = await renderComponent(h(SessionFooter, {
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 48_300, contextLimitKnown: false },
-    promptProps,
-  }), 72, 12);
-  assert.match(unknown, /Context 48\.3k/);
-  assert.doesNotMatch(unknown, /Context \d+%/);
-});
-
 test("read groups keep one live row and finalize without a file name", async () => {
   const running = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-active",
@@ -152,8 +94,7 @@ test("read groups keep one live row and finalize without a file name", async () 
     currentFile: "status-bar.js",
     done: false,
   }] }), 60, 12);
-  assert.match(running, /Read · running/);
-  assert.match(running, /Path\s+status-bar\.js/);
+  assert.match(running, /Read 3 files · status-bar\.js/);
   assert.doesNotMatch(running, /\d+ms/);
 
   const completed = await renderComponent(h(MessageList, { messages: [{
@@ -166,8 +107,7 @@ test("read groups keep one live row and finalize without a file name", async () 
     failed: false,
     totalLines: 186,
   }] }), 60, 12);
-  assert.match(completed, /\[✓\] Read · completed · 287ms/);
-  assert.match(completed, /Result\s+Read 186 lines from 3 files/);
+  assert.match(completed, /\[✓\] Read 3 files · 287ms/);
   assert.doesNotMatch(completed, /status-bar\.js/);
 });
 
@@ -182,7 +122,15 @@ test("interactive question reuses the built-in CLI prompt without a second input
 
   assert.match(frame, /❯ Ask anything\.\.\./);
   assert.doesNotMatch(frame, /^\s*>\s/gm);
-  assert.doesNotMatch(frame, /Working/);
+  assert.doesNotMatch(frame, /Working/, "Working must not appear when waiting for answer");
+  // Should show waiting state in the activity bar (may be truncated on narrow terminals)
+  assert.match(frame, /Waiting/);
+  assert.ok(frame.indexOf("Waiting") < frame.indexOf("Ask anything..."),
+    "waiting status should appear above the prompt");
+  // "Esc cancel" should appear in the activity bar
+  assert.match(frame, /Esc cancel/);
+  assert.ok(frame.indexOf("Esc cancel") < frame.indexOf("Ask anything..."),
+    "Esc cancel should appear above the prompt");
 });
 
 test("structured questions are formatted once above the built-in prompt", () => {
@@ -348,10 +296,10 @@ test("command palette stays compact while searching commands", async () => {
   const output = latestTerminalFrame(stdout);
 
   assert.match(output, /Commands · 1–6 of \d+/);
-  assert.match(output, /\/new\s+Start a persistent session/);
-  assert.match(output, /\/redo\s+Redo the last undone turn/);
-  assert.doesNotMatch(output, /\/compact|\/model|\/connect|\/collapse/);
-  assert.ok((output.match(/\n\s*[> ]?\s*\//g) || []).length <= 6);
+  assert.match(output, /\/new\s+Start a new session/);
+  assert.match(output, /\/model\s+Select the active model/);
+  assert.doesNotMatch(output, /\/redo|\/compact|\/connect|\/collapse/);
+  assert.ok((output.match(/\n\s*[›> ]?\s*\//g) || []).length <= 6);
   instance.unmount();
   instance.cleanup();
   stdin.destroy();
@@ -380,23 +328,23 @@ test("command palette keeps keyboard navigation inside its scrolling viewport", 
   };
 
   await press("/x");
-  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*› \/x1/);
   for (let index = 0; index < 6; index++) await press("\u001b[B");
-  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*> \/x7/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*› \/x7/);
   assert.doesNotMatch(latestTerminalFrame(stdout), /\/x1\s/);
 
   for (let index = 0; index < 6; index++) await press("\u001b[A");
-  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*› \/x1/);
   await press("\u001b[6~");
-  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*> \/x7/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 2–7 of 9[\s\S]*› \/x7/);
   await press("\u001b[6~");
-  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*> \/x9/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*› \/x9/);
   await press("\u001b[5~");
-  assert.match(latestTerminalFrame(stdout), /Commands · 3–8 of 9[\s\S]*> \/x3/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 3–8 of 9[\s\S]*› \/x3/);
   await press("\u001b[H");
-  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*> \/x1/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 1–6 of 9[\s\S]*› \/x1/);
   await press("\u001b[F");
-  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*> \/x9/);
+  assert.match(latestTerminalFrame(stdout), /Commands · 4–9 of 9[\s\S]*› \/x9/);
   await press("\r");
   assert.deepEqual(executed, ["/x9"]);
 
@@ -404,7 +352,7 @@ test("command palette keeps keyboard navigation inside its scrolling viewport", 
   await press("\u001b[F");
   await press("1");
   const filteredFrame = latestTerminalFrame(stdout);
-  assert.match(filteredFrame, /Commands[\s\S]*> \/x1/);
+  assert.match(filteredFrame, /Commands[\s\S]*› \/x1/);
   assert.doesNotMatch(filteredFrame, / of 9|\/x2/);
   await press("\u001b");
   assert.doesNotMatch(latestTerminalFrame(stdout), /Commands|\/x1\s+Command 1/);
@@ -468,6 +416,7 @@ test("working state is removed as soon as the agent becomes idle", async () => {
   await new Promise(resolve => setTimeout(resolve, 60));
   const latest = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).at(-1) || "";
   assert.doesNotMatch(latest, /Working/);
+  assert.doesNotMatch(latest, /Esc cancel/, "Esc cancel must not appear in idle state");
   assert.match(latest, /Ask anything/);
 
   instance.unmount();

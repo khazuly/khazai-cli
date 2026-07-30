@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStdin } from "ink";
+import { canonicalCommand } from "../commands.js";
 
 export const COMMAND_VIEWPORT_SIZE = 6;
 
@@ -8,12 +9,17 @@ function clampIndex(index, itemCount) {
   return Math.max(0, Math.min(itemCount - 1, index));
 }
 
+/**
+ * Find a command by its canonical name or alias, supporting subcommands.
+ */
 export function findSubCommands(commands, input) {
   const slashIndex = input.indexOf("/");
   if (slashIndex < 0) return null;
   const commandName = input.slice(slashIndex).split(" ")[0];
-  const command = commands.find(item => item.name === commandName);
-  return command?.sub ? { cmd: command, items: command.sub } : null;
+  // Resolve alias to canonical command
+  const canonical = canonicalCommand(commandName);
+  const cmd = canonical || commands.find(item => item.name === commandName);
+  return cmd?.sub ? { cmd, items: cmd.sub } : null;
 }
 
 export function filterCommandItems(items, input, prefixLength) {
@@ -23,6 +29,25 @@ export function filterCommandItems(items, input, prefixLength) {
     item.name.toLowerCase().includes(partial)
     || item.description?.toLowerCase().includes(partial)
   );
+}
+
+/**
+ * Filter visible commands, resolving aliases so a user typing "/ex"
+ * can still see "/details" if it has "/expand" as an alias.
+ */
+export function filterCanonicalCommands(commands, input) {
+  if (!input.startsWith("/")) return [];
+  const partial = input.slice(input.indexOf("/") + 1).toLowerCase();
+  if (!partial) return commands.filter(c => c.visible !== false);
+
+  return commands.filter(c => {
+    if (c.visible === false) return false;
+    const canonicalName = c.name.slice(1).toLowerCase();
+    if (canonicalName.startsWith(partial)) return true;
+    // Check aliases too so partial alias input still surfaces the canonical command
+    if (c.aliases?.some(a => a.slice(1).toLowerCase().startsWith(partial) || a.toLowerCase().startsWith("/" + partial))) return true;
+    return false;
+  });
 }
 
 export function useCommandBoundaryKeys(enabled, lastIndex, selectIndex) {

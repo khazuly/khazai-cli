@@ -5,10 +5,12 @@ import { useTheme } from "../theme.js";
 import {
   COMMAND_VIEWPORT_SIZE,
   filterCommandItems,
+  filterCanonicalCommands,
   findSubCommands,
   useCommandBoundaryKeys,
   useCommandViewport,
 } from "./command-viewport.js";
+import { COMMAND_CATEGORIES, resolveCommand } from "../commands.js";
 import { Panel } from "./surface.js";
 import { OptionSelector } from "./option-selector.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
@@ -50,18 +52,15 @@ export function PromptInput({
   useEffect(() => { optionIdxRef.current = 0; setOptionIdx(0); }, [questionOptions]);
   const subInfo = findSubCommands(commands, input.value);
   const inSubMode = subInfo !== null && input.value.includes(" ");
-  const filtered = inSubMode
-    ? filterCommandItems(subInfo.items, input.value, input.value.lastIndexOf(" ") + 1)
-    : filterCommandItems(
-        commands.filter(c => {
-          if (!input.value.startsWith("/")) return false;
-          const partial = input.value.slice(input.value.indexOf("/") + 1).toLowerCase();
-          return !partial || c.name.slice(1).toLowerCase().startsWith(partial) || c.name.toLowerCase().startsWith("/" + partial);
-        }),
-        input.value,
-        input.value.indexOf("/") + 1
-      );
-  const commandResults = filtered;
+
+  // Filter commands – use canonical visible commands with alias resolution
+  let commandResults;
+  if (inSubMode) {
+    commandResults = filterCommandItems(subInfo.items, input.value, input.value.lastIndexOf(" ") + 1);
+  } else {
+    commandResults = filterCanonicalCommands(commands, input.value);
+  }
+
   const commandResetKey = [
     input.value,
     activeModel || "",
@@ -77,17 +76,19 @@ export function PromptInput({
     : [];
   const showFiles = matchedFiles.length > 0;
   useCommandBoundaryKeys(
-    showCmd && questionOptions.length === 0,
+    showCmd && questionOptions.length === 0 && !showFiles,
     commandResults.length - 1,
     commandViewport.selectIndex,
   );
   const prevSelectedRef = useRef(null);
   const prevInSubModeRef = useRef(false);
+  const previousSubCommandRef = useRef("");
   useEffect(() => {
     const selected = commandViewport.selectedItem;
     if (prevInSubModeRef.current && !inSubMode) {
-      onExitSub?.(subInfo?.cmd?.name || "");
+      onExitSub?.(previousSubCommandRef.current);
     }
+    if (inSubMode) previousSubCommandRef.current = subInfo.cmd.name;
     prevInSubModeRef.current = inSubMode;
     if (inSubMode && selected && onPreviewChange && selected.name !== prevSelectedRef.current) {
       prevSelectedRef.current = selected.name;
@@ -304,7 +305,10 @@ export function PromptInput({
       if (value) {
         if (value.startsWith("/")) {
           const [command, ...rest] = value.split(/\s+/);
-          onCommand?.(command, rest.join(" "));
+          // Resolve alias to canonical command + optional arg
+          const resolved = resolveCommand(command);
+          const arg = resolved.arg || rest.join(" ");
+          onCommand?.(resolved.command, arg);
         } else {
           onSubmit(value);
         }
@@ -423,34 +427,16 @@ export function PromptInput({
     );
   });
 
-  const cmdDropdown = showCmd
-    ? h(Box, {
-        flexDirection: "column",
-        marginLeft: 2,
-        marginBottom: 1,
-        width: Math.max(20, Math.min(64, (process.stdout.columns || 80) - 2)),
-      },
-        h(Text, { color: theme.metadata, bold: true },
-          inSubMode ? subInfo.cmd.name.slice(1) : "Commands",
-          commandResults.length > COMMAND_VIEWPORT_SIZE
-            ? ` · ${commandViewport.scrollOffset + 1}–${Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, commandResults.length)} of ${commandResults.length}`
-            : "",
-        ),
-        ...commandViewport.visibleItems.map((item, i) => {
-          const selected = commandViewport.scrollOffset + i === commandViewport.selectedIndex;
-          const name = item.name || "";
-          const desc = inSubMode ? item.description || "" : item.description || "";
-          const isActive = inSubMode && item.name === activeModel;
-          return h(Box, { key: name, flexShrink: 0 },
-            h(Text, {
-              color: selected ? theme.secondary : undefined,
-              bold: selected || isActive,
-            }, selected ? "> " : "  ", name),
-            desc ? h(Text, { dimColor: true, wrap: "truncate-end" }, "  ", desc) : null,
-            isActive ? h(Text, { dimColor: true }, "  (active)") : null
-          );
-        })
-      )
+  // Build grouped command dropdown
+  const cmdDropdown = showCmd && !showFiles
+    ? h(CommandDropdown, {
+        commandResults,
+        commandViewport,
+        inSubMode,
+        subInfo,
+        activeModel,
+        theme,
+      })
     : null;
   const fileDropdown = showFiles
     ? h(Box, {
@@ -491,5 +477,81 @@ export function PromptInput({
         ...content,
       ),
     )
+  );
+}
+
+/**
+ * Categorized command dropdown with scroll indicator.
+ */
+function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, activeModel, theme }) {
+  const label = inSubMode ? subInfo.cmd.name.slice(1) : "Commands";
+  const total = commandResults.length;
+  const rangeStart = total > COMMAND_VIEWPORT_SIZE ? commandViewport.scrollOffset + 1 : null;
+  const rangeEnd = total > COMMAND_VIEWPORT_SIZE
+    ? Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, total)
+    : null;
+
+  // Group by category when not in subcommand mode
+  const renderItems = () => {
+    if (inSubMode) {
+      return commandViewport.visibleItems.map((item, i) =>
+        renderCommandRow(item, commandViewport, i, inSubMode, activeModel, theme)
+      );
+    }
+
+    // Build category-grouped visible items
+    const visibleItems = commandViewport.visibleItems;
+    let currentCategory = null;
+    const rows = [];
+    let currentCategoryCount = 0;
+    const totalOffset = commandViewport.scrollOffset;
+
+    for (let i = 0; i < visibleItems.length; i++) {
+      const globalIndex = totalOffset + i;
+      const item = visibleItems[i];
+      if (item.category && item.category !== currentCategory) {
+        currentCategory = item.category;
+        currentCategoryCount = 0;
+        if (i > 0 || totalOffset === 0) {
+          const catLabel = COMMAND_CATEGORIES.find(c => c.id === currentCategory)?.label || currentCategory;
+          rows.push(
+            h(Box, { key: `cat-${currentCategory}`, flexShrink: 0, marginTop: i > 0 ? 0 : 0 },
+              h(Text, { color: theme.metadata, dimColor: true, bold: false }, catLabel),
+            )
+          );
+        }
+      }
+      rows.push(renderCommandRow(item, commandViewport, i, inSubMode, activeModel, theme));
+      currentCategoryCount++;
+    }
+    return rows;
+  };
+
+  return h(Box, {
+    flexDirection: "column",
+    marginLeft: 2,
+    marginBottom: 1,
+    width: Math.max(24, Math.min(72, (process.stdout.columns || 80) - 2)),
+  },
+    h(Text, { color: theme.metadata, bold: false },
+      label,
+      rangeStart ? ` · ${rangeStart}–${rangeEnd} of ${total}` : "",
+    ),
+    ...renderItems(),
+  );
+}
+
+function renderCommandRow(item, viewport, localIndex, inSubMode, activeModel, theme) {
+  const selected = viewport.scrollOffset + localIndex === viewport.selectedIndex;
+  const name = item.name || "";
+  const desc = inSubMode ? item.description || "" : item.description || "";
+  const isActive = inSubMode && item.name === activeModel;
+  return h(Box, { key: name, flexShrink: 0 },
+    h(Text, {
+      color: selected ? theme.secondary : undefined,
+      bold: selected || isActive,
+    }, selected ? "› " : "  ", name),
+    desc ? h(Text, { dimColor: true, wrap: "truncate-end" }, "  ", desc) : null,
+    isActive ? h(Text, { dimColor: true }, "  (active)") : null,
   );
 }

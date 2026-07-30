@@ -1,6 +1,7 @@
 import { ExecutionPolicy } from "../execution-policy.js";
 import { fallbackIntentContract, normalizeIntentContract } from "../intent-resolver.js";
 import { taskState } from "./helpers/parser.js";
+import { classifyProviderFailure, isRetryableFailure } from "../../lib/provider-reliability.js";
 
 export function completedConversationHistory(messages) {
   const completed = new Set(messages
@@ -15,19 +16,32 @@ export function completedConversationHistory(messages) {
 }
 
 export function recoverableProviderFailure(error) {
-  const status = Number(error?.status);
-  if ([500, 502, 503, 504].includes(status)) return true;
-  const code = String(error?.code || error?.cause?.code || "").toUpperCase();
-  return ["ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "PREMATURE_STREAM"].includes(code)
-    || /connection reset|socket hang up|premature stream|stream ended before completion|terminated unexpectedly/i
-      .test(String(error?.message || error));
+  return isRetryableFailure(error?.failureClass || classifyProviderFailure(error));
 }
 
-export function providerFailureContent(error) {
+export function providerFailureContent(error, model = "Model") {
   const attempts = Math.max(1, Number(error?.attempts) || 1);
   const status = Number(error?.status);
-  const detail = status ? `HTTP ${status}` : "connection error";
-  return `[×] Model request failed after ${attempts} attempt${attempts === 1 ? "" : "s"} · ${detail}`;
+  const failureClass = error?.failureClass || classifyProviderFailure(error);
+  if (failureClass === "invalid_tool_schema") {
+    return "[×] Provider request was rejected because a tool schema is invalid.";
+  }
+  if (failureClass === "unsupported_parameter") {
+    return "[×] Provider request used a parameter that this route does not support.";
+  }
+  if (failureClass === "malformed_payload") {
+    return "[×] Provider request payload was rejected.";
+  }
+  if (failureClass === "unhealthy_tool_route") {
+    return "[×] The selected model route is temporarily unavailable for tool calls.";
+  }
+  if (failureClass === "unhealthy_model_route") {
+    return "[×] The selected model route is temporarily unavailable.";
+  }
+  if (status) {
+    return `[×] ${model} provider returned HTTP ${status} after ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
+  }
+  return `[×] ${model} provider failed after ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
 }
 
 export function rememberProviderFailure(agent, error, model, phase) {
@@ -38,6 +52,7 @@ export function rememberProviderFailure(agent, error, model, phase) {
     taskEpoch: agent._activeRun?.taskEpoch,
     attempts: Math.max(1, Number(error?.attempts) || 1),
     status: Number(error?.status) || null,
+    failureClass: error?.failureClass || classifyProviderFailure(error),
     streamPhase: phase,
     retryLog: Array.isArray(error?.retryLog) ? error.retryLog : [],
   };

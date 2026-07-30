@@ -156,6 +156,7 @@ test("provider timeout terminates one scoped analysis without retrying", async (
 test("recoverable provider continuation retries without rerunning completed tools", async () => {
   let toolCalls = 0;
   let modelCalls = 0;
+  const requestIds = [];
   const registry = new Registry();
   registry.register({
     name: "read",
@@ -174,8 +175,9 @@ test("recoverable provider continuation retries without rerunning completed tool
     workspace: mkdtempSync(join(tmpdir(), "khazai-provider-retry-continuation-")),
     intentResolver: intent(),
     chatHandlesRetries: true,
-    chat: async () => {
+    chat: async (_messages, options) => {
       modelCalls++;
+      requestIds.push(options.requestId);
       if (modelCalls === 1) {
         return JSON.stringify({ tool: "read", args: { path: "fixture.txt" }, id: "read-once" });
       }
@@ -192,7 +194,7 @@ test("recoverable provider continuation retries without rerunning completed tool
   for await (const event of agent.loop("inspect and answer")) failed.push(event);
   assert.equal(toolCalls, 1);
   assert.equal(agent.hasRecoverableProviderRequest(), true);
-  assert.equal(failed.at(-1).content, "[×] Model request failed after 3 attempts · HTTP 500");
+  assert.equal(failed.at(-1).content, "[×] big-cock provider returned HTTP 500 after 3 attempts.");
 
   const recovered = [];
   for await (const event of agent.loop("", undefined, {
@@ -202,6 +204,7 @@ test("recoverable provider continuation retries without rerunning completed tool
   })) recovered.push(event);
   assert.equal(toolCalls, 1);
   assert.equal(modelCalls, 3);
+  assert.equal(new Set(requestIds).size, 3);
   assert.equal(agent.hasRecoverableProviderRequest(), false);
   assert.equal(agent._messages.filter(message => message.role === "user" && !String(message.content).startsWith("---TOOL")).length, 1);
   assert.match(recovered.filter(event => event.type === "stream").map(event => event.token).join(""), /Recovered final answer/);

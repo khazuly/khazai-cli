@@ -435,6 +435,23 @@ export class SessionStore {
     return files.length;
   }
 
+  deleteSessions(ids) {
+    let deleted = 0;
+    let failed = 0;
+    const errors = [];
+    for (const id of ids) {
+      try {
+        const p = this.path(id);
+        if (existsSync(p)) rmSync(p, { force: true });
+        deleted++;
+      } catch (error) {
+        failed++;
+        errors.push(String(error?.message || error));
+      }
+    }
+    return { deleted, failed, errors };
+  }
+
   exportMarkdown(session, path) {
     const lines = [`# ${session.title}`, ""];
     for (const message of session.messages || []) {

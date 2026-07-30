@@ -61,6 +61,7 @@ test("compaction lifecycle keeps stable usage until atomic recount", async () =>
   let requests = 0;
   const agent = new Agent(new Registry(), {
     workspace: mkdtempSync(join(tmpdir(), "khazai-context-lifecycle-")),
+    config: { modelSettings: {}, models: {}, contextLimit: null },
     sessionState: { messages, summary: "" },
     intentResolver: async () => ({
       intent: "answer",
@@ -100,6 +101,7 @@ test("compaction lifecycle keeps stable usage until atomic recount", async () =>
 test("failed recovery compaction retains history and does not loop", async () => {
   const agent = new Agent(new Registry(), {
     workspace: mkdtempSync(join(tmpdir(), "khazai-context-failure-")),
+    config: { modelSettings: {}, models: {}, contextLimit: null },
     chatHandlesRetries: true,
     intentResolver: async () => ({
       intent: "answer",

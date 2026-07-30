@@ -1,53 +1,25 @@
 import { countTokens } from "../lib/tokens.js";
-import { resolveModelDescriptor } from "../lib/llm.js";
+import { resolveEffectiveSettings } from "../config/model-settings.js";
 
 function positive(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
-/**
- * Resolve context limit for a model using priority:
- * 1. Verified provider/model metadata from the provider response
- * 2. Trusted user configuration: config.models[modelName].contextLimit
- * 3. Trusted user configuration: config.contextLimit
- * 4. Unknown (null)
- *
- * Returns { limit, source } where source is "provider" | "config" | "unknown".
- */
-export function resolveContextLimit(model, config) {
-  let descriptor;
-  try {
-    descriptor = resolveModelDescriptor(model, config);
-  } catch {
-    descriptor = null;
-  }
-  const definition = descriptor?.definition || {};
-  const metadata = config?.modelMetadata?.[descriptor?.exactID]
-    || config?.modelMetadata?.[descriptor?.modelID]
-    || {};
-
-  // 1. Provider/metadata limit
-  const fromMetadata = positive(metadata.contextLimit)
-    || positive(definition.contextLimit)
-    || positive(definition.contextLimits?.[descriptor?.modelID]);
-  if (fromMetadata) return { limit: fromMetadata, source: "provider" };
-
-  // 2. Trusted config.models[modelName].contextLimit
-  const modelName = descriptor?.requested || model;
-  const fromConfig = positive(config?.models?.[modelName]?.contextLimit)
-    || positive(config?.contextLimit);
-  if (fromConfig) return { limit: fromConfig, source: "config" };
-
-  // 3. Unknown
-  return { limit: null, source: "unknown" };
+export function resolveContextLimit(model, config, options = {}) {
+  const effective = resolveEffectiveSettings(model, {
+    config,
+    sessionOverrides: options.sessionOverrides,
+    providerMetadata: options.providerMetadata,
+  });
+  return {
+    limit: positive(effective.contextLimit),
+    source: effective.contextLimitSource,
+  };
 }
 
-/**
- * Shortcut: returns just the numeric limit or null.
- */
-export function resolveContextLimitValue(model, config) {
-  const resolved = resolveContextLimit(model, config);
+export function resolveContextLimitValue(model, config, options = {}) {
+  const resolved = resolveContextLimit(model, config, options);
   return resolved.limit;
 }
 
@@ -90,7 +62,6 @@ export class ContextUsageTracker {
     const previous = this.requests.get(key);
     const usage = normalizedUsage(event);
     this.requests.set(key, usage);
-    // Only add deltas when this is a new entry or values changed
     if (previous) {
       this._turnInputTokens += usage.inputTokens - previous.inputTokens;
       this._turnOutputTokens += usage.outputTokens - previous.outputTokens;

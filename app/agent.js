@@ -15,14 +15,18 @@ import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
 import { createToolExecutor } from "./agent/tool-executor-factory.js";
-import { ContextUsageTracker, resolveContextLimit } from "./context-usage.js";
+import { ContextUsageTracker } from "./context-usage.js";
+import { resolveEffectiveSettings } from "../config/model-settings.js";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
 export class Agent {
   constructor(registry, opts = {}) {
     this._workspace = opts.workspace || process.cwd();
-    this._config = loadConfig(this._workspace);
+    this._configOverride = opts.config || null;
+    this._config = this._configOverride
+      ? { ...loadConfig(this._workspace), ...this._configOverride }
+      : loadConfig(this._workspace);
     this._agentProfile = opts.agentProfile || getAgentProfile(
       this._workspace,
       opts.agent || this._config.defaultAgent || "build",
@@ -112,6 +116,9 @@ export class Agent {
     this._usageTracker = new ContextUsageTracker(opts.sessionState?.contextUsage);
     this._providerContextLimit = null;
     this._contextLimitSource = "unknown";
+    this._sessionSettingOverrides = opts.sessionSettingOverrides || {};
+    this._effectiveSettings = null;
+    this._applyEffectiveSettings();
     this._historyRevision = 0;
     this._compactionThresholdCrossed = false;
     this._contextErrorCompactedRunId = null;
@@ -234,7 +241,7 @@ export class Agent {
 
   _scheduleCompaction(run, reason = "threshold") {
     if (!this._isActiveRun(run) || this._compaction.status !== "idle") return false;
-    // Do not schedule threshold compaction when context limit is unknown
+    if (reason === "threshold" && !this._config.automaticCompaction) return false;
     if (reason === "threshold" && !this._contextLimitKnown()) return false;
     const usage = this.contextUsage();
     this._compaction = {
@@ -256,6 +263,27 @@ export class Agent {
     if (typeof registry.load === "function") await registry.load(this._workspace);
     this._registry = registry.subset?.(this._agentProfile.tools || ["*"]) || registry;
     this._registryReady = Promise.resolve();
+  }
+  _applyEffectiveSettings() {
+    const effective = resolveEffectiveSettings(this._model, {
+      config: this._config,
+      sessionOverrides: this._sessionSettingOverrides,
+      providerMetadata: { contextLimit: this._providerContextLimit },
+    });
+    this._effectiveSettings = effective;
+    Object.assign(this._config, effective, {
+      compactThreshold: effective.compactionThreshold,
+    });
+    return effective;
+  }
+  refreshEffectiveSettings() {
+    const loaded = loadConfig(this._workspace);
+    const current = this._configOverride ? { ...loaded, ...this._configOverride } : loaded;
+    this._config = current;
+    return {
+      settings: this._applyEffectiveSettings(),
+      usage: this.contextUsage(),
+    };
   }
   _compactionActiveFor(run) {
     return this._compaction.runId === run?.runId
