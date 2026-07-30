@@ -10,7 +10,7 @@ import {
   useCommandViewport,
 } from "./command-viewport.js";
 import { Panel } from "./surface.js";
-import { PermissionPrompt } from "./permission-prompt.js";
+import { OptionSelector } from "./option-selector.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
 const PASTE_COMPRESSION_THRESHOLD = 160;
 export function PromptInput({
@@ -31,6 +31,8 @@ export function PromptInput({
   onPreviewChange,
   onExitSub,
   canAbort = false,
+  question = "",
+  questionContext = "",
 }) {
   const promptActive = inputActive;
   const { stdout } = useStdout();
@@ -160,6 +162,16 @@ export function PromptInput({
         setOptionIdx(index => optionIdxRef.current = index > 0 ? index - 1 : questionOptions.length - 1);
       } else if (key.downArrow) {
         setOptionIdx(index => optionIdxRef.current = index < questionOptions.length - 1 ? index + 1 : 0);
+      } else if (key.pageUp) {
+        setOptionIdx(index => optionIdxRef.current = Math.max(0, index - COMMAND_VIEWPORT_SIZE));
+      } else if (key.pageDown) {
+        setOptionIdx(index => optionIdxRef.current = Math.min(questionOptions.length - 1, index + COMMAND_VIEWPORT_SIZE));
+      } else if (key.home) {
+        optionIdxRef.current = 0;
+        setOptionIdx(0);
+      } else if (key.end) {
+        optionIdxRef.current = questionOptions.length - 1;
+        setOptionIdx(questionOptions.length - 1);
       } else if (key.return) {
         onSelectOption?.(questionOptions[optionIdxRef.current]);
       } else if (/^[1-9]$/.test(ch)) {
@@ -381,24 +393,16 @@ export function PromptInput({
 
   if (questionOptions.length > 0) {
     const optionWidth = Math.max(12, terminalWidth - 2);
-    if (questionKind === "permission") {
-      return h(PermissionPrompt, {
-        request: permissionRequest,
-        options: questionOptions,
-        selectedIndex: optionIdx,
-        width: optionWidth,
-      });
-    }
-    return h(Box, { flexDirection: "column", width: optionWidth, marginLeft: 2 },
-      ...questionOptions.map((option, index) => h(Text, {
-        key: `${index}-${option}`,
-        color: index === optionIdx ? theme.secondary : undefined,
-        bold: index === optionIdx,
-        wrap: "truncate-end",
-        width: optionWidth,
-      }, index === optionIdx ? "> " : "  ", `${index + 1}. ${option}`)),
-      h(Text, { dimColor: true, wrap: "truncate-end", width: optionWidth }, "↑↓ select · Enter confirm · 1-9 quick select · Esc cancel"),
-    );
+    return h(OptionSelector, {
+      kind: questionKind,
+      options: questionOptions,
+      permissionRequest,
+      question,
+      context: questionContext,
+      selectedIndex: optionIdx,
+      theme,
+      width: optionWidth,
+    });
   }
 
   const content = inputRows.map((row, rowIndex) => {
@@ -465,11 +469,9 @@ export function PromptInput({
       )
     : null;
 
-  const hintLeft = `${activeModel || "build"} · ${canAbort ? "Working · Esc cancel" : "Enter send"}`;
-  const hintRight = promptActive ? "! shell · @ file · / commands · ⇧Shift+Enter newline" : "";
-
   return h(Box, { flexDirection: "column", width: "100%" },
     fileDropdown || cmdDropdown,
+    question ? h(Text, { color: theme.metadata, bold: true, wrap: "wrap" }, question) : null,
     h(Panel, {
       flexDirection: "column",
       width: panelWidth,
@@ -488,12 +490,6 @@ export function PromptInput({
         ),
         ...content,
       ),
-    ),
-    terminalWidth < 60
-      ? h(Text, { color: theme.metadata, dimColor: true, wrap: "truncate-end" }, hintLeft)
-      : h(Box, { justifyContent: "space-between", width: panelWidth },
-          h(Text, { color: theme.metadata, dimColor: true }, hintLeft),
-          hintRight ? h(Text, { color: theme.metadata, dimColor: true }, hintRight) : null,
-        )
+    )
   );
 }

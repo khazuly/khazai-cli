@@ -6,6 +6,20 @@ const MODELS = [
 ];
 
 const THEMES = THEME_NAMES.map(name => ({ name, description: THEME_DESCRIPTIONS[name] || name }));
+const MCP_COMMANDS = [
+  { name: "list", description: "List configured MCP servers" },
+  { name: "add", description: "Add an MCP server" },
+  { name: "remove", description: "Remove an MCP server" },
+  { name: "status", description: "Show MCP server status" },
+  { name: "connect", description: "Connect an MCP server" },
+  { name: "disconnect", description: "Disconnect an MCP server" },
+  { name: "enable", description: "Enable automatic connection" },
+  { name: "disable", description: "Disable automatic connection" },
+  { name: "tools", description: "List discovered MCP tools" },
+  { name: "resources", description: "List MCP resources" },
+  { name: "prompts", description: "List MCP prompts" },
+  { name: "reload", description: "Reload MCP configuration" },
+];
 
 export const COMMAND_GROUPS = [
   { id: "session", label: "Session" },
@@ -30,9 +44,14 @@ export const COMMANDS = [
   { name: "/agent", description: "Select a primary agent", group: "workspace" },
   { name: "/skills", description: "List available workspace skills", group: "workspace" },
   { name: "/lsp", description: "Show language server status", group: "workspace" },
-  { name: "/mcp", description: "Manage MCP servers", group: "workspace" },
+  { name: "/mcp", description: "Manage MCP servers", group: "workspace", sub: MCP_COMMANDS },
   { name: "/model", description: "Change the active model", group: "view", sub: MODELS },
   { name: "/models", description: "Select a configured model", group: "view" },
+  { name: "/setting", description: "Configure model settings interactively", group: "view", sub: [
+    { name: "show", description: "Display effective settings for the active model" },
+    { name: "model", description: "Open model-specific settings" },
+    { name: "reset", description: "Reset all settings to provider defaults" },
+  ] },
   { name: "/theme", description: "Change the interface theme", group: "view", sub: THEMES },
   { name: "/reasoning", description: "Set Codex reasoning effort", group: "view" },
   { name: "/details", description: "Toggle tool result details", group: "view" },

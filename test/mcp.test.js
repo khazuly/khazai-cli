@@ -41,7 +41,7 @@ test("MCP stdio discovery exposes native filtered tools and cleans up its proces
   let pid;
   try {
     const tools = await manager.refresh();
-    assert.deepEqual(tools.map(tool => tool.name), ["mcp_local_echo"]);
+    assert.deepEqual(tools.map(tool => tool.name), ["mcp__local__echo"]);
     assert.equal(tools[0].parameters.properties.value.type, "string");
     assert.equal(await tools[0].execute({ value: "hello" }), "echo:hello");
     const status = manager.status()[0];
@@ -106,7 +106,7 @@ test("MCP Streamable HTTP discovery and calls use configured headers", async () 
   });
   try {
     const [tool] = await manager.refresh();
-    assert.equal(tool.name, "mcp_remote_ping");
+    assert.equal(tool.name, "mcp__remote__ping");
     assert.equal(await tool.execute({}), "pong");
     assert.equal(observedHeader, "Bearer test-mcp-header-value");
   } finally {
@@ -175,6 +175,22 @@ test("MCP definitions accept OpenCode local server format", () => {
   assert.equal(definitions[0].discoveryTimeout, 750);
 });
 
+test("built-in code intelligence resolves as a workspace-scoped stdio server", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-code-mcp-config-"));
+  process.env.KHAZAI_CODE_MCP_ENTRY = fixture;
+  try {
+    const { definitions, errors } = resolveMcpDefinitions(workspace, {
+      mcp: { "khazai-code": { type: "builtin", builtin: "code" } },
+    });
+    assert.deepEqual(errors, []);
+    assert.equal(definitions[0].command, process.execPath);
+    assert.deepEqual(definitions[0].args, [fixture, "--workspace", workspace]);
+    assert.equal(definitions[0].cwd, workspace);
+  } finally {
+    delete process.env.KHAZAI_CODE_MCP_ENTRY;
+  }
+});
+
 test("MCP results redact secrets, retain text layout, cap output, and omit binary bodies", () => {
   const secret = "mcp-secret-value";
   const output = normalizeMcpResult({
@@ -195,20 +211,20 @@ test("MCP results redact secrets, retain text layout, cap output, and omit binar
 test("MCP permissions, profile wildcard selection, commands, and credentials use native contracts", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-mcp-contract-"));
   const permissions = new PermissionService(workspace, { permission: {} });
-  assert.equal(permissions.evaluate("mcp_github_create_issue", {}).decision, "allow");
+  assert.equal(permissions.evaluate("mcp__github__create_issue", {}).decision, "allow");
   assert.equal(new PermissionService(workspace, {
-    permission: { "mcp_github_*": "allow", mcp_github_delete_issue: "deny" },
-  }).evaluate("mcp_github_list_issues", {}).decision, "allow");
+    permission: { "mcp__github__*": "allow", mcp__github__delete_issue: "deny" },
+  }).evaluate("mcp__github__list_issues", {}).decision, "allow");
   assert.equal(new PermissionService(workspace, {
-    permission: { "mcp_github_*": "allow", mcp_github_delete_issue: "deny" },
-  }).evaluate("mcp_github_delete_issue", {}).decision, "deny");
+    permission: { "mcp__github__*": "allow", mcp__github__delete_issue: "deny" },
+  }).evaluate("mcp__github__delete_issue", {}).decision, "deny");
 
   const registry = new Registry();
   registry.register({ name: "read" });
-  registry.register({ name: "mcp_local_echo" });
+  registry.register({ name: "mcp__local__echo" });
   assert.deepEqual(registry.subset(getAgentProfile(workspace, "plan").tools).list().map(tool => tool.name), [
     "read",
-    "mcp_local_echo",
+    "mcp__local__echo",
   ]);
   assert.equal(getAgentProfile(workspace, "explore").tools.includes("mcp_*"), false);
   assert.ok(COMMANDS.some(command => command.name === "/mcp"));

@@ -13,7 +13,7 @@ input.on("line", line => {
   if (request.method === "initialize") {
     send(request.id, {
       protocolVersion: request.params.protocolVersion,
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, resources: {}, prompts: {} },
       serverInfo: { name: "khazai-test-mcp", version: "1.0.0" },
     });
     return;
@@ -48,6 +48,18 @@ input.on("line", line => {
     if (request.params.arguments?.mode === "crash") process.exit(2);
     send(request.id, {
       content: [{ type: "text", text: `echo:${request.params.arguments?.value || ""}` }],
+    });
+    return;
+  }
+  if (request.method === "resources/list") {
+    send(request.id, {
+      resources: [{ uri: "file:///docs/readme.md", name: "Readme", description: "Project documentation." }],
+    });
+    return;
+  }
+  if (request.method === "prompts/list") {
+    send(request.id, {
+      prompts: [{ name: "review", description: "Review the current change." }],
     });
   }
 });

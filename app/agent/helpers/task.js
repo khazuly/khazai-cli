@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cleanInteractiveText } from "../../../lib/interactive-text.js";
+import { inspectionCommand } from "../../execution-policy.js";
 import { isProviderParseFailure } from "./parser.js";
 
 export function isObject(value) {

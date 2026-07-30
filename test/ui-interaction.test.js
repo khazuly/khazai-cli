@@ -4,7 +4,6 @@ import { createElement as h, Fragment } from "react";
 import { Box, Static, Text, render } from "ink";
 import { MessageList } from "../ui/components/message-list.js";
 import { PromptInput } from "../ui/components/prompt-input.js";
-import { StatusBar, formatElapsed } from "../ui/components/status-bar.js";
 import { SessionFooter } from "../ui/components/session-footer.js";
 import { COMMANDS } from "../ui/commands.js";
 import { formatInteractiveQuestion, streamViewportText } from "../ui/session.js";
@@ -87,40 +86,62 @@ test("interactive startup keeps native scrollback and avoids alternate screen", 
   assert.doesNotMatch(raw, /\u001b\[\?1049h/);
 });
 
-test("animated working state stays above an active editable prompt", async () => {
-  const stdout = new TerminalOutput(40, 14);
-  const stdin = new TerminalInput();
-  const instance = render(
-    h(Box, { flexDirection: "column" },
-      h(Text, null, "ACTIVE TOOL"),
-      h(StatusBar, { running: true, plan: [] }),
-      h(PromptInput, {
-        onSubmit() {}, onCommand() {}, commands: [], canAbort: true,
-      }),
-    ),
-    { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false },
-  );
-  await new Promise(resolve => setTimeout(resolve, 100));
-  const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, ""));
-  const frame = frames.join("");
-  assert.match(frame, /ACTIVE TOOL/);
-  assert.match(frame, /Working/);
-  assert.match(frame, /Ask anything/);
-  assert.doesNotMatch(frame, /Input unavailable/);
-  const writesAfterInitialRender = stdout.frames.length;
-  await new Promise(resolve => setTimeout(resolve, 1100));
-  assert.ok(stdout.frames.length > writesAfterInitialRender, "Working animation must produce visible frames");
-  assert.match(stripAnsi(stdout.frames.at(-1)), /Working · \d+s · Esc cancel/);
-
-  instance.unmount();
-  instance.cleanup();
-  stdin.destroy();
+test("session footer renders one working status below the editable prompt", async () => {
+  const frame = await renderComponent(h(SessionFooter, {
+    running: true,
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps: {
+      onSubmit() {}, onCommand() {}, commands: [], canAbort: true,
+    },
+  }), 72, 14);
+  const promptIndex = frame.indexOf("Ask anything...");
+  const footerIndex = frame.indexOf("big-cock · Working · Esc cancel");
+  assert.ok(promptIndex >= 0 && footerIndex > promptIndex);
+  assert.equal(frame.match(/big-cock/g)?.length, 1);
+  assert.equal(frame.match(/Esc cancel/g)?.length, 1);
+  assert.match(frame, /big-cock · Working · Esc cancel\s+Context 14 \/ 100 · 14%/);
 });
 
-test("working duration switches to minutes after sixty seconds", () => {
-  assert.equal(formatElapsed(36), "36s");
-  assert.equal(formatElapsed(60), "1m 0s");
-  assert.equal(formatElapsed(125), "2m 5s");
+test("session footer handles idle, queued, compacting, and narrow layouts", async () => {
+  const promptProps = { onSubmit() {}, onCommand() {}, commands: [] };
+  const idle = await renderComponent(h(SessionFooter, {
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(idle, /big-cock · Enter send\s+Context 14 \/ 100 · 14%/);
+
+  const queued = await renderComponent(h(SessionFooter, {
+    running: true,
+    queueCount: 2,
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 42, 14);
+  assert.match(queued, /big-cock · Working · 2 queued · Esc cancel/);
+  assert.match(queued, /\n\s+Context 14 \/ 100 · 14%/);
+
+  const compacting = await renderComponent(h(SessionFooter, {
+    running: true,
+    model: "big-cock",
+    contextUsage: {
+      currentContextTokens: 91_000,
+      contextLimit: 100_000,
+      compactionStatus: "summarizing",
+      compactionStartedAt: Date.now(),
+    },
+    promptProps,
+  }), 72, 12);
+  assert.match(compacting, /big-cock · ⠋ Compacting context · 0s\s+Context 91\.0k \/ 100k · 91%/);
+
+  const unknown = await renderComponent(h(SessionFooter, {
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 48_300, contextLimitKnown: false },
+    promptProps,
+  }), 72, 12);
+  assert.match(unknown, /Context 48\.3k/);
+  assert.doesNotMatch(unknown, /Context \d+%/);
 });
 
 test("read groups keep one live row and finalize without a file name", async () => {
@@ -153,7 +174,6 @@ test("read groups keep one live row and finalize without a file name", async () 
 test("interactive question reuses the built-in CLI prompt without a second input", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,
-    plan: [],
     waitingForAnswer: true,
     promptProps: {
       onSubmit() {}, onCommand() {}, commands: [], disabled: false,
@@ -200,7 +220,7 @@ test("interactive options use keyboard selection instead of free-text input", as
   const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
   assert.match(output, /1\. Ya, hapus file ini/);
   assert.match(output, /2\. Tidak, batalkan/);
-  assert.match(output, /↑↓ select · Enter confirm/);
+  assert.match(output, /↑↓ Select · PgUp\/PgDn · Enter Confirm/);
   assert.deepEqual(selected, ["Tidak, batalkan"]);
 
   instance.unmount();
@@ -434,7 +454,6 @@ test("working state is removed as soon as the agent becomes idle", async () => {
     h(Text, null, "RESULT"),
     h(SessionFooter, {
       running,
-      plan: [],
       waitingForAnswer: false,
       promptProps: {
         onSubmit() {}, onCommand() {}, commands: [], canAbort: running,

@@ -15,6 +15,7 @@ import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
 import { createToolExecutor } from "./agent/tool-executor-factory.js";
+import { ContextUsageTracker, resolveContextLimit } from "./context-usage.js";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
@@ -108,14 +109,22 @@ export class Agent {
     this._chatHandlesRetries = opts.chatHandlesRetries ?? !opts.chat;
     this._resetSession = opts.resetSession || resetSession;
     this._recoverableProviderRequest = null;
+    this._usageTracker = new ContextUsageTracker(opts.sessionState?.contextUsage);
+    this._providerContextLimit = null;
+    this._contextLimitSource = "unknown";
+    this._historyRevision = 0;
+    this._compactionThresholdCrossed = false;
+    this._contextErrorCompactedRunId = null;
     this._compaction = {
-      status: "idle", // idle | pending | compacting | committing | completed | failed
+      status: "idle",
       runId: null,
       turnId: null,
       taskEpoch: null,
       compactionId: null,
       startedAt: null,
       error: null,
+      stableTokens: null,
+      reason: null,
     };
     this._progress = {
       lastProgressAt: Date.now(),
@@ -188,15 +197,23 @@ export class Agent {
   setReasoningEffort(effort) { this._config.reasoningEffort = effort; }
   setQuestionHandler(handler) { this._questionHandler = handler; }
   setPermissionHandler(handler) { this._permissionHandler = handler; }
+  mode() { return this._agentProfile?.name === "plan" ? "plan" : "build"; }
+  planningContext() {
+    return {
+      objective: this._currentRequest,
+      relevantFiles: [...(this._activeScope?.relevantFiles || [])],
+      plan: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [],
+    };
+  }
   setAutoApprove(value) { this._permissionService.setAuto(value); }
   redactForDisplay(value) { return this._secretStore.redact(value); }
   redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
   _toolExecutor(scope) { return createToolExecutor(this, scope); }
   isCompacting() {
-    return this._compaction.status === "compacting" || this._compaction.status === "committing";
+    return ["preparing", "summarizing", "committing", "recounting"].includes(this._compaction.status);
   }
-  isCompactionPending() { return this._compaction.status === "pending"; }
+  isCompactionPending() { return this._compaction.status === "scheduled"; }
   compact() {
     this._compactMessages(true);
     return this.exportSessionState();
@@ -210,7 +227,35 @@ export class Agent {
       compactionId: null,
       startedAt: null,
       error: null,
+      stableTokens: null,
+      reason: null,
     };
+  }
+
+  _scheduleCompaction(run, reason = "threshold") {
+    if (!this._isActiveRun(run) || this._compaction.status !== "idle") return false;
+    // Do not schedule threshold compaction when context limit is unknown
+    if (reason === "threshold" && !this._contextLimitKnown()) return false;
+    const usage = this.contextUsage();
+    this._compaction = {
+      status: "scheduled",
+      runId: run.runId,
+      turnId: run.turnId,
+      taskEpoch: run.taskEpoch,
+      compactionId: randomUUID(),
+      startedAt: Date.now(),
+      error: null,
+      stableTokens: usage.currentContextTokens,
+      reason,
+    };
+    if (reason === "context-error") this._contextErrorCompactedRunId = run.runId;
+    return true;
+  }
+
+  async replaceRegistry(registry) {
+    if (typeof registry.load === "function") await registry.load(this._workspace);
+    this._registry = registry.subset?.(this._agentProfile.tools || ["*"]) || registry;
+    this._registryReady = Promise.resolve();
   }
   _compactionActiveFor(run) {
     return this._compaction.runId === run?.runId

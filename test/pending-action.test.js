@@ -63,7 +63,7 @@ test("session-state export drops legacy steering and credential continuation fie
   const exported = original.exportSessionState();
   const restored = new Agent(new Registry(), { workspace: "/tmp/pending-session", sessionState: exported });
 
-  assert.equal(exported.version, 4);
+  assert.equal(exported.version, 5);
   assert.equal("pendingAction" in exported, false);
   assert.equal("activeTask" in exported, false);
   assert.equal("taskContract" in exported, false);

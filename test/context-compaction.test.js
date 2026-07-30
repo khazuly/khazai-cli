@@ -35,34 +35,29 @@ test("automatic compaction keeps more recent context than manual compaction", ()
   assert.equal(manual._messages.at(-1).content, messages.at(-1).content);
 });
 
-test("automatic compaction starts only when context reaches its full budget", () => {
+test("unknown context limits omit percentages and disable threshold compaction", () => {
   const messages = Array.from({ length: 6 }, (_, index) => ({
     role: index % 2 === 0 ? "user" : "assistant",
     content: `message-${index} ${"x".repeat(180)}`,
   }));
   const agent = agentWithState({ messages, summary: "" });
-  const usage = agent._messageTokenUsage();
-  agent._config.compactThreshold = 1;
-
-  agent._config.tokenBudget = usage + 1;
-  assert.equal(agent.contextUsage().percent, 99);
+  const usage = agent.contextUsage();
+  assert.equal(usage.contextLimitKnown, false);
+  assert.equal(usage.usagePercent, null);
+  assert.ok(usage.currentContextTokens > 0);
   assert.equal(agent.compactIfNeeded(), false);
-
-  agent._config.tokenBudget = usage;
-  assert.equal(agent.contextUsage().percent, 100);
-  assert.equal(agent.compactIfNeeded(), true);
 });
 
-test("automatic compaction honors a lower configured threshold", () => {
+test("known context limits compact from projected request usage", () => {
   const messages = Array.from({ length: 4 }, (_, index) => ({
     role: index % 2 === 0 ? "user" : "assistant",
     content: `message-${index} ${"x".repeat(180)}`,
   }));
   const agent = agentWithState({ messages, summary: "" });
-  const usage = agent._messageTokenUsage();
-  agent._config.tokenBudget = usage + 1;
-  agent._config.compactThreshold = 0.85;
-
+  const usage = agent.contextUsage();
+  agent._config.contextLimit = usage.projectedRequestTokens;
+  agent._config.compactThreshold = 1;
+  assert.equal(agent.contextUsage().contextLimitKnown, true);
   assert.equal(agent.compactIfNeeded(), true);
 });
 

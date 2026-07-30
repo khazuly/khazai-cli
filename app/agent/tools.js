@@ -5,6 +5,7 @@ import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { redactSecrets } from "../../lib/secrets.js";
 import { ToolExecutor } from "../tool-executor.js";
+import { resolveContextLimit, resolveContextLimitValue } from "../context-usage.js";
 import { normalizeIntentContract } from "../intent-resolver.js";
 import { randomUUID } from "node:crypto";
 import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
@@ -125,6 +126,7 @@ export class ToolMethods {
         },
       })),
     });
+    yield this._scopedToolEvent({ type: "context-usage", usage: this.contextUsage() }, executionScope);
     let failed = false;
     for (const call of calls) {
       if (!this._isActiveRun(executionScope)) return true;
@@ -158,6 +160,7 @@ export class ToolMethods {
           name: event.call.name,
           content: result,
         });
+        yield this._scopedToolEvent({ type: "context-usage", usage: this.contextUsage() }, executionScope);
         this._lastToolResult = result;
         this._activeTask.lastToolResult = result.slice(0, 1500);
       }
@@ -182,63 +185,47 @@ export class ToolMethods {
     return true;
   }
 
-  _messageTokenUsage() {
-    return this._messages.reduce((total, message) => (
-      total
-      + countTokens(String(message.content || ""))
-      + countTokens(JSON.stringify(message.tool_calls || []))
-    ), 0);
-  }
-
   _contextLimitKnown() {
-    const model = this._model || "";
-    // Only known-limit models get percentage-based handling
-    if (/codex|anthropic|claude|gpt|gemini/i.test(model)) return true;
-    return false;
+    return Boolean(resolveContextLimitValue(this._model, this._config));
   }
 
   contextUsage() {
-    const usedTokens = this._messageTokenUsage();
-    const known = this._contextLimitKnown();
-    const contextLimit = known
-      ? Math.max(1, Number(this._config.tokenBudget) || 24000)
-      : Math.max(1, Number(this._config.tokenBudget) || 24000);
-    // Always compute percentage for backward compat, but tag known status
-    const usagePercent = Math.min(100, Math.floor((usedTokens / contextLimit) * 100));
-    const projectedTokens = usedTokens + Math.min(Math.floor(usedTokens * 0.15), 2000);
-    return {
-      usedTokens,
-      contextLimit,
-      contextLimitKnown: known,
-      usagePercent,
-      // backward compatible field names
-      tokens: usedTokens,
-      budget: contextLimit,
-      percent: usagePercent,
-      projectedTokens,
-      compactionPending: this._compaction.status === "pending",
-      compacting: this._compaction.status === "compacting" || this._compaction.status === "committing",
-    };
+    const resolved = resolveContextLimit(this._model, this._config);
+    const contextLimit = this._providerContextLimit || resolved.limit;
+    const source = this._providerContextLimit ? "provider" : resolved.source;
+    this._usageTracker.setContextLimitSource(source);
+    const context = this._buildContext();
+    const snapshot = this._usageTracker.snapshot(context, contextLimit, {
+      estimated: true,
+      compactionStatus: this._compaction.status,
+      compactionStartedAt: this._compaction.startedAt,
+      stableTokens: this._compaction.stableTokens,
+      historyRevision: this._historyRevision,
+    });
+    snapshot.contextLimitSource = source;
+    return snapshot;
   }
 
   compactIfNeeded() {
+    const usage = this.contextUsage();
+    if (!usage.contextLimitKnown) return false;
+    const ratio = usage.projectedRequestTokens / usage.contextLimit;
+    if (ratio < this._config.compactThreshold) return false;
     return this._compactMessages(false);
   }
 
-  /**
-   * Build a compacted message list in a separate buffer without modifying
-   * the live messages. Returns the new message array or null if no compaction
-   * was needed.
-   */
   _buildCompactedMessages(force = false) {
-    const usage = this._messageTokenUsage();
+    const contextUsage = this.contextUsage();
+    const usage = contextUsage.currentContextTokens;
+    const contextLimit = resolveContextLimitValue(this._model, this._config)
+      || Math.max(1, Number(this._config.tokenBudget) || 24_000);
     if (!force) {
-      const threshold = this._config.tokenBudget * this._config.compactThreshold;
-      if (usage < threshold) return null;
+      const threshold = contextLimit * this._config.compactThreshold;
+      if (contextUsage.projectedRequestTokens < threshold) return null;
     }
     if (this._messages.length < 2) return null;
 
-    const target = this._config.tokenBudget * (force ? 0.2 : 0.45);
+    const target = contextLimit * (force ? 0.2 : 0.45);
     let keptTokens = 0;
     let keepFrom = this._messages.length;
     for (let index = this._messages.length - 1; index >= 0; index--) {
@@ -252,7 +239,6 @@ export class ToolMethods {
     while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
 
     const earlier = this._messages.slice(0, keepFrom);
-    // Build summary transcript from earlier messages, using read-only data
     const transcript = earlier
       .filter(message => ["user", "assistant"].includes(message.role) && message.content)
       .map(message => `${message.role === "user" ? "User" : "Assistant"}: ${String(message.content)}`)
@@ -263,12 +249,12 @@ export class ToolMethods {
       ? [this._summary, transcript].filter(Boolean).join("\n").slice(-8000)
       : this._summary;
 
-    // Return new message list (immutable buffer)
     const kept = this._messages.slice(keepFrom);
-    if (newSummary) {
-      kept.unshift({ role: "assistant", content: `Earlier conversation summary:\n${newSummary}` });
-    }
-    return { messages: kept, summary: newSummary };
+    return {
+      messages: kept,
+      summary: newSummary,
+      requestStartIndex: Math.max(0, this._requestStartIndex - keepFrom),
+    };
   }
 
   _compactMessages(force = false) {
@@ -276,6 +262,9 @@ export class ToolMethods {
     if (!result) return false;
     this._messages = result.messages;
     this._summary = result.summary;
+    this._requestStartIndex = result.requestStartIndex;
+    this._usageTracker.bumpHistoryRevision();
+    this._historyRevision = this._usageTracker.historyRevision;
     return true;
   }
 
@@ -432,10 +421,29 @@ export class ToolMethods {
     const summary = this._summary
       ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
       : [];
+    const limit = resolveContextLimitValue(this._model, this._config) || 0;
+
+    // When limit is unknown, include all messages without active/historical split
+    if (limit <= 0) {
+      const allMessages = this._messages
+        .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
+      const context = [
+        { role: "system", content: sys },
+        { role: "system", content: activeObjective },
+        ...summary,
+        ...allMessages,
+      ];
+      return this._secretStore.resolveSerializable(
+        context,
+        this._activeRun?.runId,
+        this._activeRun?.turnId,
+      );
+    }
+
+    // When limit is known, keep active/historical split to fit within limit
     const boundary = Math.max(0, Math.min(this._requestStartIndex, this._messages.length));
     const active = this._messages.slice(boundary)
       .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
-    const limit = this._contextLimitKnown() ? this._config.tokenBudget : 0;
     let used = countTokens(sys) + countTokens(activeObjective)
       + countTokens(summary[0]?.content || "")
       + active.reduce((total, message) => total

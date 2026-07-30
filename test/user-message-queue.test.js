@@ -66,10 +66,8 @@ test("editable tool prompt submits text, shows queue feedback, and keeps Escape 
   const submitted = [];
   let aborted = 0;
   const instance = render(h(SessionFooter, {
-    running: false,
-    plan: [],
+    running: true,
     queueCount: 2,
-    activeTool: { type: "tool", tool: "bash", status: "running" },
     promptProps: {
       onSubmit: value => submitted.push(value),
       onCommand() {},
@@ -96,7 +94,7 @@ test("editable tool prompt submits text, shows queue feedback, and keeps Escape 
 
   assert.deepEqual(submitted, ["Message A"]);
   assert.equal(aborted, 1);
-  assert.match(stripAnsi(stdout.frames.join("")), /Queued · 2 messages pending/);
+  assert.match(stripAnsi(stdout.frames.join("")), /2 queued/);
   instance.unmount();
   instance.cleanup();
   stdin.destroy();
@@ -183,7 +181,10 @@ test("tool boundary records the first result before a queued handoff stops the b
     if (next.value.type === "tool-result") resultEvent = next.value;
   }
 
-  const boundary = await iterator.next();
+  let boundary = await iterator.next();
+  while (!boundary.done && boundary.value.type === "context-usage") {
+    boundary = await iterator.next();
+  }
   assert.equal(boundary.value.type, "tool-call");
   assert.deepEqual(executed, ["read"]);
   assert.ok(agent._messages.some(message => (

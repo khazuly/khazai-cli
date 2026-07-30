@@ -12,11 +12,11 @@ import {
   saveReasoningEffort,
   saveTheme,
 } from "../config/index.js";
-import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
+import { saveProviderCredential } from "../lib/auth.js";
 import { loginCodex } from "../lib/codex-auth.js";
 import { listModels } from "../lib/llm.js";
-import { redactSecrets } from "../lib/secrets.js";
 import { formatCommandHelp } from "./commands.js";
+import { manageMcpCommand } from "./mcp-command.js";
 import { findToolMessage, recentToolMessages, toolChoice } from "./tool-activity.js";
 import { buildRegistry, displayModel, nextId, permissionModeCommand } from "./session-runtime.js";
 
@@ -249,11 +249,9 @@ async function manageMcp(arg, context) {
     appendArchived({ id: nextId(), type: "answer", content: "No MCP manager is available." });
     return;
   }
-  const commandArgs = String(arg || "").trim();
-  const [action, server] = commandArgs ? commandArgs.split(/\s+/, 2) : ["list", undefined];
-  const refresh = async () => {
+  const syncTools = async tools => {
     const state = agentRef.current?.exportSessionState?.() || null;
-    mcpToolsRef.current = await mcpManager.refresh();
+    mcpToolsRef.current = tools;
     agentRef.current = new Agent(buildRegistry(workspacePath, mcpToolsRef.current), {
       workspace: workspacePath,
       sessionId: currentSessionRef.current.id,
@@ -264,46 +262,13 @@ async function manageMcp(arg, context) {
       partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
     });
   };
-  try {
-    if (action === "refresh") {
-      await refresh();
-      appendArchived({ id: nextId(), type: "answer", content: "MCP servers refreshed." });
-      return;
-    }
-    if (action === "auth") {
-      if (!server) throw new Error("Usage: /mcp auth <server>");
-      const configured = loadConfig(workspacePath).mcp?.[server];
-      if (!configured) throw new Error(`MCP server "${server}" is not configured.`);
-      if (!configured.url && configured.type !== "http" && configured.transport !== "http") {
-        throw new Error("Stored MCP credentials are only supported for remote servers.");
-      }
-      const credential = await requestValue(`Credential for MCP server ${server}`, [], { secret: true });
-      if (!credential) return;
-      saveCredential(`mcp:${server}`, credential);
-      await refresh();
-      appendArchived({ id: nextId(), type: "answer", content: `Credential saved for MCP server ${server}.` });
-      return;
-    }
-    if (action === "logout") {
-      if (!server) throw new Error("Usage: /mcp logout <server>");
-      removeCredential(`mcp:${server}`);
-      await refresh();
-      appendArchived({ id: nextId(), type: "answer", content: `Credential removed for MCP server ${server}.` });
-      return;
-    }
-    if (action !== "list" && action !== "status") {
-      throw new Error("Usage: /mcp [list|status|refresh|auth <server>|logout <server>]");
-    }
-    const status = mcpManager.status();
-    const content = status.length
-      ? ["MCP servers:", ...status.map(item =>
-          `- ${item.id}: ${item.state} · ${item.type} · ${item.toolCount} tool${item.toolCount === 1 ? "" : "s"}${item.pid ? ` · PID ${item.pid}` : ""}${item.error ? ` — ${item.error}` : ""}`
-        )].join("\n")
-      : "No MCP servers are configured.";
-    appendArchived({ id: nextId(), type: "answer", content });
-  } catch (error) {
-    appendArchived({ id: nextId(), type: "error", content: redactSecrets(error.message) });
-  }
+  await manageMcpCommand(arg, {
+    manager: mcpManager,
+    requestValue: (question, options, settings) =>
+      requestValue(question, options, { ...settings, archive: false }),
+    syncTools,
+    respond: (type, content) => appendArchived({ id: nextId(), type, content }),
+  });
 }
 
 export async function handleSessionCommand(cmd, arg, context) {

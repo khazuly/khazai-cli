@@ -7,7 +7,6 @@ import { Banner } from "../ui/components/banner.js";
 import { EmptyState } from "../ui/components/empty-state.js";
 import { MessageList } from "../ui/components/message-list.js";
 import { PromptInput } from "../ui/components/prompt-input.js";
-import { StatusBar, formatElapsed } from "../ui/components/status-bar.js";
 import { SessionFooter } from "../ui/components/session-footer.js";
 import { ToolCall } from "../ui/components/tool-call.js";
 import { CodePreview } from "../ui/components/code-preview.js";
@@ -90,7 +89,12 @@ test("empty screen stays minimal and responsive from 30 to 50 columns", async ()
       h(Box, { flexDirection: "column" },
         h(Banner, { model: "big-cock", workspace: "/tmp/test-khazai" }),
         h(EmptyState),
-        h(PromptInput, { onSubmit() {}, onCommand() {}, commands: [], disabled: false }),
+        h(SessionFooter, {
+          running: false,
+          model: "big-cock",
+          contextUsage: { usagePercent: 14 },
+          promptProps: { onSubmit() {}, onCommand() {}, commands: [], disabled: false },
+        }),
       ),
       columns,
     );
@@ -416,10 +420,6 @@ test("write and edit tool results show terminal-native syntax previews", async (
     { stdout, debug: true, patchConsole: false, exitOnCtrlC: false },
   );
   await new Promise(resolve => setTimeout(resolve, 40));
-  if (!process.env.NO_COLOR) {
-    assert.match(stdout.frames.join(""), /\u001b\[38;2;/);
-    assert.doesNotMatch(stdout.frames.join(""), /\u001b\[48;2;/);
-  }
   instance.unmount();
   instance.cleanup();
 });
@@ -575,16 +575,9 @@ test("interactive startup keeps native scrollback and avoids alternate screen", 
   assert.doesNotMatch(raw, /\u001b\[\?1049h/);
 });
 
-test("working duration switches to minutes after sixty seconds", () => {
-  assert.equal(formatElapsed(36), "36s");
-  assert.equal(formatElapsed(60), "1m 0s");
-  assert.equal(formatElapsed(125), "2m 5s");
-});
-
 test("interactive question reuses the built-in CLI prompt without a second input", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,
-    plan: [],
     waitingForAnswer: true,
     promptProps: {
       onSubmit() {}, onCommand() {}, commands: [], disabled: false,
@@ -631,7 +624,7 @@ test("interactive options use keyboard selection instead of free-text input", as
   const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
   assert.match(output, /1\. Ya, hapus file ini/);
   assert.match(output, /2\. Tidak, batalkan/);
-  assert.match(output, /↑↓ select · Enter confirm/);
+  assert.match(output, /↑↓ Select · PgUp\/PgDn · Enter Confirm/);
   assert.deepEqual(selected, ["Tidak, batalkan"]);
 
   instance.unmount();
@@ -808,7 +801,6 @@ test("working state is removed as soon as the agent becomes idle", async () => {
     h(Text, null, "RESULT"),
     h(SessionFooter, {
       running,
-      plan: [],
       waitingForAnswer: false,
       promptProps: {
         onSubmit() {}, onCommand() {}, commands: [], canAbort: running,

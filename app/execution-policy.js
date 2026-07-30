@@ -71,6 +71,7 @@ export class ExecutionPolicy {
       ? inferTaskContract(requestOrContract)
       : normalizeIntentContract(requestOrContract, requestOrContract?.request);
     this.phase = planning ? "planning" : "executing";
+    this.planning = Boolean(planning);
     this.evidence = [];
     this.answerAttempts = 0;
 
@@ -124,7 +125,10 @@ export class ExecutionPolicy {
     if (!contract?.requiredEvidence?.length) return [];
     const successful = this.successfulKinds();
     const gaps = [];
-    for (const required of contract.requiredEvidence) {
+    const requiredEvidence = this.planning
+      ? contract.requiredEvidence.filter(kind => ["inspection", "research"].includes(kind))
+      : contract.requiredEvidence;
+    for (const required of requiredEvidence) {
       if (!successful.has(required)) {
         gaps.push({ kind: required, description: `Missing required evidence: ${required}` });
       }

@@ -38,7 +38,6 @@ export class LoopMethods {
     else signal?.addEventListener("abort", abortRun, { once: true });
     try {
     this._latency = { inputReceived: performance.now() };
-    this._compactMessages();
     const requestInput = retryProvider ? null : this._secretStore.capture(input, runId, turnId);
     if (!retryProvider && requestInput.rawContent.trimStart().startsWith("!")) {
       yield* this._runShellShortcut(requestInput.rawContent.trimStart());
@@ -58,6 +57,41 @@ export class LoopMethods {
         this, requestInput.protectedContent, controller.signal, requestInput.rawContent, run,
       );
       if (!initialized || !isRunActive()) return;
+      // Reset turn-scoped counters on new turn, preserve session and context
+      this._usageTracker.resetTurn();
+    }
+    if (!retryProvider && Array.isArray(scope.approvedPlan?.steps)) {
+      this._plan = scope.approvedPlan.steps.map(description => ({
+        description: String(description),
+        status: "pending",
+      }));
+      this._planIndex = 0;
+      this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
+      yield scoped({ type: "plan", items: this._plan.map(item => ({ ...item })) });
+    }
+    yield scoped({ type: "context-usage", usage: this.contextUsage() });
+    const initialUsage = this.contextUsage();
+    const initialProjectedRatio = initialUsage.contextLimitKnown
+      ? initialUsage.projectedRequestTokens / initialUsage.contextLimit
+      : null;
+    if (initialProjectedRatio !== null && initialProjectedRatio < this._config.compactThreshold) {
+      this._compactionThresholdCrossed = false;
+    }
+    if (
+      this._messages.length > 2
+      && initialProjectedRatio !== null
+      && initialProjectedRatio >= this._config.compactThreshold
+      && !this._compactionThresholdCrossed
+      && this._scheduleCompaction(run)
+    ) {
+      this._compactionThresholdCrossed = true;
+      yield scoped({
+        type: "compaction-state",
+        status: "scheduled",
+        compactionId: this._compaction.compactionId,
+        startedAt: this._compaction.startedAt,
+        usage: this.contextUsage(),
+      });
     }
     let pendingProse = "", proseContinuations = 0;
     while (this._turn < this._config.maxTurns) {
@@ -77,53 +111,71 @@ export class LoopMethods {
           : "context";
       yield scoped({ type: "thinking", turn: this._turn, phase });
       if (!isRunActive()) return;
-      // Handle pending compaction before provider request
-      if (this._compaction.status === "pending") {
-        // Compaction timeout check
-        if (this._compaction.startedAt && Date.now() - this._compaction.startedAt > 30_000) {
+      if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
+        const compactionId = this._compaction.compactionId;
+        const originalMessages = this._messages;
+        const originalSummary = this._summary;
+        const originalRequestStartIndex = this._requestStartIndex;
+        const revisionAtSchedule = this._historyRevision;
+        const transition = status => {
+          if (!isRunActive() || this._compaction.compactionId !== compactionId) return null;
+          if (Date.now() - this._compaction.startedAt > 30_000) return null;
+          this._compaction.status = status;
+          return scoped({
+            type: "compaction-state",
+            status,
+            compactionId,
+            startedAt: this._compaction.startedAt,
+            usage: this.contextUsage(),
+          });
+        };
+        let failed = false;
+        for (const status of ["preparing", "summarizing"]) {
+          const event = transition(status);
+          if (!event) { failed = true; break; }
+          yield event;
+        }
+        const compacted = failed ? null : this._buildCompactedMessages(true);
+        if (!compacted) failed = true;
+        const committing = failed ? null : transition("committing");
+        if (committing) {
+          yield committing;
+          if (
+            isRunActive()
+            && this._compaction.compactionId === compactionId
+            && this._historyRevision === revisionAtSchedule
+          ) {
+            this._messages = compacted.messages;
+            this._summary = compacted.summary;
+            this._requestStartIndex = compacted.requestStartIndex;
+            this._usageTracker.bumpHistoryRevision();
+            this._historyRevision = this._usageTracker.historyRevision;
+          } else {
+            failed = true;
+          }
+        } else if (!failed) failed = true;
+        const recounting = failed ? null : transition("recounting");
+        if (recounting) yield recounting;
+        if (failed || !isRunActive() || this._compaction.compactionId !== compactionId) {
+          this._messages = originalMessages;
+          this._summary = originalSummary;
+          this._requestStartIndex = originalRequestStartIndex;
+          this._compaction.status = "failed";
+          yield scoped({ type: "compaction-state", status: "failed", compactionId });
           this._clearCompaction();
           yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
           if (finalizeRun()) return;
         }
-        if (this._compaction.status === "compacting" || this._compaction.status === "committing") {
-          // Idempotent guard: already compacting — skip
-        } else if (this._compactionActiveFor(run)) {
-          // Already compacted for this scope — skip
-        } else {
-          // Start compaction for this run scope
-          const compactionId = randomUUID();
-          this._compaction = {
-            status: "compacting",
-            runId: run.runId,
-            turnId: run.turnId,
-            taskEpoch: run.taskEpoch,
-            compactionId,
-            startedAt: Date.now(),
-            error: null,
-          };
-          yield scoped({ type: "compaction-start" });
-          if (!isRunActive()) return;
-          // Build compacted history in immutable buffer
-          const compacted = this._buildCompactedMessages(true);
-          if (compacted) {
-            this._compaction.status = "committing";
-            // Atomic commit: only replace messages after successful build
-            this._messages = compacted.messages;
-            this._summary = compacted.summary;
-            this._compaction.status = "completed";
-            this._recordProgress();
-          } else {
-            this._compaction.status = "failed";
-            this._compaction.error = "Compaction produced no result";
-          }
-          yield scoped({ type: "compaction-end" });
-          if (this._compaction.status === "failed") {
-            // Preserve original history, clear compaction state
-            this._clearCompaction();
-            yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
-            if (finalizeRun()) return;
-          }
-        }
+        this._compaction.status = "completed";
+        this._compaction.stableTokens = null;
+        this._recordProgress();
+        yield scoped({
+          type: "compaction-state",
+          status: "completed",
+          compactionId,
+          usage: this.contextUsage(),
+        });
+        this._clearCompaction();
       }
       let ctx = this._buildContext();
       let reply;
@@ -137,6 +189,7 @@ export class LoopMethods {
       const requestModel = this._model;
       const maxAttempts = this._chatHandlesRetries || /(?:claude|anthropic)/i.test(String(requestModel)) ? 1 : 2;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const providerRequestId = randomUUID();
         let chatErr;
         let receivedAnyToken = false;
         const publicActivity = createPublicActivityChannel(run, value => this.redactSerializableForDisplay(value));
@@ -162,6 +215,14 @@ export class LoopMethods {
         };
         const onEvent = event => {
           if (!isRunActive()) return;
+          if (event?.type === "usage") {
+            this._usageTracker.record({ ...event, requestId: providerRequestId }, run);
+            const reportedLimit = Number(event.contextLimit);
+            if (Number.isFinite(reportedLimit) && reportedLimit > 0) {
+              this._providerContextLimit = reportedLimit;
+            }
+            return;
+          }
           typedProviderStream = true;
           if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
             this._markLatency("providerFirstDelta");
@@ -183,11 +244,29 @@ export class LoopMethods {
         }));
         if (!isRunActive()) return;
         this._markLatency("requestDispatched");
+        // Load model-specific settings from the settings store
+        let temperature, topP, maxTokens;
+        try {
+          const mod = await import("../../config/model-settings.js");
+          const settings = mod.resolveEffectiveSettings(requestModel);
+          temperature = settings.temperature;
+          topP = settings.topP;
+          maxTokens = settings.maxOutputTokens;
+          const caps = mod.resolveProviderCapabilities(requestModel);
+          if (!caps.supportsTemperature) temperature = undefined;
+          if (!caps.supportsTopP) topP = undefined;
+          if (!caps.supportsMaxTokens) maxTokens = undefined;
+        } catch {}
         const chatDone = this._chat(ctx, {
           model: requestModel, onToken, onEvent,
           signal: controller.signal,
-          timeoutMs: this._config.providerTimeout, reasoningEffort: this._config.reasoningEffort,
+          timeoutMs: this._config.providerTimeout,
+          reasoningEffort: this._config.reasoningEffort,
+          temperature,
+          topP,
+          maxTokens,
           tools: nativeTools, sessionId: this._sessionId, runId, turnId, taskEpoch,
+          requestId: providerRequestId,
           streamPhase: phase,
         })
           .then(result => {
@@ -290,33 +369,20 @@ export class LoopMethods {
           yield scoped({ type: "stream-discard" });
         }
         const message = finalError?.message || String(finalError);
-        // Check for context-length error (even for unknown-limit models)
         const isContextLength = /context\s*length|context_length_exceeded|maximum\s*context|token\s*limit/i.test(message);
-        if (isContextLength && this._compaction.status === "idle" && isRunActive()) {
-          // Schedule compaction and retry once
-          this._compaction = {
-            status: "pending",
-            runId: run.runId,
-            turnId: run.turnId,
-            taskEpoch: run.taskEpoch,
-            compactionId: null,
-            startedAt: Date.now(),
-            error: null,
-          };
-          // Don't finalize — the loop will compact and retry
-          yield scoped({ type: "compaction-start" });
-          const compacted = this._buildCompactedMessages(true);
-          if (compacted) {
-            this._messages = compacted.messages;
-            this._summary = compacted.summary;
-            this._compaction.status = "completed";
-            this._recordProgress();
-            yield scoped({ type: "compaction-end" });
-            // Retry immediately by continuing the loop
-            continue;
-          }
-          this._clearCompaction();
-          yield scoped({ type: "compaction-end" });
+        if (
+          isContextLength
+          && this._contextErrorCompactedRunId !== run.runId
+          && this._scheduleCompaction(run, "context-error")
+        ) {
+          yield scoped({
+            type: "compaction-state",
+            status: "scheduled",
+            compactionId: this._compaction.compactionId,
+            startedAt: this._compaction.startedAt,
+            usage: this.contextUsage(),
+          });
+          continue;
         }
         this._debugToolRecovery("transport_failure", message);
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
@@ -435,6 +501,7 @@ export class LoopMethods {
           }
         }
         this._messages.push({ role: "assistant", content: this._secretStore.protect(visibleReply, runId, turnId) });
+        yield scoped({ type: "context-usage", usage: this.contextUsage() });
         this._clearPendingAction();
         for (const lifecyclePart of this._lifecycle.finishStep("stop")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
@@ -479,6 +546,7 @@ export class LoopMethods {
           function: { name: tool.name, arguments: JSON.stringify(this._secretStore.protectSerializable(publicToolArgs(tool.args), runId, turnId)) },
         }],
       });
+      yield scoped({ type: "context-usage", usage: this.contextUsage() });
       const planTracker = auxiliaryTool ? null : yield* this._startPlanItem(run);
       let result;
       let part;
@@ -545,6 +613,7 @@ export class LoopMethods {
         name: tool.name,
         content: protectedResult,
       });
+      yield scoped({ type: "context-usage", usage: this.contextUsage() });
       // Track repeated inspection tools for no-progress detection
       if (["read", "glob", "grep"].includes(tool.name)) {
         const sig = `${tool.name}:${JSON.stringify(tool.args)}`;
@@ -573,24 +642,27 @@ export class LoopMethods {
         }
         return;
       }
-      // Schedule compaction if projected tokens exceed the budget
-      const shouldCompact = (() => {
-        if (!this._contextLimitKnown()) return false;
-        const usedTokens = this._messageTokenUsage();
-        const limit = Math.max(1, Number(this._config.tokenBudget) || 24000);
-        const usageRatio = usedTokens / limit;
-        return usageRatio >= 1;
-      })();
-      if (shouldCompact && this._compaction.status === "idle") {
-        this._compaction = {
-          status: "pending",
-          runId: run.runId,
-          turnId: run.turnId,
-          taskEpoch: run.taskEpoch,
-          compactionId: null,
-          startedAt: Date.now(),
-          error: null,
-        };
+      const usage = this.contextUsage();
+      const projectedRatio = usage.contextLimitKnown
+        ? usage.projectedRequestTokens / usage.contextLimit
+        : null;
+      if (projectedRatio !== null && projectedRatio < this._config.compactThreshold) {
+        this._compactionThresholdCrossed = false;
+      }
+      if (
+        projectedRatio !== null
+        && projectedRatio >= this._config.compactThreshold
+        && !this._compactionThresholdCrossed
+        && this._scheduleCompaction(run)
+      ) {
+        this._compactionThresholdCrossed = true;
+        yield scoped({
+          type: "compaction-state",
+          status: "scheduled",
+          compactionId: this._compaction.compactionId,
+          startedAt: this._compaction.startedAt,
+          usage: this.contextUsage(),
+        });
       }
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });

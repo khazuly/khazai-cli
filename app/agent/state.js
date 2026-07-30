@@ -32,15 +32,20 @@ export class StateMethods {
 
   exportSessionState() {
     const state = {
-      version: 4,
+      version: 5,
       sessionId: this._sessionId,
       messages: this._messages.slice(-200),
+      canonicalProviderMessages: null, // filled from provider messages separately
       summary: this._summary,
       model: this._model,
       agent: this._agentProfile?.name || "build",
       parts: this._lifecycle.parts.slice(-200),
       permissionApprovals: this._permissionService.approvalHistory(),
       recoverableProviderRequest: this._recoverableProviderRequest,
+      contextUsage: this._usageTracker.export(),
+      historyRevision: this._historyRevision,
+      resolvedProvider: this._model,
+      resolvedModel: this._model,
     };
     return this._secretStore.redactSerializable(state);
   }
@@ -48,9 +53,13 @@ export class StateMethods {
   restoreSessionState(state) {
     if (!isObject(state)) return false;
     if (Array.isArray(state.messages)) {
-      this._messages = completedConversationHistory(state.messages
+      const filtered = state.messages
         .filter(message => !String(message?.content || "").startsWith("[INTERNAL STEERING]"))
-        .slice(-200));
+        .slice(-200);
+      // Use canonical provider messages if available (version 5+), else standard messages
+      this._messages = Array.isArray(state.canonicalProviderMessages)
+        ? state.canonicalProviderMessages.slice(-200)
+        : completedConversationHistory(filtered);
     }
     this._summary = typeof state.summary === "string" ? state.summary : "";
     if (state.model) this._model = String(state.model);
@@ -79,6 +88,10 @@ export class StateMethods {
     this._pendingBatchCalls = [];
     this._toolCallHistory = [];
     this._completedToolResults.clear();
+    // Restore history revision
+    if (state.historyRevision !== undefined) {
+      this._historyRevision = state.historyRevision;
+    }
     return true;
   }
 

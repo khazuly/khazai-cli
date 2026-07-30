@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { redactSecrets } from "../lib/secrets.js";
 import { shellTimeoutMs } from "../lib/shell-command-policy.js";
 import { normalizeToolOutput } from "./tool-lifecycle.js";
+import { planToolIsReadOnly } from "./plan-mode.js";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_OUTPUT_LINES = 2_000;
@@ -92,6 +93,43 @@ function permissionTarget(call, request, workspace) {
   return { label: "Target", value: String(request.value || "") };
 }
 
+export function normalizeQuestionRequest(args = {}) {
+  const seen = new Set();
+  let recommendationUsed = false;
+  const options = (Array.isArray(args.options) ? args.options : []).flatMap((option, index) => {
+    const source = typeof option === "string" ? { label: option } : option || {};
+    const label = String(source.label || "").trim();
+    if (!label) return [];
+    const id = String(source.id || `option-${index + 1}`).trim();
+    if (seen.has(id)) return [];
+    seen.add(id);
+    const recommended = Boolean(source.recommended) && !recommendationUsed;
+    recommendationUsed ||= recommended;
+    return [{
+      id,
+      label,
+      description: String(source.description || "").trim(),
+      recommended,
+    }];
+  });
+  if (args.allowCustomAnswer && !seen.has("custom")) {
+    options.push({
+      id: "custom",
+      label: "Enter a custom answer",
+      description: "Return to the prompt input and provide a custom response.",
+      recommended: false,
+      custom: true,
+    });
+  }
+  return {
+    questionId: String(args.questionId || "").trim(),
+    question: String(args.question || "Please choose an option.").trim(),
+    context: String(args.context || "").trim(),
+    options,
+    allowCustomAnswer: Boolean(args.allowCustomAnswer),
+  };
+}
+
 export class ToolExecutor {
   constructor({
     registry,
@@ -108,6 +146,7 @@ export class ToolExecutor {
     timeoutMs = 60_000,
     signal = null,
     taskContext = null,
+    readOnly = false,
     runId = null,
     turnId = null,
     taskEpoch = null,
@@ -132,6 +171,7 @@ export class ToolExecutor {
     this.timeoutMs = Math.max(250, Number(timeoutMs) || 60_000);
     this.signal = signal;
     this.taskContext = taskContext;
+    this.readOnly = Boolean(readOnly);
     this.runId = runId;
     this.turnId = turnId;
     this.taskEpoch = taskEpoch;
@@ -223,6 +263,10 @@ export class ToolExecutor {
       yield* this._reject(part, call, tool ? invalid : `Unknown tool "${call.name}".`, "tool-error");
       return;
     }
+    if (this.readOnly && !planToolIsReadOnly(call, tool)) {
+      yield* this._reject(part, call, "Plan Mode is read-only. This tool would modify the workspace.", "blocked");
+      return;
+    }
 
     const external = this.permissionService.evaluateExternalDirectory(call.name, call.args);
     if (external?.decision === "deny") {
@@ -307,6 +351,10 @@ export class ToolExecutor {
       permissionService: this.permissionService,
       abortSignal: this.signal,
       signal: this.signal,
+      runId: this.runId,
+      turnId: this.turnId,
+      taskEpoch: this.taskEpoch,
+      isActiveRun: scope => !this.isActiveRun || this.isActiveRun(scope),
       updateMetadata: metadata => this._isActive() && this.lifecycle.metadata(part, metadata),
       ...extraContext,
     };
@@ -317,15 +365,14 @@ export class ToolExecutor {
       let raw;
       if (call.name === "question") {
         if (!this.questionHandler) throw new Error("Question rejected: no interactive input is available");
-        const question = String(call.args.question || "Please choose an option.").trim();
-        const options = Array.isArray(call.args.options) ? call.args.options.map(String).filter(Boolean) : [];
-        yield this._scoped({ type: "question", question, options });
+        const request = normalizeQuestionRequest(call.args);
+        yield this._scoped({ type: "question", ...request });
         if (!this._isActive()) return;
-        const answer = await this.questionHandler({ question, options });
+        const answer = await this.questionHandler(request);
         if (!this._isActive()) return;
         raw = {
           title: "Question",
-          output: `User answered: ${this.protectOutput(String(answer))}`,
+          output: `User answered: ${this.protectOutput(String(answer?.label || answer))}`,
           metadata: {},
         };
       } else {

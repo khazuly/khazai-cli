@@ -173,8 +173,10 @@ test("full and targeted test commands receive distinct bounded timeouts", () => 
   const direct = testExecutionProfile("node --test test/*.test.js", process.cwd());
   const targeted = testExecutionProfile("node --test test/execution-policy.test.js", process.cwd());
   assert.deepEqual([full.scope, direct.scope, targeted.scope], ["full", "full", "targeted"]);
-  assert.equal(full.testFileCount, 40);
-  assert.equal(shellTimeoutMs("npm test", process.cwd(), 60), 120_000);
+  assert.equal(full.testFileCount, direct.testFileCount);
+  assert.ok(full.testFileCount > 0);
+  assert.equal(shellTimeoutMs("npm test", process.cwd(), 60), full.timeoutMs);
+  assert.ok(full.timeoutMs >= 120_000);
   assert.equal(shellTimeoutMs("node --test test/execution-policy.test.js", process.cwd()), 60_000);
 });
 

@@ -11,10 +11,11 @@ import { loadAgentProfiles } from "../app/agent-profiles.js";
 import { listSkills } from "../app/skills.js";
 import { lspStatus } from "../app/lsp.js";
 import { configuredModels, loadConfig, saveModel, saveProvider, saveReasoningEffort, saveTheme } from "../config/index.js";
-import { removeCredential, saveCredential, saveProviderCredential } from "../lib/auth.js";
+import { saveProviderCredential } from "../lib/auth.js";
 import { loginCodex } from "../lib/codex-auth.js";
 import { listModels } from "../lib/llm.js";
 import { COMMANDS, formatCommandHelp } from "./commands.js";
+import { SettingsMenu } from "./components/settings-menu.js";
 import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
 import { PlanList } from "./components/plan-list.js";
@@ -27,6 +28,18 @@ import { redactSecrets } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
 import { formatQueuedMessages, UserMessageQueue } from "./user-message-queue.js";
+import { manageMcpCommand } from "./mcp-command.js";
+import {
+  PLAN_ACTIONS,
+  REVALIDATION_ACTIONS,
+  approvePlanMode,
+  approvedPlanRequest,
+  changedPlanFiles,
+  createPlanModeState,
+  finalizePlanMode,
+  recordPlanDecision,
+  refreshPlanSnapshots,
+} from "../app/plan-mode.js";
 import {
   analysisActivityMessage,
   analysisEventIsCurrent,
@@ -111,7 +124,10 @@ export function isCompletionClaim(value) {
 
 export function formatInteractiveQuestion(question, options = []) {
   const lines = [removeEmoji(question).trim()];
-  options.filter(Boolean).forEach((option, index) => lines.push(`${index + 1}. ${removeEmoji(option)}`));
+  options.filter(Boolean).forEach((option, index) => {
+    const label = typeof option === "string" ? option : option.label;
+    lines.push(`${index + 1}. ${removeEmoji(label)}`);
+  });
   return lines.filter(Boolean).join("\n");
 }
 
@@ -138,7 +154,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     });
   }, []);
   const [running, setRunning] = useState(false);
-  const [runningStartedAt, setRunningStartedAt] = useState(null);
   const [currentModel, setCurrentModel] = useState(currentSessionRef.current.model);
   const [themeName, setThemeName] = useState(initialConfig.current.theme || "system");
   const previousThemeRef = useRef(themeName);
@@ -148,6 +163,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [expandedTool, setExpandedTool] = useState(null);
   const [queuedCount, setQueuedCount] = useState(0);
   const [contextUsage, setContextUsage] = useState({});
+  const [modeStatus, setModeStatus] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState(null);
   const contextUsageRef = useRef({});
   const agentRef = useRef(null);
   const activeRef = useRef(null);
@@ -166,6 +184,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const submitRef = useRef(null);
   const abortRef = useRef(null);
   const messageQueueRef = useRef(null);
+  const planWorkflowRef = useRef(null);
+  const planningQuestionRef = useRef(null);
+  const openPlanApprovalRef = useRef(null);
+  const planActionRef = useRef(null);
+  const buildStartedPlanIdRef = useRef(null);
   if (!messageQueueRef.current) {
     messageQueueRef.current = new UserMessageQueue(currentSessionRef.current.id);
   }
@@ -182,6 +205,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
     });
   }
+  useEffect(() => {
+    const usage = agentRef.current?.contextUsage() || {};
+    contextUsageRef.current = usage;
+    setContextUsage(usage);
+  }, [sessionKey]);
 
   const appendCompleted = useCallback(message => {
     const next = [...completedRef.current, message];
@@ -198,6 +226,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const values = new Map((settings.values || []).map(entry => [entry.label, entry.value]));
     questionResolverRef.current = {
       kind: settings.kind || "command",
+      archive: settings.archive !== false,
       resolve: answer => resolveValue(values.get(answer) ?? answer),
       scope: null,
     };
@@ -231,11 +260,17 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     analysisRef.current = null;
     taskEpochRef.current = 0;
     responseBufferRef.current = null;
+    planWorkflowRef.current = null;
+    planningQuestionRef.current = null;
+    buildStartedPlanIdRef.current = null;
     setCompletedMessages(session.messages || []);
     setActiveMessage(null);
     setPlan([]);
     setExpandedTool(null);
     setCurrentModel(session.model);
+    setModeStatus(session.agent === "plan"
+      ? { mode: "plan", status: "reviewing" }
+      : null);
     messageQueueRef.current.reset(session.id);
     setQueuedCount(0);
     structuredCallsRef.current.clear();
@@ -273,7 +308,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     if (
       submittingRef.current
-      && !["/help", "/expand", "/collapse", "/theme"].includes(cmd)
+      && !["/help", "/expand", "/collapse", "/theme", "/setting"].includes(cmd)
     ) {
       appendArchived({
         id: nextId(),
@@ -357,6 +392,51 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const value = saveReasoningEffort(effort);
       agentRef.current?.setReasoningEffort(value);
       appendArchived({ id: nextId(), type: "answer", content: `Codex reasoning set to ${value}.` });
+      return;
+    }
+    if (cmd === "/setting") {
+      const lowerArg = String(arg || "").trim().toLowerCase();
+      if (lowerArg === "show") {
+        // Display effective settings
+        const { loadModelSettings, resolveEffectiveSettings, formatSettingValue, SETTING_SECTIONS } = await import("../config/model-settings.js");
+        const effective = resolveEffectiveSettings(currentModel);
+        const lines = [`## Effective Settings for ${currentModel}`, ""];
+        for (const [secId, sec] of Object.entries(SETTING_SECTIONS)) {
+          lines.push(`**${sec.label}**`);
+          for (const setting of sec.settings) {
+            const val = effective[setting.key];
+            lines.push(`- ${setting.label}: ${formatSettingValue(setting.key, val, currentModel)}`);
+          }
+          lines.push("");
+        }
+        appendArchived({ id: nextId(), type: "answer", content: lines.join("\n") });
+        return;
+      }
+      if (lowerArg === "model") {
+        setSettingsSection(null);
+        setShowSettings(true);
+        return;
+      }
+      if (lowerArg === "reset") {
+        setSettingsSection("reset");
+        setShowSettings(true);
+        return;
+      }
+      if (lowerArg.startsWith("reset ")) {
+        const section = lowerArg.slice(6).trim();
+        const validSections = ["generation", "reasoning", "context", "reliability", "tools", "routing"];
+        if (validSections.includes(section)) {
+          const { resetModelSettings } = await import("../config/model-settings.js");
+          resetModelSettings(currentModel, section);
+          appendArchived({ id: nextId(), type: "answer", content: `"${section}" settings reset to provider defaults.` });
+        } else {
+          appendArchived({ id: nextId(), type: "error", content: `Unknown section "${section}". Valid sections: ${validSections.join(", ")}` });
+        }
+        return;
+      }
+      // Open interactive menu
+      setSettingsSection(null);
+      setShowSettings(true);
       return;
     }
     if (cmd === "/connect") {
@@ -453,9 +533,24 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       return;
     }
     if (cmd === "/compact") {
+      const startedAt = Date.now();
+      const before = agentRef.current.contextUsage();
+      contextUsageRef.current = {
+        ...before,
+        compactionStatus: "summarizing",
+        compactionStartedAt: startedAt,
+      };
+      setContextUsage(contextUsageRef.current);
+      await Promise.resolve();
       currentSessionRef.current.agentState = agentRef.current.compact();
       currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
-      appendArchived({ id: nextId(), type: "answer", content: "Session context compacted." });
+      const after = agentRef.current.contextUsage();
+      contextUsageRef.current = {
+        ...after,
+        compactionStatus: "completed",
+        compactionStartedAt: null,
+      };
+      setContextUsage(contextUsageRef.current);
       return;
     }
     if (cmd === "/export") {
@@ -494,6 +589,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       currentSessionRef.current.agent = selected;
       currentSessionRef.current.agentState = agentRef.current.exportSessionState();
       currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
+      planWorkflowRef.current = null;
+      planningQuestionRef.current = null;
+      buildStartedPlanIdRef.current = null;
+      setModeStatus(selected === "plan"
+        ? { mode: "plan", status: "reviewing" }
+        : null);
       appendArchived({ id: nextId(), type: "answer", content: `Agent changed to ${selected}.` });
       return;
     }
@@ -531,12 +632,15 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         appendArchived({ id: nextId(), type: "answer", content: "No MCP manager is available." });
         return;
       }
-      const commandArgs = String(arg || "").trim();
-      const [action, server] = commandArgs ? commandArgs.split(/\s+/, 2) : ["list", undefined];
-      const refresh = async () => {
+      const syncTools = async tools => {
         const state = agentRef.current?.exportSessionState?.() || null;
-        mcpToolsRef.current = await mcpManager.refresh();
-        agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
+        mcpToolsRef.current = tools;
+        const registry = buildRegistry(workspace.path, mcpToolsRef.current);
+        if (submittingRef.current && agentRef.current) {
+          await agentRef.current.replaceRegistry(registry);
+          return;
+        }
+        agentRef.current = new Agent(registry, {
           workspace: workspace.path,
           sessionId: currentSessionRef.current.id,
           model: currentModel,
@@ -546,44 +650,13 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
         });
       };
-      try {
-        if (action === "refresh") {
-          await refresh();
-          appendArchived({ id: nextId(), type: "answer", content: "MCP servers refreshed." });
-          return;
-        }
-        if (action === "auth") {
-          if (!server) throw new Error("Usage: /mcp auth <server>");
-          const configured = loadConfig(workspace.path).mcp?.[server];
-          if (!configured) throw new Error(`MCP server "${server}" is not configured.`);
-          if (!configured.url && configured.type !== "http" && configured.transport !== "http") {
-            throw new Error("Stored MCP credentials are only supported for remote servers.");
-          }
-          const credential = await requestValue(`Credential for MCP server ${server}`, [], { secret: true });
-          if (!credential) return;
-          saveCredential(`mcp:${server}`, credential);
-          await refresh();
-          appendArchived({ id: nextId(), type: "answer", content: `Credential saved for MCP server ${server}.` });
-          return;
-        }
-        if (action === "logout") {
-          if (!server) throw new Error("Usage: /mcp logout <server>");
-          removeCredential(`mcp:${server}`);
-          await refresh();
-          appendArchived({ id: nextId(), type: "answer", content: `Credential removed for MCP server ${server}.` });
-          return;
-        }
-        if (action !== "list" && action !== "status") throw new Error("Usage: /mcp [list|status|refresh|auth <server>|logout <server>]");
-        const status = mcpManager.status();
-        const content = status.length
-          ? ["MCP servers:", ...status.map(item =>
-              `- ${item.id}: ${item.state} · ${item.type} · ${item.toolCount} tool${item.toolCount === 1 ? "" : "s"}${item.pid ? ` · PID ${item.pid}` : ""}${item.error ? ` — ${item.error}` : ""}`
-            )].join("\n")
-          : "No MCP servers are configured.";
-        appendArchived({ id: nextId(), type: "answer", content });
-      } catch (error) {
-        appendArchived({ id: nextId(), type: "error", content: redactSecrets(error.message) });
-      }
+      await manageMcpCommand(arg, {
+        manager: mcpManager,
+        requestValue: (question, options, settings) =>
+          requestValue(question, options, { ...settings, archive: false }),
+        syncTools,
+        respond: (type, content) => appendArchived({ id: nextId(), type, content }),
+      });
       return;
     }
     if (cmd === "/theme" && arg) {
@@ -626,6 +699,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
   const submit = useCallback(async (input, options = {}) => {
     const retryProvider = Boolean(options.retryProvider);
+    const approvedPlan = options.approvedPlan || null;
+    const internalInput = Boolean(options.internalInput);
     const queuedItemId = options.queuedItemId || null;
     if (!retryProvider && !input.trim()) return;
     if (submittingRef.current) {
@@ -639,20 +714,39 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setExpandedTool(null);
     structuredCallsRef.current.clear();
     submittingRef.current = true;
-    const startedAt = Date.now();
     setRunning(true);
-    setRunningStartedAt(startedAt);
     let finishedNormally = false;
     let finalCommitted = false;
     let fatalError = "";
     let recoverableFailure = false;
     let queueHandoffPending = false;
     let handedOffForQueue = false;
+    let finalResponse = "";
+    let latestPlan = [];
+    let finalizedPlanningState = null;
     const sessionBefore = currentSessionRef.current;
     const runId = nextId();
-    const turnId = `${sessionBefore?.id || "session"}-${runId}`;
+    const turnId = options.turnId || `${sessionBefore?.id || "session"}-${runId}`;
     if (!retryProvider) taskEpochRef.current++;
-    const analysisScope = { runId, turnId, taskEpoch: taskEpochRef.current };
+    const analysisScope = {
+      runId,
+      turnId,
+      taskEpoch: taskEpochRef.current,
+      ...(approvedPlan?.planId ? { planId: approvedPlan.planId } : {}),
+    };
+    const planningRun = currentSessionRef.current.agent === "plan" && !approvedPlan;
+    const previousPlan = planWorkflowRef.current;
+    let planningState = planningRun
+      ? previousPlan?.mode === "plan" && ["reviewing", "investigating", "questioning"].includes(previousPlan.status)
+        ? { ...previousPlan, ...analysisScope, status: "investigating" }
+        : createPlanModeState({ objective: input, ...analysisScope })
+      : null;
+    if (planningRun) {
+      planWorkflowRef.current = planningState;
+      setModeStatus({ mode: "plan", status: "investigating" });
+    } else if (approvedPlan) {
+      setModeStatus({ mode: "build", status: "preparing" });
+    }
     activeScopeRef.current = analysisScope;
     cancelledRunIdRef.current = null;
     analysisRef.current = createAnalysisActivity({
@@ -773,12 +867,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const completeStreaming = () => {
       const committed = commitResponseBuffer(responseBufferRef.current, analysisScope);
       responseBufferRef.current = committed.state;
-      if (!committed.response) return false;
+      if (!committed.response) return "";
       const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
-      if (!content) return false;
+      if (!content) return "";
       appendArchived({ id: committed.response.id, type: "answer", content });
       finalCommitted = true;
-      return true;
+      return content;
     };
     const resetStreaming = () => {
       responseBufferRef.current = resetResponseBuffer(responseBufferRef.current, analysisScope);
@@ -786,7 +880,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const discardStreaming = () => {
       responseBufferRef.current = discardResponseBuffer(responseBufferRef.current, analysisScope);
     };
-    if (!retryProvider) {
+    if (!retryProvider && !internalInput) {
       appendArchived({ id: nextId(), type: "user", content: redactSecrets(input) });
     }
 
@@ -797,8 +891,13 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     };
 
     const agent = agentRef.current;
-    agent.setQuestionHandler(() => new Promise(resolve => {
-      questionResolverRef.current = { kind: "question", resolve, scope: analysisScope };
+    agent.setQuestionHandler(request => new Promise(resolve => {
+      planningQuestionRef.current = request;
+      questionResolverRef.current = {
+        kind: planningRun ? "plan-decision" : "question",
+        resolve,
+        scope: analysisScope,
+      };
     }));
     agent.setPermissionHandler(request => new Promise(resolve => {
       const current = activeScopeRef.current;
@@ -828,9 +927,23 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     for await (const ev of agent.loop(agentInput, undefined, {
       ...analysisScope,
       retryProvider,
+      approvedPlan,
     })) {
+      if (ev.type === "compaction-state") {
+        setContextUsage({
+          ...(ev.usage || contextUsageRef.current),
+          compactionStatus: ev.status,
+          compactionStartedAt: ev.startedAt || contextUsageRef.current.compactionStartedAt,
+        });
+        continue;
+      }
+      if (ev.type === "context-usage") {
+        contextUsageRef.current = ev.usage || {};
+        setContextUsage(ev.usage || {});
+        continue;
+      }
       if (ev.type === "compaction-start") {
-        setContextUsage(current => ({ ...current, compacting: true }));
+        setContextUsage(current => ({ ...current, compactionStatus: "summarizing" }));
         continue;
       }
       if (ev.type === "compaction-end") {
@@ -851,6 +964,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (cancelledRunIdRef.current === analysisScope.runId) continue;
       if (!analysisEventIsCurrent(ev, analysisScope)) continue;
       if (ev.type === "thinking") {
+        if (planningRun) setModeStatus({ mode: "plan", status: "investigating" });
         resetStreaming();
         finishReadBatch(false);
         showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase));
@@ -870,7 +984,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finishReadBatch(false);
         pauseAnalysis();
         clearActive();
-        setPlan(ev.items.map(item => ({ ...item, status: item.status || "pending" })));
+        latestPlan = ev.items.map(item => ({ ...item, status: item.status || "pending" }));
+        setPlan(latestPlan);
         continue;
       }
 
@@ -891,12 +1006,15 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         resetStreaming();
         finishReadBatch(false);
         pauseAnalysis();
-        appendArchived({
-          id: nextId(),
-          type: "answer",
-          content: removeEmoji(ev.question).trim(),
+        if (planningRun) setModeStatus({ mode: "plan", status: "questioning" });
+        setPendingQuestion({
+          questionId: ev.questionId,
+          question: ev.question,
+          context: ev.context,
+          options: ev.options,
+          allowCustomAnswer: ev.allowCustomAnswer,
+          kind: planningRun ? "plan" : "question",
         });
-        setPendingQuestion({ question: ev.question, options: ev.options });
         continue;
       }
 
@@ -948,6 +1066,15 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           continue;
         }
         if (part.state.status === "pending" || part.state.status === "running") {
+          if (approvedPlan) {
+            const command = String(part.state.input?.command || "");
+            setModeStatus({
+              mode: "build",
+              status: /\b(?:test|check|lint|build|typecheck)\b/i.test(command)
+                ? "verifying"
+                : "implementing",
+            });
+          }
           resetStreaming();
           if (part.tool === "read") {
             startRead(
@@ -1140,7 +1267,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.type === "answer") {
           pauseAnalysis();
           finishedNormally = true;
-          setPlan([]);
+          finalResponse = safeContent;
+          if (!planningRun) setPlan([]);
         } else if (ev.recoverable) {
           recoverableFailure = true;
           pauseAnalysis();
@@ -1172,8 +1300,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "stream-end") {
         finishReadBatch(false);
         pauseAnalysis();
-        completeStreaming();
-        setPlan([]);
+        finalResponse = completeStreaming() || finalResponse;
+        if (!planningRun) setPlan([]);
         finishedNormally = true;
         updateUsage();
         continue;
@@ -1198,6 +1326,26 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     } finally {
       updateUsage();
       agentSessionRef.current = agent.exportSessionState?.() || null;
+      if (
+        planningRun
+        && finishedNormally
+        && finalCommitted
+        && cancelledRunIdRef.current !== runId
+      ) {
+        if (planWorkflowRef.current?.planId === planningState?.planId) {
+          planningState = planWorkflowRef.current;
+        }
+        const context = agent.planningContext();
+        finalizedPlanningState = finalizePlanMode(planningState, {
+          workspace: workspace.path,
+          summary: finalResponse,
+          relevantFiles: context.relevantFiles,
+          steps: latestPlan.length ? latestPlan : context.plan,
+        });
+        planWorkflowRef.current = finalizedPlanningState;
+        planningState = finalizedPlanningState;
+        setModeStatus({ mode: "plan", status: "reviewing" });
+      }
       discardStreaming();
       finishReadBatch(false);
       clearActive();
@@ -1214,7 +1362,6 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       setPendingQuestion(null);
       submittingRef.current = false;
       setRunning(false);
-      setRunningStartedAt(null);
       setWorkspaceFiles(listWorkspaceFiles(workspace.path));
       const runResult = recoverableFailure || handedOffForQueue ? null : terminalRunResult({
         cancelled: cancelledRunIdRef.current === runId,
@@ -1260,18 +1407,155 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const nextQueued = messageQueueRef.current.startNext();
       setQueuedCount(messageQueueRef.current.pendingCount());
       if (nextQueued) {
+        planWorkflowRef.current = null;
         queueMicrotask(() => {
           if (messageQueueRef.current.exiting) return;
           submitRef.current?.(nextQueued.rawContent, { queuedItemId: nextQueued.id });
         });
+      } else if (finalizedPlanningState) {
+        queueMicrotask(() => openPlanApprovalRef.current?.(finalizedPlanningState));
+      } else if (approvedPlan) {
+        planWorkflowRef.current = null;
+        buildStartedPlanIdRef.current = null;
+        setModeStatus(null);
       }
     }
   }, [appendArchived]);
   submitRef.current = submit;
 
+  const replaceAgentProfile = useCallback((name, state = null) => {
+    const previous = state || agentRef.current?.exportSessionState?.() || null;
+    agentRef.current?.abort();
+    agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
+      workspace: workspace.path,
+      sessionId: currentSessionRef.current.id,
+      model: currentModel,
+      agent: name,
+      sessionState: previous ? { ...previous, agent: name } : null,
+      autoApprove: autoApproveRef.current,
+      partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+    });
+    currentSessionRef.current.agent = name;
+    currentSessionRef.current.agentState = agentRef.current.exportSessionState();
+    currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
+  }, [currentModel, workspace.path]);
+
+  const launchApprovedPlan = useCallback(plan => {
+    if (
+      !plan
+      || plan.status !== "approved"
+      || buildStartedPlanIdRef.current === plan.planId
+      || messageQueueRef.current.exiting
+    ) return;
+    buildStartedPlanIdRef.current = plan.planId;
+    planWorkflowRef.current = plan;
+    replaceAgentProfile("build");
+    setPendingQuestion(null);
+    setModeStatus({ mode: "build", status: "preparing" });
+    setPlan(plan.steps.map(description => ({ description, status: "pending" })));
+    queueMicrotask(() => submitRef.current?.(approvedPlanRequest(plan), {
+      approvedPlan: plan,
+      internalInput: true,
+      turnId: plan.turnId,
+    }));
+  }, [replaceAgentProfile, setPlan]);
+
+  const openPlanSelection = useCallback((kind, question, context, options, plan) => {
+    if (planWorkflowRef.current?.planId !== plan.planId) return;
+    questionResolverRef.current = {
+      kind,
+      archive: false,
+      scope: null,
+      resolve: answer => planActionRef.current?.(kind, answer, {
+        planId: plan.planId,
+        runId: plan.runId,
+        turnId: plan.turnId,
+        taskEpoch: plan.taskEpoch,
+      }),
+    };
+    setPendingQuestion({ kind: "plan", question, context, options });
+  }, []);
+
+  openPlanApprovalRef.current = plan => openPlanSelection(
+    "plan-approval",
+    "Ready to continue",
+    "Choose what KhazAI should do with this implementation plan.",
+    PLAN_ACTIONS,
+    plan,
+  );
+
+  planActionRef.current = (kind, answer, expected) => {
+    const plan = planWorkflowRef.current;
+    const action = typeof answer === "string" ? answer : answer?.id || answer?.label;
+    if (
+      !plan
+      || plan.planId !== expected?.planId
+      || plan.runId !== expected?.runId
+      || plan.turnId !== expected?.turnId
+      || plan.taskEpoch !== expected?.taskEpoch
+    ) return;
+    if (kind === "plan-revalidation") {
+      if (action === "revalidate") {
+        const refreshed = refreshPlanSnapshots(plan, workspace.path);
+        planWorkflowRef.current = refreshed;
+        launchApprovedPlan(refreshed);
+      } else if (action === "plan") {
+        buildStartedPlanIdRef.current = null;
+        planWorkflowRef.current = { ...plan, mode: "plan", status: "reviewing", approvedAt: null };
+        replaceAgentProfile("plan");
+        setModeStatus({ mode: "plan", status: "reviewing" });
+      } else {
+        planWorkflowRef.current = null;
+        buildStartedPlanIdRef.current = null;
+        replaceAgentProfile("build");
+        setPlan([]);
+        setModeStatus(null);
+      }
+      return;
+    }
+    if (plan.status !== "reviewing") return;
+    if (action === "implement") {
+      const approved = approvePlanMode(plan);
+      if (!approved) return;
+      planWorkflowRef.current = approved;
+      const changed = changedPlanFiles(approved, workspace.path);
+      if (changed.length) {
+        openPlanSelection(
+          "plan-revalidation",
+          "The codebase changed after this plan was created.",
+          `Changed: ${changed.join(", ")}`,
+          REVALIDATION_ACTIONS,
+          approved,
+        );
+      } else {
+        launchApprovedPlan(approved);
+      }
+      return;
+    }
+    if (action === "revise" || action === "question") {
+      setModeStatus({
+        mode: "plan",
+        status: action === "question" ? "questioning" : "reviewing",
+      });
+      return;
+    }
+    planWorkflowRef.current = null;
+    buildStartedPlanIdRef.current = null;
+    replaceAgentProfile("build");
+    setPlan([]);
+    setModeStatus(null);
+  };
+
   const answerQuestion = useCallback(answer => {
     const pending = questionResolverRef.current;
-    const value = String(answer || "").trim();
+    const selected = typeof answer === "object" && answer
+      ? answer
+      : {
+          id: "",
+          label: String(answer || "").trim(),
+          custom: ["plan-custom", "question-custom"].includes(pendingQuestion?.kind),
+        };
+    const value = String(selected.label || "").trim();
     if (!pending || !value) return;
     const current = activeScopeRef.current;
     if (
@@ -1285,13 +1569,34 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       pending.resolve("");
       return;
     }
+    if (selected.custom && ["plan-decision", "question"].includes(pending.kind)) {
+      setPendingQuestion(current => ({
+        ...current,
+        options: [],
+        kind: pending.kind === "plan-decision" ? "plan-custom" : "question-custom",
+        context: "Enter a custom answer below.",
+      }));
+      return;
+    }
     const secret = Boolean(pendingQuestion?.secret);
     questionResolverRef.current = null;
     setPendingQuestion(null);
-    if (pending.kind !== "permission") {
+    if (pending.kind === "plan-decision") {
+      const currentPlan = planWorkflowRef.current;
+      if (currentPlan && planningQuestionRef.current) {
+        planWorkflowRef.current = recordPlanDecision(
+          currentPlan,
+          planningQuestionRef.current,
+          selected,
+        );
+      }
+      planningQuestionRef.current = null;
+      setModeStatus({ mode: "plan", status: "investigating" });
+    }
+    if (pending.kind !== "permission" && pending.archive !== false) {
       appendArchived({ id: nextId(), type: "user", content: secret ? "[credential provided]" : value });
     }
-    pending.resolve(value);
+    pending.resolve(selected.id ? selected : value);
   }, [appendArchived, pendingQuestion]);
 
   const cancelQuestion = useCallback(() => {
@@ -1299,6 +1604,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (!pending) return;
     questionResolverRef.current = null;
     setPendingQuestion(null);
+    if (pending.kind === "plan-approval" || pending.kind === "plan-revalidation") {
+      const plan = planWorkflowRef.current;
+      planActionRef.current?.(pending.kind, { id: "cancel", label: "Cancel" }, plan && {
+        planId: plan.planId,
+        runId: plan.runId,
+        turnId: plan.turnId,
+        taskEpoch: plan.taskEpoch,
+      });
+      return;
+    }
+    if (pending.kind === "plan-decision") {
+      planningQuestionRef.current = null;
+      setModeStatus({ mode: "plan", status: "investigating" });
+    }
     pending.resolve("");
   }, []);
 
@@ -1321,10 +1640,32 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     analysisRef.current = null;
     setPendingQuestion(null);
     setPlan([]);
-    appendArchived({ id: nextId(), type: "answer", content: "Interrupted by user." });
     agentRef.current?.abort();
-  }, [appendArchived, setPlan]);
+    if (planWorkflowRef.current?.mode === "plan") {
+      planWorkflowRef.current = null;
+      planningQuestionRef.current = null;
+      replaceAgentProfile("build");
+      setModeStatus(null);
+    }
+    appendArchived({ id: nextId(), type: "answer", content: "Interrupted by user." });
+  }, [appendArchived, replaceAgentProfile, setPlan]);
   abortRef.current = handleAbort;
+
+  const handleSettingChange = useCallback((key, value) => {
+    // Apply immediately if not running
+    if (!submittingRef.current) {
+      if (key === "reasoningEffort") {
+        agentRef.current?.setReasoningEffort(value);
+      }
+    }
+    appendArchived({
+      id: nextId(),
+      type: "answer",
+      content: submittingRef.current
+        ? `Setting saved. It will apply to the next model request.`
+        : `Setting saved.`,
+    });
+  }, [appendArchived]);
 
   const clearDisplay = useCallback(() => {
     process.stdout.write("\u001b[2J\u001b[H");
@@ -1346,7 +1687,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   ];
   const visiblePlan = plan;
   const displayedActiveMessage = activeMessage;
-  const showWorking = running && !activeMessage;
+
+  const handleCloseSettings = useCallback(() => {
+    setShowSettings(false);
+    setSettingsSection(null);
+  }, []);
 
   return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {
@@ -1372,35 +1717,42 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         ? h(EmptyState)
         : null,
       h(PlanList, { plan: visiblePlan }),
-      h(SessionFooter, {
-        running: showWorking,
-        plan: visiblePlan,
-        activeTool: activeMessage?.type === "tool" ? activeMessage : null,
-        startedAt: runningStartedAt,
-        waitingForAnswer: Boolean(pendingQuestion),
-        queueCount: queuedCount,
-        model: displayModel(currentModel),
-        contextUsage,
-        promptProps: {
-          onSubmit: pendingQuestion ? answerQuestion : submit,
-          onCommand: handleCommand,
-          onClear: clearDisplay,
-          onAbort: handleAbort,
-          commands: COMMANDS,
-          inputActive: !messageQueueRef.current.exiting,
-          canAbort: running && !pendingQuestion,
-          activeModel: currentModel,
-          questionOptions: pendingQuestion?.options || [],
-          questionKind: pendingQuestion?.kind || "",
-          permissionRequest: pendingQuestion?.permissionRequest || null,
-          onSelectOption: answerQuestion,
-          onCancelOption: cancelQuestion,
-          secret: Boolean(pendingQuestion?.secret),
-          fileItems: workspaceFiles,
-          onPreviewChange: handleThemePreview,
-          onExitSub: handleThemeExitSub,
-        },
-      }),
+      showSettings
+        ? h(SettingsMenu, {
+            model: currentModel,
+            initialSection: settingsSection === "reset" ? "reset" : settingsSection,
+            onClose: handleCloseSettings,
+            onSettingChange: handleSettingChange,
+          })
+        : h(SessionFooter, {
+            running,
+            waitingForAnswer: Boolean(pendingQuestion),
+            queueCount: queuedCount,
+            model: displayModel(currentModel),
+            modeStatus,
+            contextUsage,
+            promptProps: {
+              onSubmit: pendingQuestion ? answerQuestion : submit,
+              onCommand: handleCommand,
+              onClear: clearDisplay,
+              onAbort: handleAbort,
+              commands: COMMANDS,
+              inputActive: !messageQueueRef.current.exiting,
+              canAbort: running && !pendingQuestion,
+              activeModel: currentModel,
+              questionOptions: pendingQuestion?.options || [],
+              question: pendingQuestion?.question || "",
+              questionContext: pendingQuestion?.context || "",
+              questionKind: pendingQuestion?.kind || "",
+              permissionRequest: pendingQuestion?.permissionRequest || null,
+              onSelectOption: answerQuestion,
+              onCancelOption: cancelQuestion,
+              secret: Boolean(pendingQuestion?.secret),
+              fileItems: workspaceFiles,
+              onPreviewChange: handleThemePreview,
+              onExitSub: handleThemeExitSub,
+            },
+          }),
     ),
   ));
 }

@@ -1,9 +1,32 @@
 export const questionTool = {
   name: "question",
-  description: "Ask the user a question.",
-  parameters: { type: "object", properties: { question: { type: "string" }, options: { type: "array", items: { type: "string" } } }, required: ["question"] },
+  description: "Ask one material question through a structured interactive selection.",
+  parameters: {
+    type: "object",
+    properties: {
+      questionId: { type: "string" },
+      question: { type: "string" },
+      context: { type: "string" },
+      options: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            label: { type: "string" },
+            description: { type: "string" },
+            recommended: { type: "boolean" },
+          },
+          required: ["id", "label"],
+          additionalProperties: false,
+        },
+      },
+      allowCustomAnswer: { type: "boolean" },
+    },
+    required: ["question"],
+    additionalProperties: false,
+  },
   async execute() {
-    // Agent handles this tool as an Ink event before execute() is reached.
     return "Interactive question requested.";
   },
 };

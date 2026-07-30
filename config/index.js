@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DEFAULTS } from "./defaults.js";
 import { isKnownTheme } from "../ui/theme.js";
 
@@ -81,7 +81,7 @@ export function loadConfig(workspace = process.cwd()) {
   const openCodeMcpConfig = openCodeMcp(workspace);
   const global = loadJSON(CONFIG_PATH);
   if (global) Object.assign(config, global);
-  config.mcp = { ...openCodeMcpConfig, ...(global?.mcp || {}) };
+  config.mcp = { ...DEFAULTS.mcp, ...openCodeMcpConfig, ...(global?.mcp || {}) };
   config._permissionLayers = global?.permission === undefined ? [] : [global.permission];
   const cwd = resolve(workspace);
   for (const name of PROJECT_FILES) {
@@ -91,7 +91,7 @@ export function loadConfig(workspace = process.cwd()) {
       if (local) {
         Object.assign(config, local);
         config.providers = { ...(global?.providers || {}), ...(local.providers || {}) };
-        config.mcp = { ...openCodeMcpConfig, ...(global?.mcp || {}), ...(local.mcp || {}) };
+        config.mcp = { ...DEFAULTS.mcp, ...openCodeMcpConfig, ...(global?.mcp || {}), ...(local.mcp || {}) };
         config.permission = local.permission ?? global?.permission ?? {};
         if (local.permission !== undefined) config._permissionLayers.push(local.permission);
         if (
@@ -166,12 +166,44 @@ export function saveTheme(theme) {
   return value;
 }
 
+export {
+  loadModelSettings,
+  saveModelSettings,
+  resetModelSettings,
+  resolveEffectiveSettings,
+  resolveEffectiveSetting,
+  resolveProviderCapabilities,
+  validateSetting,
+  settingIsSupported,
+  formatSettingValue,
+} from "./model-settings.js";
+
 export function saveProvider(id, provider) {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(String(id || ""))) throw new Error("Invalid provider ID.");
   const config = loadJSON(CONFIG_PATH) || {};
   config.providers = { ...(config.providers || {}), [id]: { ...provider } };
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n", "utf-8");
+}
+
+function writeGlobalConfig(config, path = CONFIG_PATH) {
+  mkdirSync(dirname(resolve(path)), { recursive: true });
+  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+}
+
+export function saveMcpServer(id, definition, path = CONFIG_PATH) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(String(id || ""))) {
+    throw new Error("MCP server names may contain only letters, numbers, hyphens, and underscores.");
+  }
+  const config = loadJSON(path) || {};
+  config.mcp = { ...(config.mcp || {}), [id]: definition };
+  writeGlobalConfig(config, path);
+}
+
+export function removeMcpServer(id, path = CONFIG_PATH) {
+  const config = loadJSON(path) || {};
+  config.mcp = { ...(config.mcp || {}), [id]: null };
+  writeGlobalConfig(config, path);
 }
 
 export function configuredModels() {

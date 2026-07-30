@@ -55,7 +55,10 @@ export function prepareProviderRetry(agent, scope = null) {
   agent._aborted = false;
   agent._turn = 0;
   if (!agent._executionPolicy) {
-    agent._executionPolicy = new ExecutionPolicy(fallbackIntentContract(agent._currentRequest));
+    agent._executionPolicy = new ExecutionPolicy(
+      fallbackIntentContract(agent._currentRequest),
+      { planning: agent._agentProfile?.name === "plan" },
+    );
     agent._taskContract = agent._executionPolicy.contract;
     agent._activeTask = taskState(agent._taskContract, agent._currentRequest);
   }
@@ -143,7 +146,9 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
     } catch {}
   }
   if (scope && !agent._isActiveRun(scope)) return false;
-  agent._executionPolicy = new ExecutionPolicy(contract);
+  agent._executionPolicy = new ExecutionPolicy(contract, {
+    planning: agent._agentProfile?.name === "plan",
+  });
   agent._taskContract = agent._executionPolicy.contract;
   agent._activeTask = taskState(agent._taskContract, objective);
   agent._activeScope.relevantFiles = [...agent._activeTask.targetFiles];

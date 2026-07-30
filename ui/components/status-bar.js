@@ -1,120 +1,113 @@
-import { createElement as h } from "react";
+import { createElement as h, useEffect, useState } from "react";
 import { Text, Box } from "ink";
-import { useEffect, useState } from "react";
-import { toolTarget } from "../tool-presentation.js";
+import { useStdout } from "ink";
+import stringWidth from "string-width";
 import { useTheme } from "../theme.js";
-
-const WORKING_INTERVAL_MS = 80;
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const ACTIVE_LABELS = {
-  read: "Reading",
-  glob: "Searching",
-  grep: "Searching",
-  websearch: "Searching web",
-  webfetch: "Fetching",
-  repo: "Inspecting repository",
-  write: "Writing",
-  edit: "Editing",
-  apply_patch: "Applying patch",
-  bash: "Running",
-  analyze: "Analyzing",
-  task: "Delegating",
-};
-
-export function formatElapsed(seconds) {
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
+function compactTokens(value) {
+  const tokens = Math.max(0, Number(value) || 0);
+  if (tokens < 1_000) return String(Math.round(tokens));
+  return `${(tokens / 1_000).toFixed(tokens < 100_000 ? 1 : 0)}k`;
 }
 
 export function StatusBar({
   running,
-  plan = [],
-  activeTool = null,
-  startedAt = null,
   waitingForAnswer = false,
+  queueCount = 0,
   model = "",
+  modeStatus = null,
   contextUsage = {},
 }) {
-  const [frame, setFrame] = useState(0);
+  const { stdout } = useStdout();
   const theme = useTheme();
-
+  const [frame, setFrame] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  const {
+    currentContextTokens = 0,
+    contextLimit = null,
+    contextLimitKnown = contextLimit !== null && contextLimit > 0,
+    compactionStatus = "idle",
+    compactionStartedAt = null,
+  } = contextUsage;
+  const compacting = ["scheduled", "preparing", "summarizing", "committing", "recounting"]
+    .includes(compactionStatus);
   useEffect(() => {
-    if (!running) return undefined;
-    setFrame(0);
-    const timer = setInterval(() => setFrame(current => current + 1), WORKING_INTERVAL_MS);
-    timer.unref?.();
+    if (!compacting) return undefined;
+    const timer = setInterval(() => {
+      setFrame(value => value + 1);
+      setNow(Date.now());
+    }, 120);
     return () => clearInterval(timer);
-  }, [running]);
-
-  // ── Left-status section ──────────────────────────────────────────────
-  let leftStatus;
-  if (running) {
-    const activePlan = plan.findIndex(item => item.status === "running");
-    const target = activeTool
-      ? toolTarget(activeTool.tool, activeTool.args).split("\n")[0]
+  }, [compacting]);
+  const name = model || "KhazAI";
+  const queue = queueCount > 0 ? ` · ${queueCount} queued` : "";
+  const elapsed = compactionStartedAt
+    ? ` · ${Math.max(0, Math.floor((now - compactionStartedAt) / 1_000))}s`
+    : "";
+  const compactionText = ["scheduled", "preparing"].includes(compactionStatus)
+    ? `Preparing compaction${elapsed}`
+    : compactionStatus === "summarizing"
+      ? `${SPINNER_FRAMES[frame % SPINNER_FRAMES.length]} Compacting context${elapsed}`
+      : compactionStatus === "committing"
+        ? `Committing compacted context${elapsed}`
+        : `Recalculating context${elapsed}`;
+  const modeText = modeStatus?.mode === "plan"
+    ? `Plan Mode · ${modeStatus.status === "questioning"
+      ? "Waiting for decision"
+      : modeStatus.status === "reviewing"
+        ? "Reviewing implementation"
+        : "Investigating"}`
+    : modeStatus?.mode === "build"
+      ? `Build Mode · ${modeStatus.status === "verifying"
+        ? "Running verification"
+        : modeStatus.status === "implementing"
+          ? "Implementing approved plan"
+          : "Preparing approved plan"}`
       : "";
-    const action = activeTool
-      ? ACTIVE_LABELS[activeTool.tool] || "Working"
-      : activePlan >= 0
-        ? `Working ${activePlan + 1}/${plan.length}`
-        : "Working";
-    const elapsed = startedAt
-      ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-      : Math.floor((frame * WORKING_INTERVAL_MS) / 1000);
-    const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
-    leftStatus = h(Text, {},
-      h(Text, { color: theme.primary }, spinner),
-      " ",
-      h(Text, { bold: true, color: theme.primary }, action),
-      target
-        ? h(Text, { color: theme.toolTarget, wrap: "truncate-end" }, ` · ${target}`)
-        : null,
-      h(Text, { color: theme.metadata }, ` · ${formatElapsed(elapsed)}`),
-      h(Text, { color: theme.muted }, " · Esc cancel"),
-    );
-  } else if (waitingForAnswer) {
-    leftStatus = h(Text, { color: theme.muted },
-      model || "KhazAI",
-      " · ",
-      h(Text, { color: theme.warning }, "Waiting for answer"),
-      " · Esc cancel",
-    );
-  } else {
-    leftStatus = h(Text, { color: theme.muted },
-      model || "KhazAI",
-      " · Esc cancel",
-    );
-  }
+  const leftText = compacting
+    ? `${name} · ${compactionText}`
+    : modeText
+      ? `${name} · ${modeText}${queue}${running ? " · Esc cancel" : ""}`
+    : waitingForAnswer
+      ? `${name} · Waiting for answer${queue} · Esc cancel`
+      : running
+        ? `${name} · Working${queue} · Esc cancel`
+        : `${name}${queue} · Enter send`;
 
-  // ── Right-section: context usage indicator ──────────────────────────
-  const { usagePercent = 0, compacting = false } = contextUsage;
-  const clamped = Math.min(100, Math.max(0, Math.floor(Number(usagePercent))));
+  // Context display: known limit shows "6.2k / 128k · 5%", unknown shows "6.2k · Limit unknown"
+  const tokenDisplay = compactTokens(currentContextTokens);
+  const limitDisplay = contextLimit ? compactTokens(contextLimit) : null;
+  const usagePercent = contextLimitKnown && contextLimit > 0
+    ? Math.min(100, Math.max(0, Math.floor((currentContextTokens / contextLimit) * 100)))
+    : null;
+  const contextText = contextLimitKnown
+    ? `Context ${tokenDisplay} / ${limitDisplay} · ${usagePercent}%`
+    : `Context ${tokenDisplay} · Limit unknown`;
 
-  let contextStatus;
-  if (compacting) {
-    contextStatus = h(Text, { color: theme.primary }, "Compacting context...");
-  } else {
-    let color;
-    if (clamped >= 100) {
-      color = theme.error;
-    } else if (clamped >= 80) {
-      color = theme.warning;
-    } else {
-      color = theme.muted;
-    }
-    contextStatus = h(Text, { color }, `Context ${clamped}%`);
-  }
+  const contextColor = contextLimitKnown && usagePercent >= 100
+    ? theme.error
+    : contextLimitKnown && usagePercent >= 80
+      ? theme.warning
+      : theme.muted;
+  const terminalWidth = Math.max(20, stdout?.columns || 80);
+  const stacked = stringWidth(leftText) + stringWidth(contextText) + 2 > terminalWidth;
 
-  // ── Layout: left flex-grow, right fixed ─────────────────────────────
-  return h(Box, { width: "100%" },
+  return h(Box, {
+    width: "100%",
+    flexDirection: stacked ? "column" : "row",
+  },
     h(Box, { flexGrow: 1, flexShrink: 1, minWidth: 0 },
-      leftStatus,
+      h(Text, { color: compacting ? theme.primary : theme.metadata, wrap: "wrap" }, leftText),
     ),
-    h(Box, { flexShrink: 0, marginLeft: 2 },
-      contextStatus,
+    h(Box, {
+      flexShrink: 0,
+      marginLeft: stacked ? 0 : 2,
+      justifyContent: stacked ? "flex-end" : "flex-start",
+      width: stacked ? "100%" : undefined,
+    },
+      h(Text, { color: contextColor }, contextText),
     ),
   );
 }

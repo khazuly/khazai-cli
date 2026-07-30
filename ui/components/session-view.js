@@ -20,7 +20,6 @@ export function SessionView({
   pendingQuestion,
   plan,
   running,
-  runningStartedAt,
   sessionKey,
   themeName,
   workspaceFiles,
@@ -65,9 +64,6 @@ export function SessionView({
       h(PlanList, { plan }),
       h(SessionFooter, {
         running,
-        plan,
-        activeTool: activeMessage?.type === "tool" ? activeMessage : null,
-        startedAt: runningStartedAt,
         waitingForAnswer: Boolean(pendingQuestion),
         promptProps: {
           onSubmit: pendingQuestion ? handlers.answerQuestion : handlers.submit,

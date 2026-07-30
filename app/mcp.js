@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { isAbsolute, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -11,6 +12,7 @@ const OUTPUT_LIMIT = 100 * 1024;
 const DEFAULT_DISCOVERY_TIMEOUT = 5_000;
 const DEFAULT_CALL_TIMEOUT = 60_000;
 const managers = new Map();
+const require = createRequire(import.meta.url);
 
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -66,6 +68,19 @@ function validateRemoteUrl(value) {
   return url;
 }
 
+function builtinCommand(entry, workspace) {
+  if (entry.builtin !== "code") throw new Error(`Unknown built-in MCP server "${entry.builtin || ""}".`);
+  let executable = process.env.KHAZAI_CODE_MCP_ENTRY;
+  if (!executable) {
+    try { executable = require.resolve("@khazai/code-mcp/cli"); }
+    catch { throw new Error("Built-in code intelligence is unavailable. Install @khazai/code-mcp."); }
+  }
+  return {
+    command: process.execPath,
+    args: [executable, "--workspace", workspace],
+  };
+}
+
 async function safeFetch(input, init = {}) {
   let url = validateRemoteUrl(typeof input === "string" || input instanceof URL ? input : input.url);
   for (let redirects = 0; redirects <= 5; redirects++) {
@@ -91,6 +106,11 @@ function normalizeDefinition(id, value, workspace) {
     authEnv: entry.authEnv,
     tools: object(entry.tools),
   };
+
+  if (entry.type === "builtin" || entry.builtin) {
+    const local = builtinCommand(entry, workspace);
+    return { ...common, type: "stdio", ...local, cwd: resolve(workspace), env: {}, builtin: entry.builtin };
+  }
 
   if (entry.url || entry.type === "http" || entry.transport === "http") {
     const url = validateRemoteUrl(expand(entry.url || "", auth, secrets));
@@ -133,6 +153,7 @@ export function resolveMcpDefinitions(workspace, config = loadConfig(workspace))
   const definitions = [];
   const errors = [];
   for (const [id, value] of Object.entries(object(config.mcp))) {
+    if (value === null || value?.removed === true) continue;
     try { definitions.push(normalizeDefinition(id, value, workspace)); }
     catch (error) { errors.push({ id, type: value?.url ? "http" : "stdio", state: "error", toolCount: 0, error: cleanError(error) }); }
   }
@@ -148,7 +169,9 @@ function toolEnabled(definition, name) {
 }
 
 function nativeToolName(server, tool) {
-  const raw = `mcp_${server}_${tool}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "_");
+  const cleanServer = String(server).toLowerCase().replace(/[^a-z0-9_-]+/g, "_");
+  const cleanTool = String(tool).toLowerCase().replace(/[^a-z0-9_-]+/g, "_");
+  const raw = `mcp__${cleanServer}__${cleanTool}`;
   if (raw.length <= 64) return raw;
   const hash = createHash("sha256").update(`${server}:${tool}`).digest("hex").slice(0, 8);
   return `${raw.slice(0, 55)}_${hash}`;
@@ -198,6 +221,12 @@ class McpConnection {
     this.client = null;
     this.transport = null;
     this.stderr = "";
+    this.resources = [];
+    this.prompts = [];
+    this.capabilities = {};
+    this.generation = 0;
+    this.requestSequence = 0;
+    this.activeRequests = new Set();
   }
 
   createTransport() {
@@ -231,10 +260,11 @@ class McpConnection {
     this.transport = this.createTransport();
     this.client = new Client({ name: "khazai-ai", version: "0.3.0" }, { capabilities: {} });
     await this.client.connect(this.transport, { timeout: this.definition.discoveryTimeout });
+    this.capabilities = this.client.getServerCapabilities?.() || {};
   }
 
-  async discover() {
-    if (!this.definition.enabled) return [];
+  async discover(force = false) {
+    if (!this.definition.enabled && !force) return [];
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -262,20 +292,35 @@ class McpConnection {
     return [];
   }
 
-  async call(name, args) {
-    if (this.state !== "connected" || !this.client) return "Error: MCP server is not connected. Run /mcp refresh.";
+  async call(name, args, context = {}) {
+    if (this.state !== "connected" || !this.client) return "Error: MCP server is not connected. Run /mcp reload.";
+    const generation = this.generation;
+    const requestId = `${this.definition.id}:${++this.requestSequence}`;
+    const scope = {
+      runId: context.runId,
+      turnId: context.turnId,
+      taskEpoch: context.taskEpoch,
+    };
+    const current = () => generation === this.generation
+      && this.activeRequests.has(requestId)
+      && !context.signal?.aborted
+      && (!context.isActiveRun || context.isActiveRun(scope));
+    this.activeRequests.add(requestId);
     try {
       const result = await this.client.callTool(
         { name, arguments: object(args) },
         undefined,
-        { timeout: this.definition.callTimeout },
+        { timeout: this.definition.callTimeout, signal: context.signal },
       );
+      if (!current()) return "Error: MCP tool result was discarded because its run is no longer active.";
       return normalizeMcpResult(result, [...this.definition.secrets]);
     } catch (error) {
       this.error = cleanError(error, [...this.definition.secrets]);
       this.state = "error";
       await this.close();
       return `Error: MCP tool call failed: ${this.error}`;
+    } finally {
+      this.activeRequests.delete(requestId);
     }
   }
 
@@ -285,6 +330,10 @@ class McpConnection {
       type: this.definition.type,
       state: this.state,
       toolCount: this.tools.length,
+      resourceCount: this.resources.length,
+      promptCount: this.prompts.length,
+      capabilities: Object.keys(this.capabilities),
+      enabled: this.definition.enabled,
       pid: this.transport?.pid || undefined,
       error: this.error || undefined,
       authConfigured: Boolean(getCredential(`mcp:${this.definition.id}`, this.definition.authEnv)),
@@ -292,10 +341,16 @@ class McpConnection {
   }
 
   async close() {
+    this.generation += 1;
+    this.activeRequests.clear();
     const transport = this.transport;
     const client = this.client;
     this.client = null;
     this.transport = null;
+    this.tools = [];
+    this.resources = [];
+    this.prompts = [];
+    this.capabilities = {};
     try {
       if (transport?.sessionId) await transport.terminateSession();
     } catch {}
@@ -323,28 +378,32 @@ export class McpManager {
     this.connections = definitions.map(definition => new McpConnection(definition));
     await Promise.all(this.connections.map(connection => connection.discover()));
 
+    return this.rebuildTools();
+  }
+
+  rebuildTools() {
     const used = new Map();
-    const wrappers = [];
-    for (const connection of this.connections) {
-      for (const tool of connection.tools) {
-        let name = nativeToolName(connection.definition.id, tool.name);
-        const identity = `${connection.definition.id}:${tool.name}`;
-        if (used.has(name) && used.get(name) !== identity) {
-          const hash = createHash("sha256").update(identity).digest("hex").slice(0, 8);
-          name = `${name.slice(0, 55)}_${hash}`;
-        }
-        used.set(name, identity);
-        wrappers.push({
-          name,
-          description: `[MCP ${connection.definition.id}/${tool.name}] ${tool.description || "External MCP tool."}`,
-          parameters: tool.inputSchema || { type: "object", properties: {} },
-          execute: args => connection.call(tool.name, args),
-          mcp: { server: connection.definition.id, tool: tool.name },
-        });
+    this.nativeTools = this.connections.flatMap(connection => connection.tools.map(tool => {
+      let name = nativeToolName(connection.definition.id, tool.name);
+      const identity = `${connection.definition.id}:${tool.name}`;
+      if (used.has(name) && used.get(name) !== identity) {
+        const hash = createHash("sha256").update(identity).digest("hex").slice(0, 8);
+        name = `${name.slice(0, 55)}_${hash}`;
       }
-    }
-    this.nativeTools = wrappers;
-    return wrappers;
+      used.set(name, identity);
+      return {
+        name,
+        description: `[MCP ${connection.definition.id}/${tool.name}] ${tool.description || "External MCP tool."}`,
+        parameters: tool.inputSchema || { type: "object", properties: {} },
+        execute: (args, context) => connection.call(tool.name, args, context),
+        mcp: {
+          server: connection.definition.id,
+          tool: tool.name,
+          readOnly: tool.annotations?.readOnlyHint === true,
+        },
+      };
+    }));
+    return this.tools();
   }
 
   tools() { return [...this.nativeTools]; }
