@@ -50,7 +50,10 @@ export function SessionView({
       : h(MessageList, { key: item.id, messages: [item] })),
     h(Box, { flexDirection: "column", width: "100%" },
       displayedActiveMessage
-        ? h(MessageList, { messages: [displayedActiveMessage] })
+        ? h(MessageList, {
+            key: displayedActiveMessage.id,
+            messages: [displayedActiveMessage],
+          })
         : null,
       inspectedTool && !running
         ? h(ToolDetailInspector, {

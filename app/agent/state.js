@@ -56,7 +56,7 @@ export class StateMethods {
       const filtered = state.messages
         .filter(message => !String(message?.content || "").startsWith("[INTERNAL STEERING]"))
         .slice(-200);
-      // Use canonical provider messages if available (version 5+), else standard messages
+
       this._messages = Array.isArray(state.canonicalProviderMessages)
         ? state.canonicalProviderMessages.slice(-200)
         : completedConversationHistory(filtered);
@@ -88,7 +88,7 @@ export class StateMethods {
     this._pendingBatchCalls = [];
     this._toolCallHistory = [];
     this._completedToolResults.clear();
-    // Restore history revision
+
     if (state.historyRevision !== undefined) {
       this._historyRevision = state.historyRevision;
     }
@@ -142,9 +142,9 @@ export class StateMethods {
     this._workspaceListing = null;
   }
 
-  _rememberToolOutcome(tool, result) {
+  _rememberToolOutcome(tool, result, failedOverride = null) {
     const signature = toolSignature(tool, this._workspace);
-    const failed = resultFailed(result);
+    const failed = failedOverride === null ? resultFailed(result) : Boolean(failedOverride);
     this._toolCallHistory.push({ signature, failed });
     if (this._toolCallHistory.length > 24) this._toolCallHistory.shift();
     if (failed) return;
@@ -170,13 +170,20 @@ export class StateMethods {
     const repeatedFailures = this._toolCallHistory
       .filter(entry => entry.signature === signature && entry.failed)
       .length;
-    if (repeatedFailures >= 2) return { exhausted: true };
+    const failureLimit = this._registry.resolveName?.(tool.name) ? 2 : 1;
+    if (repeatedFailures >= failureLimit) return { exhausted: true };
     return null;
   }
 
   _filterRepeatedBatchTools(tools) {
     const executable = [];
+    const invalidSignatures = new Set();
     for (const tool of tools) {
+      const signature = toolSignature(tool, this._workspace);
+      if (!this._registry.resolveName?.(tool.name)) {
+        if (invalidSignatures.has(signature)) continue;
+        invalidSignatures.add(signature);
+      }
       const recovery = this._toolLoopRecovery(tool);
       if (!recovery) {
         executable.push(tool);
@@ -482,7 +489,10 @@ export class StateMethods {
   }
 
   _normalizeTool(tool) {
-    return tool;
+    const canonicalName = this._registry.resolveName?.(tool?.name);
+    return canonicalName && canonicalName !== tool.name
+      ? { ...tool, name: canonicalName }
+      : tool;
   }
 
   _prepareToolArgs(name, input) {

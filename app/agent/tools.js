@@ -129,9 +129,14 @@ export class ToolMethods {
     let failed = false;
     for (const call of calls) {
       if (!this._isActiveRun(executionScope)) return true;
-      yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
+      const registeredTool = this._registry.get(call.name);
+      if (registeredTool) {
+        yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
+      }
       if (!this._isActiveRun(executionScope)) return true;
-      const planTracker = ["todowrite", "think"].includes(call.name) ? null : yield* this._startPlanItem(executionScope);
+      const planTracker = !registeredTool || ["todowrite", "think"].includes(call.name)
+        ? null
+        : yield* this._startPlanItem(executionScope);
       let callFailed = false;
       let completedPart = null;
       for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
@@ -145,7 +150,7 @@ export class ToolMethods {
         failed ||= event.failed;
         callFailed ||= event.failed;
         const metadata = toolMetadata(event.call, displayResult);
-        this._rememberToolOutcome(event.call, result);
+        this._rememberToolOutcome(event.call, result, event.failed);
         this._toolEvidence.push({
           tool: event.call.name,
           args: this._protectDataForContext(event.call.args),
@@ -422,7 +427,7 @@ export class ToolMethods {
       : [];
     const limit = this._applyEffectiveSettings().contextLimit || 0;
 
-    // When limit is unknown, include all messages without active/historical split
+
     if (limit <= 0) {
       const allMessages = this._messages
         .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
@@ -439,7 +444,7 @@ export class ToolMethods {
       );
     }
 
-    // When limit is known, keep active/historical split to fit within limit
+
     const boundary = Math.max(0, Math.min(this._requestStartIndex, this._messages.length));
     const active = this._messages.slice(boundary)
       .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));

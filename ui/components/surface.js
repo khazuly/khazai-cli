@@ -36,6 +36,6 @@ export function PrefixRow({ prefix, prefixWidth = 4, prefixColor, children, ...p
     h(Box, { width: prefixWidth, flexShrink: 0 },
       h(Text, { color: prefixColor, wrap: "truncate-end" }, prefix),
     ),
-    h(Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1 }, children),
+    h(Box, { flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0 }, children),
   );
 }

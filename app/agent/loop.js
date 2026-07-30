@@ -57,7 +57,7 @@ export class LoopMethods {
         this, requestInput.protectedContent, controller.signal, requestInput.rawContent, run,
       );
       if (!initialized || !isRunActive()) return;
-      // Reset turn-scoped counters on new turn, preserve session and context
+
       this._usageTracker.resetTurn();
     }
     if (!retryProvider && Array.isArray(scope.approvedPlan?.steps)) {
@@ -465,7 +465,7 @@ export class LoopMethods {
       let tool = parsed.tool ? this._normalizeTool(parsed.tool) : null;
       if (tool) {
         const validation = validateToolArguments(tool, this._registry);
-        if (validation) {
+        if (validation && validation.kind !== "unknown_tool") {
           parsed = { tool: null, error: validation.detail, kind: validation.kind, truncated: false };
           tool = null;
         }
@@ -527,7 +527,8 @@ export class LoopMethods {
       }
       yield* commitProseBeforeTool(tool);
       if (!isRunActive()) return;
-      const auxiliaryTool = ["todowrite", "think"].includes(tool.name);
+      const registeredTool = this._registry.get(tool.name);
+      const auxiliaryTool = !registeredTool || ["todowrite", "think"].includes(tool.name);
       tool.id ||= randomUUID();
       const loopRecovery = tool.name === "bash" ? this._shellScheduler.reserve(tool) : this._toolLoopRecovery(tool);
       if (loopRecovery) {
@@ -550,7 +551,9 @@ export class LoopMethods {
         }
         continue;
       }
-      yield scoped({ type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id });
+      if (registeredTool) {
+        yield scoped({ type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id });
+      }
       if (!isRunActive()) return;
       this._messages.push({
         role: "assistant",
@@ -593,7 +596,7 @@ export class LoopMethods {
       }
       const protectedResult = this._secretStore.protect(result, runId, turnId);
       result = this._secretStore.redact(protectedResult);
-      this._rememberToolOutcome(tool, protectedResult);
+      this._rememberToolOutcome(tool, protectedResult, part.state.status === "error");
       if (["web", "webfetch", "websearch", "repo"].includes(tool.name)) {
         this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
       }

@@ -189,6 +189,30 @@ export class ToolLifecycle {
     return this._emit(part);
   }
 
+  invalid({ callId = id("call"), requestedTool, input = {}, error, metadata = {} }) {
+    const part = {
+      id: id("part"),
+      sessionId: this.sessionId,
+      messageId: this.messageId || id("message"),
+      type: "tool",
+      callId: String(callId),
+      tool: "unknown_tool",
+      state: {
+        status: "error",
+        input: { ...input, requestedTool: String(requestedTool || "") },
+        error: String(error || "Unknown tool."),
+        metadata: { ...metadata },
+        time: { end: now() },
+      },
+      metadata: {
+        ...metadata,
+        ...(this.activeScope ? { executionScope: { ...this.activeScope } } : {}),
+      },
+    };
+    this.parts.push(part);
+    return this._emit(part);
+  }
+
   running(part, input = part.state.input) {
     part.state = {
       status: "running",

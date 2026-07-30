@@ -111,6 +111,51 @@ test("read groups keep one live row and finalize without a file name", async () 
   assert.doesNotMatch(completed, /status-bar\.js/);
 });
 
+test("read group markers remain intact at narrow widths", async () => {
+  const active = await renderComponent(h(MessageList, { messages: [{
+    id: "read-group-narrow-active",
+    type: "read-group",
+    count: 3,
+    currentFile: "session.js",
+    done: false,
+    status: "running",
+  }] }), 16, 12);
+  assert.match(active, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+Read 3/);
+  assert.doesNotMatch(active, /^\s*\]\s*$/m);
+
+  const completed = await renderComponent(h(MessageList, { messages: [{
+    id: "read-group-narrow-completed",
+    type: "read-group",
+    count: 1,
+    currentFile: "",
+    done: true,
+    duration: 297,
+    failed: false,
+  }] }), 16, 12);
+  assert.match(completed, /\[✓\] Read 1/);
+  assert.doesNotMatch(completed, /^\s*\]\s*$/m);
+  assert.doesNotMatch(completed, /\[✓Read/);
+});
+
+test("unknown tools render one concise failed row", async () => {
+  const output = await renderComponent(h(MessageList, { messages: [{
+    id: "unknown-tool-call",
+    type: "tool",
+    tool: "unknown_tool",
+    args: { requestedTool: "shell_find" },
+    content: JSON.stringify({
+      code: "UNKNOWN_TOOL",
+      requestedTool: "shell_find",
+      availableTools: ["bash", "read"],
+    }),
+    done: true,
+    failed: true,
+    status: "error",
+  }] }), 32, 8);
+  assert.match(output, /\[×\] Unknown tool · shell_find/);
+  assert.doesNotMatch(output, /pending|running|UNKNOWN_TOOL|availableTools/);
+});
+
 test("interactive question reuses the built-in CLI prompt without a second input", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,
@@ -123,11 +168,11 @@ test("interactive question reuses the built-in CLI prompt without a second input
   assert.match(frame, /❯ Ask anything\.\.\./);
   assert.doesNotMatch(frame, /^\s*>\s/gm);
   assert.doesNotMatch(frame, /Working/, "Working must not appear when waiting for answer");
-  // Should show waiting state in the activity bar (may be truncated on narrow terminals)
+
   assert.match(frame, /Waiting/);
   assert.ok(frame.indexOf("Waiting") < frame.indexOf("Ask anything..."),
     "waiting status should appear above the prompt");
-  // "Esc cancel" should appear in the activity bar
+
   assert.match(frame, /Esc cancel/);
   assert.ok(frame.indexOf("Esc cancel") < frame.indexOf("Ask anything..."),
     "Esc cancel should appear above the prompt");

@@ -182,6 +182,8 @@ export function MessageList({ messages }) {
             tool: m.tool, args: m.args, done: m.done, duration: m.duration,
             resultSize: m.resultSize, content: m.content, expanded: m.expanded,
             status: m.status, startedAt: m.startedAt, metadata: m.metadata,
+            toolCallId: m.callId,
+            scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
           }),
           hasCodePreview(m)
             ? h(Box, { marginBottom: 1, width: "100%" },
@@ -195,6 +197,9 @@ export function MessageList({ messages }) {
             readGroup: true, count: m.count, currentFile: m.currentFile,
             done: m.done, duration: m.duration, failed: m.failed,
             status: m.status, failedCount: m.failedCount,
+            startedAt: m.startedAt,
+            toolCallId: m.callIds?.join(":") || m.id,
+            scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
           }),
         );
       case "answer":

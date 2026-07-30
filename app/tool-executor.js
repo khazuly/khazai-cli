@@ -240,15 +240,50 @@ export class ToolExecutor {
     });
   }
 
+  async *_unknown(call) {
+    const error = this.registry.unknownToolError(call.name);
+    const result = JSON.stringify(error);
+    const part = this.lifecycle.invalid({
+      callId: call.id,
+      requestedTool: call.name,
+      input: this.protectData(call.args),
+      error: result,
+      metadata: error,
+    });
+    yield this._scoped({ type: "tool-part", part: { ...part } });
+    yield this._scoped({
+      type: "tool-result",
+      tool: "unknown_tool",
+      result,
+      callId: part.callId,
+      failed: true,
+      metadata: error,
+    });
+    yield this._scoped({
+      type: "execution-result",
+      call,
+      part,
+      result,
+      failed: true,
+      finishReason: "tool-error",
+    });
+  }
+
   async *execute(input, extraContext = {}) {
     if (!this._isActive()) return;
-    const call = this.normalizeCall({
+    let call = this.normalizeCall({
       ...input,
       id: input?.id || randomUUID(),
       args: { ...(input?.args || {}) },
     });
+    const canonicalName = this.registry.resolveName?.(call.name);
+    if (canonicalName && canonicalName !== call.name) call = { ...call, name: canonicalName };
     if (this.authorizeCall && !this.authorizeCall(call)) return;
     const tool = this.registry.get(call.name);
+    if (!tool) {
+      yield* this._unknown(call);
+      return;
+    }
     const part = this.lifecycle.pending({
       callId: call.id,
       tool: call.name,
@@ -260,7 +295,7 @@ export class ToolExecutor {
 
     const invalid = schemaError(tool, call.args);
     if (invalid) {
-      yield* this._reject(part, call, tool ? invalid : `Unknown tool "${call.name}".`, "tool-error");
+      yield* this._reject(part, call, invalid, "tool-error");
       return;
     }
     if (this.readOnly && !planToolIsReadOnly(call, tool)) {

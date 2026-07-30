@@ -1,11 +1,11 @@
 import { createElement as h } from "react";
 import { Box, Text, useStdout } from "ink";
-import { useEffect, useState } from "react";
+import { memo } from "react";
 import stringWidth from "string-width";
 import { formatDuration, presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
 import { PrefixRow, StatusRail } from "./surface.js";
-import { SPINNER_FRAMES } from "./status-bar.js";
+import { ToolSpinner } from "./tool-spinner.js";
 
 const DETAIL_LABELS = ["Command", "URL", "Path", "Query", "Pattern", "Type", "Size", "Result", "Error", "Exit", "More"];
 const DETAIL_LABEL_WIDTH = Math.max(...DETAIL_LABELS.map(label => stringWidth(label))) + 1;
@@ -71,7 +71,7 @@ function toolDetails(tool, presentation, done) {
   return rows;
 }
 
-function DetailRows({ rows, state, theme, width }) {
+function DetailRows({ rows, state, theme, width, live = false }) {
   if (!rows.length) return null;
   const labelWidth = Math.min(DETAIL_LABEL_WIDTH, Math.max(5, width - 8));
   const valueWidth = Math.max(8, width - labelWidth);
@@ -89,23 +89,26 @@ function DetailRows({ rows, state, theme, width }) {
         h(Text, {
           color: row.muted ? theme.metadata : resultColor(state, theme),
           dimColor: Boolean(row.muted),
-          wrap: "wrap",
+          wrap: live ? "truncate-end" : "wrap",
         }, row.value),
       ),
     )),
   );
 }
 
-function ReadGroupCall({ count, currentFile, done, duration, failed, status, failedCount }) {
-  const { stdout } = useStdout();
-  const [frame, setFrame] = useState(0);
+function ReadGroupCall({
+  count,
+  currentFile,
+  done,
+  duration,
+  failed,
+  status,
+  failedCount,
+  startedAt,
+  toolCallId,
+  scopeKey,
+}) {
   const theme = useTheme();
-  useEffect(() => {
-    if (done || ["pending", "awaiting-approval"].includes(status)) return undefined;
-    const timer = setInterval(() => setFrame(value => value + 1), 80);
-    timer.unref?.();
-    return () => clearInterval(timer);
-  }, [done, status]);
   const label = `Read ${count} ${count === 1 ? "file" : "files"}`;
   const elapsed = duration ? ` · ${formatDuration(duration)}` : "";
   let icon;
@@ -113,15 +116,26 @@ function ReadGroupCall({ count, currentFile, done, duration, failed, status, fai
   if (failed) {
     icon = "[×]";
     const failurePart = failedCount ? ` · ${failedCount} failed` : "";
-    heading = `${label}${failurePart} · ${currentFile || ""}${elapsed}`;
+    const filePart = currentFile ? ` · ${currentFile}` : "";
+    heading = `${label}${failurePart}${filePart}${elapsed}`;
   } else if (done) {
     icon = "[✓]";
     heading = `${label}${elapsed}`;
   } else {
-    icon = ["pending", "awaiting-approval"].includes(status) ? "[ ]" : SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+    icon = ["pending", "awaiting-approval"].includes(status) ? "[ ]" : "[•]";
     heading = `${label} · ${currentFile || ""}`;
   }
-  const width = Math.max(13, Number(stdout?.columns || 80) - 7);
+  if (!done && !failed && !["pending", "awaiting-approval"].includes(status)) {
+    return h(StatusRail, { flexShrink: 0, width: "100%", tone: "muted" },
+      h(ToolSpinner, {
+        active: true,
+        color: theme.primary,
+        label: heading,
+        scopeKey: `${scopeKey}:${toolCallId}`,
+        startedAt,
+      }),
+    );
+  }
   return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
     h(PrefixRow, { prefix: icon, prefixColor: failed ? theme.error : done ? theme.success : theme.primary },
       h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, heading),
@@ -129,17 +143,31 @@ function ReadGroupCall({ count, currentFile, done, duration, failed, status, fai
   );
 }
 
-export function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview, failedCount }) {
-  if (readGroup) return h(ReadGroupCall, { count, currentFile, done, duration, failed, status, failedCount });
+export const ToolCall = memo(function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview, failedCount, toolCallId = "", scopeKey = "" }) {
+  if (readGroup) return h(ReadGroupCall, {
+    count,
+    currentFile,
+    done,
+    duration,
+    failed,
+    status,
+    failedCount,
+    startedAt,
+    toolCallId,
+    scopeKey,
+  });
   const { stdout } = useStdout();
   const theme = useTheme();
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    if (done || ["pending", "awaiting-approval"].includes(status)) return undefined;
-    const timer = setInterval(() => setFrame(value => value + 1), 80);
-    timer.unref?.();
-    return () => clearInterval(timer);
-  }, [done, status]);
+  if (tool === "unknown_tool") {
+    const requestedTool = String(args?.requestedTool || "").trim();
+    return h(StatusRail, { flexShrink: 0, width: "100%", tone: "error" },
+      h(PrefixRow, { prefix: "[×]", prefixColor: theme.error },
+        h(Text, { bold: true, color: theme.error, wrap: "wrap" },
+          ["Unknown tool", requestedTool].filter(Boolean).join(" · "),
+        ),
+      ),
+    );
+  }
   const presentation = presentTool({ tool, args, done, duration, resultSize, content, metadata, expanded });
   const accent = theme.colorEnabled ? theme[presentation.accentRole] : undefined;
   const stateLabel = status === "awaiting-approval"
@@ -153,14 +181,16 @@ export function ToolCall({ tool, args, done, duration, startedAt, resultSize, co
   const tone = presentation.state === "failed" || presentation.state === "warning"
     ? presentation.stateRole
     : "muted";
+  const running = presentation.state === "running"
+    && !["pending", "awaiting-approval"].includes(status);
   const prefix = presentation.state === "failed" || presentation.state === "warning"
     ? "[×]"
     : ["pending", "awaiting-approval"].includes(status) ? "[ ]"
-      : presentation.state === "running" ? SPINNER_FRAMES[frame % SPINNER_FRAMES.length] : "[✓]";
+      : "[✓]";
   const shell = tool === "bash";
   const shellWaiting = ["pending", "awaiting-approval"].includes(status);
   const elapsed = shell
-    ? shellWaiting ? "" : shellDuration(done ? duration : startedAt ? Date.now() - startedAt : 0, done)
+    ? shellWaiting || running ? "" : shellDuration(duration, done)
     : "";
   const shellState = shellWaiting ? stateLabel : "";
   const heading = [
@@ -170,6 +200,24 @@ export function ToolCall({ tool, args, done, duration, startedAt, resultSize, co
   ].filter(Boolean).join(" · ");
   const width = Math.max(13, Number(stdout?.columns || 80) - 7);
   const rows = toolDetails(tool, presentation, done);
+
+  if (running) {
+    return h(StatusRail, { flexShrink: 0, width: "100%", tone },
+      h(ToolSpinner, {
+        active: true,
+        color: accent,
+        label: `${presentation.label} · ${stateLabel}`,
+        scopeKey: `${scopeKey}:${toolCallId}`,
+        startedAt,
+      }, h(DetailRows, {
+        rows,
+        state: presentation.state,
+        theme,
+        width,
+        live: true,
+      })),
+    );
+  }
 
   return h(StatusRail, {
     flexShrink: 0,
@@ -183,4 +231,4 @@ export function ToolCall({ tool, args, done, duration, startedAt, resultSize, co
       h(DetailRows, { rows, state: presentation.state, theme, width }),
     ),
   );
-}
+});

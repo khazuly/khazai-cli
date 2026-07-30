@@ -430,7 +430,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/setting") {
       const lowerArg = String(arg || "").trim().toLowerCase();
       if (lowerArg === "show") {
-        // Display effective settings
+
         const { loadModelSettings, resolveEffectiveSettings, formatSettingValue, SETTING_SECTIONS } = await import("../config/model-settings.js");
         const effective = resolveEffectiveSettings(currentModel);
         const lines = [`## Effective Settings for ${currentModel}`, ""];
@@ -467,7 +467,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
         return;
       }
-      // Open interactive menu
+
       setSettingsSection(null);
       setShowSettings(true);
       return;
@@ -1022,6 +1022,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         failurePreview: "",
         runId: scope?.runId,
         turnId: scope?.turnId,
+        taskEpoch: scope?.taskEpoch,
       });
     };
     const completeStreaming = () => {
@@ -1265,6 +1266,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
               startedAt: part.state.time?.start || Date.now(),
               runId: ev.runId,
               turnId: ev.turnId,
+              taskEpoch: ev.taskEpoch,
             });
           }
           continue;
@@ -1334,6 +1336,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           startedAt: Date.now(),
           runId: ev.runId,
           turnId: ev.turnId,
+          taskEpoch: ev.taskEpoch,
         });
         continue;
       }
@@ -1866,7 +1869,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       : h(MessageList, { key: item.id, messages: [item] })),
     h(Box, { flexDirection: "column", width: "100%" },
       displayedActiveMessage
-        ? h(MessageList, { messages: [displayedActiveMessage] })
+        ? h(MessageList, {
+            key: displayedActiveMessage.id,
+            messages: [displayedActiveMessage],
+          })
         : null,
       expandedTool && !running
         ? h(MessageList, { messages: [expandedTool] })
