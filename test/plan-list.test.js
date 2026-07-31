@@ -1,5 +1,5 @@
 import { strict as assert } from "assert";
-import { completedPlanCount, planItemPresentation } from "../ui/components/plan-list.js";
+import { completedPlanCount, planItemKey, planItemPresentation } from "../ui/components/plan-list.js";
 
 function formatPlanItem(item) {
   const { indicator, colorRole } = planItemPresentation(item.status);
@@ -77,5 +77,13 @@ console.log("✓ Test 8: All plan colors use semantic theme roles");
 
 assert.equal(completedPlanCount(items), 1, "Only evidenced completed items should count toward Plan progress");
 console.log("✓ Test 9: Failed and skipped items do not increase Plan completion");
+
+const longTitle = "session.js: finalize init generation exactly once at finish event, stop shimmer immediately";
+const key = planItemKey("plan-1", { stepId: "step-2", description: longTitle }, 1);
+assert.strictEqual(key, "plan-1:step-2", "Plan row keys must use stable IDs");
+assert.ok(!key.includes(longTitle), "Plan titles must never become React keys");
+assert.strictEqual(planItemKey("plan-1", { description: longTitle }, 4), "plan-1:4");
+assert.ok(!planItemKey("plan-1", { description: longTitle }, 4).includes(longTitle));
+console.log("✓ Test 10: Long Plan titles never become React keys");
 
 console.log("\n=== All plan-list render tests passed ===");

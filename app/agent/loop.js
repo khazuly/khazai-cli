@@ -66,7 +66,12 @@ export class LoopMethods {
         run,
         scope.approvedPlan.planId,
       );
-      yield scoped({ type: "plan", items: plan.map(item => ({ ...item })) });
+      yield scoped({
+        type: "plan",
+        items: plan.map(item => ({ ...item })),
+        planId: scope.approvedPlan.planId,
+        currentStepId: this._currentStepId,
+      });
     }
     yield scoped({ type: "context-usage", usage: this.contextUsage() });
     const initialUsage = this.contextUsage();
@@ -76,11 +81,26 @@ export class LoopMethods {
     if (initialProjectedRatio !== null && initialProjectedRatio < this._config.compactThreshold) {
       this._compactionThresholdCrossed = false;
     }
-    if (
-      this._messages.length > 2
+    const emergencyThreshold = Number(this._config.emergencyCompactThreshold) || 0.92;
+    const shouldScheduleCompaction = this._messages.length > 2
       && initialProjectedRatio !== null
+      && !this._compactionThresholdCrossed;
+    if (
+      shouldScheduleCompaction
+      && initialProjectedRatio >= emergencyThreshold
+      && this._scheduleCompaction(run, "emergency")
+    ) {
+      this._compactionThresholdCrossed = true;
+      yield scoped({
+        type: "compaction-state",
+        status: "scheduled",
+        compactionId: this._compaction.compactionId,
+        startedAt: this._compaction.startedAt,
+        usage: this.contextUsage(),
+      });
+    } else if (
+      shouldScheduleCompaction
       && initialProjectedRatio >= this._config.compactThreshold
-      && !this._compactionThresholdCrossed
       && this._scheduleCompaction(run)
     ) {
       this._compactionThresholdCrossed = true;
@@ -112,6 +132,7 @@ export class LoopMethods {
       if (!isRunActive()) return;
       if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
         const compactionId = this._compaction.compactionId;
+        const compactionStart = performance.now();
         const originalMessages = this._messages;
         const originalSummary = this._summary;
         const originalRequestStartIndex = this._requestStartIndex;
@@ -167,6 +188,8 @@ export class LoopMethods {
         }
         this._compaction.status = "completed";
         this._compaction.stableTokens = null;
+        this._markLatencyDuration("compactionMs", compactionStart);
+        this._latency.compactionLabel = "Compacted";
         this._recordProgress();
         yield scoped({
           type: "compaction-state",
@@ -176,7 +199,74 @@ export class LoopMethods {
         });
         this._clearCompaction();
       }
+      const prepStart = performance.now();
       let ctx = this._buildContext();
+      this._markLatencyDuration("historyPreparationMs", prepStart);
+      const frameStats = this._lastFrameEntry?.stats || null;
+      if (frameStats) {
+        this._latency.messageValidationMs = frameStats.validationMs;
+        this._latency.tokenCountingMs = frameStats.tokenCountingMs;
+        this._latency.messageCount = frameStats.messageCount;
+        this._latency.serializedPayloadBytes = frameStats.payloadBytes;
+      }
+      this._latency.currentContextTokens = this._lastFrameEntry?.jsonTokens ?? null;
+      const frameTokens = this._lastFrameEntry?.jsonTokens || 0;
+      const contextLimitForPhase = this._applyEffectiveSettings().contextLimit || 0;
+      if (
+        frameTokens >= 12_000
+        || (contextLimitForPhase > 0 && frameTokens >= contextLimitForPhase * 0.5)
+      ) {
+        yield scoped({ type: "phase", label: "Preparing large context" });
+      }
+      if (!isRunActive()) return;
+      const requestModel = this._model;
+      const maxAttempts = this._chatHandlesRetries ? 1 : 2;
+      const nativeTools = await this._toolSchemas(requestModel, this._agentProfile?.name);
+      if (!isRunActive()) return;
+      // Context preflight: project the exact normalized payload for the
+      // resolved route. If it exceeds the configured threshold, schedule
+      // compaction at this safe boundary instead of sending an oversized
+      // request and waiting for provider rejection.
+      const compactionCheckStart = performance.now();
+      let projected = null;
+      if (this._compaction.status !== "scheduled" && !this._compactionThresholdCrossed) {
+        projected = await this._projectProviderPayload(ctx, nativeTools, requestModel);
+        this._markLatencyDuration("compactionCheckMs", compactionCheckStart);
+        if (
+          projected.contextLimit
+          && projected.ratio !== null
+          && projected.ratio >= emergencyThreshold
+          && this._scheduleCompaction(run, "emergency")
+        ) {
+          this._compactionThresholdCrossed = true;
+          yield scoped({
+            type: "compaction-state",
+            status: "scheduled",
+            compactionId: this._compaction.compactionId,
+            startedAt: this._compaction.startedAt,
+            usage: this.contextUsage(),
+          });
+          continue;
+        }
+        if (
+          projected.contextLimit
+          && projected.ratio !== null
+          && projected.ratio >= this._config.compactThreshold
+          && this._scheduleCompaction(run)
+        ) {
+          this._compactionThresholdCrossed = true;
+          yield scoped({
+            type: "compaction-state",
+            status: "scheduled",
+            compactionId: this._compaction.compactionId,
+            startedAt: this._compaction.startedAt,
+            usage: this.contextUsage(),
+          });
+          continue;
+        }
+      } else {
+        this._markLatencyDuration("compactionCheckMs", compactionCheckStart);
+      }
       let reply;
       let streamMode = "pending", streamTail = "";
       let streamStarted = false;
@@ -185,8 +275,6 @@ export class LoopMethods {
       let nativeToolStream = false;
       let typedProviderStream = false;
       const deferProse = Boolean(pendingProse);
-      const requestModel = this._model;
-      const maxAttempts = this._chatHandlesRetries ? 1 : 2;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const providerRequestId = randomUUID();
         let chatErr;
@@ -214,6 +302,10 @@ export class LoopMethods {
         };
         const onEvent = event => {
           if (!isRunActive()) return;
+          if (event?.type === "first-byte") {
+            this._markLatency("providerFirstByte");
+            return;
+          }
           if (event?.type === "usage") {
             this._usageTracker.record({ ...event, requestId: providerRequestId }, run);
             const reportedLimit = Number(event.contextLimit);
@@ -236,16 +328,8 @@ export class LoopMethods {
           if (event?.type === "tool-call-delta") nativeToolStream = true;
           for (const activity of publicActivity.accept(event)) queueEvent(activity);
         };
-        const nativeTools = (await this._registry.definitions({
-          model: requestModel, agent: this._agentProfile?.name, directory: this._workspace,
-        })).map(tool => ({
-          type: "function",
-          function: {
-            name: tool.name, description: tool.description || "",
-            parameters: tool.parameters || { type: "object", properties: {} },
-          },
-        }));
         if (!isRunActive()) return;
+        yield scoped({ type: "phase", label: "Uploading model request" });
         this._markLatency("requestDispatched");
         let temperature, topP, maxTokens;
         try {
@@ -272,6 +356,7 @@ export class LoopMethods {
           isActive: () => isRunActive(),
           bypassProviderHealth: retryProvider,
           streamPhase: phase,
+          projectedTokens: Number.isFinite(Number(projected?.tokens)) ? projected.tokens : undefined,
         })
           .then(result => {
             if (!isRunActive()) return;
@@ -289,6 +374,7 @@ export class LoopMethods {
             if (isRunCurrent()) chatErr = error;
           });
         const waitForEvent = () => new Promise(resolveEvent => { eventResolve = resolveEvent; });
+        yield scoped({ type: "phase", label: "Waiting for model response" });
         while (reply === undefined && chatErr === undefined) {
           const event = eventQueue.length > 0
             ? eventQueue.shift()
@@ -298,7 +384,7 @@ export class LoopMethods {
           if (event.type === "provider-fallback") {
             yield scoped({
               type: "answer",
-              content: `Primary model unavailable. Continuing with ${event.model}.`,
+              content: `${requestModel} is unavailable. Continuing with ${event.model}.`,
             });
             continue;
           }
@@ -487,8 +573,8 @@ export class LoopMethods {
           callId: part.callId,
           failed: true,
         });
-        this._messages.push({ role: "assistant", content: this._secretStore.protect(reply, runId, turnId) });
-        this._messages.push({ role: "user", content: `---TOOL ERROR: invalid_tool_call---\n${part.state.error}` });
+        this._appendMessage({ role: "assistant", content: this._secretStore.protect(reply, runId, turnId) });
+        this._appendMessage({ role: "user", content: `---TOOL ERROR: invalid_tool_call---\n${part.state.error}` });
         for (const lifecyclePart of this._lifecycle.finishStep("tool-error")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
         }
@@ -514,7 +600,7 @@ export class LoopMethods {
             yield scoped({ type: "stream", token: remaining });
           }
         }
-        this._messages.push({ role: "assistant", content: this._secretStore.protect(visibleReply, runId, turnId) });
+        this._appendMessage({ role: "assistant", content: this._secretStore.protect(visibleReply, runId, turnId) });
         yield scoped({ type: "context-usage", usage: this.contextUsage() });
         this._clearPendingAction();
         for (const lifecyclePart of this._lifecycle.finishStep("stop")) {
@@ -554,7 +640,7 @@ export class LoopMethods {
         yield scoped({ type: "tool-call", tool: tool.name, args: { ...tool.args }, callId: tool.id });
       }
       if (!isRunActive()) return;
-      this._messages.push({
+      this._appendMessage({
         role: "assistant",
         content: null,
         tool_calls: [{
@@ -585,7 +671,12 @@ export class LoopMethods {
       if (tool.name === "todowrite" && part.state.status === "completed") {
         const todos = Array.isArray(part.state.metadata?.todos) ? part.state.metadata.todos : [];
         const plan = this._definePlan(todos, run);
-        if (plan) yield scoped({ type: "plan", items: plan.map(item => ({ ...item })) });
+        if (plan) yield scoped({
+          type: "plan",
+          items: plan.map(item => ({ ...item })),
+          planId: this._planId,
+          currentStepId: this._currentStepId,
+        });
       }
       const protectedResult = this._secretStore.protect(result, runId, turnId);
       result = this._secretStore.redact(protectedResult);
@@ -618,12 +709,7 @@ export class LoopMethods {
       this._lastToolIsRead = ["read", "glob", "grep"].includes(tool.name);
       this._lastToolWasExecuted = true;
       if (tool.name === "write") this._totalWrites++;
-      this._messages.push({
-        role: "tool",
-        tool_call_id: part.callId,
-        name: tool.name,
-        content: protectedResult,
-      });
+      this._pushToolMessage(tool.name, part.callId, protectedResult);
       yield scoped({ type: "context-usage", usage: this.contextUsage() });
       if (["read", "glob", "grep"].includes(tool.name)) {
         const sig = `${tool.name}:${JSON.stringify(tool.args)}`;
@@ -658,6 +744,20 @@ export class LoopMethods {
         this._compactionThresholdCrossed = false;
       }
       if (
+        projectedRatio !== null
+        && projectedRatio >= emergencyThreshold
+        && !this._compactionThresholdCrossed
+        && this._scheduleCompaction(run, "emergency")
+      ) {
+        this._compactionThresholdCrossed = true;
+        yield scoped({
+          type: "compaction-state",
+          status: "scheduled",
+          compactionId: this._compaction.compactionId,
+          startedAt: this._compaction.startedAt,
+          usage: this.contextUsage(),
+        });
+      } else if (
         projectedRatio !== null
         && projectedRatio >= this._config.compactThreshold
         && !this._compactionThresholdCrossed

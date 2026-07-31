@@ -71,6 +71,10 @@ export function planToolIsReadOnly(call, definition = null) {
     " ",
   );
   if (/(?:^|\s)\d*(?:>>?)\s*[^\s&]/.test(withoutSafeDevices)) return false;
+  const segments = command.split(/\s*(?:&&|\|\||;)\s*/).map(s => s.trim()).filter(Boolean);
+  if (segments.length > 1) {
+    return segments.every(segment => inspectionCommand(segment));
+  }
   return inspectionCommand(command);
 }
 

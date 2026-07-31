@@ -204,6 +204,54 @@ test("prefixed plan rows keep a fixed content column at narrow widths", async ()
   }
 });
 
+test("a long Plan title renders as one wrapped Plan item", async () => {
+  const title = "session.js: finalize init generation exactly once at finish event, stop shimmer immediately";
+  const plan = [{ status: "running", stepId: "step-2", description: title }];
+  const frame = await renderComponent(h(PlanList, { plan }), 40, 30);
+  const lines = frame.split("\n").filter(Boolean);
+  const markers = lines.filter(line => /^\[[ ✓•×]\]/.test(line));
+  assert.equal(markers.length, 1, frame);
+  assert.match(markers[0], /^\[•\]/);
+  const contentLines = lines.filter(line => !/^\[[ ✓•×]\]/.test(line) && !/^Plan \d/.test(line) && line.trim());
+  assert.ok(contentLines.length >= 2, frame);
+  assert.ok(contentLines.every(line => {
+    const indent = line.search(/\S/);
+    return indent >= 4 && indent <= 5;
+  }), frame);
+  const wrapped = [markers[0].replace(/^\[[ ✓•×]\]\s*/, ""), ...contentLines.map(line => line.trim())].join(" ");
+  assert.ok(wrapped.startsWith("session.js: finalize init generation"), frame);
+  assert.ok(wrapped.includes("stop shimmer immediately"), frame);
+});
+
+test("Plan titles never become React keys and full titles survive rendering", async () => {
+  const title = "session.js: finalize init generation exactly once at finish event, stop shimmer immediately";
+  const plan = [
+    { status: "done", stepId: "step-1", planId: "plan-1", description: "Fix parseInitResult: fenced and plain Markdown extraction" },
+    { status: "running", stepId: "step-2", planId: "plan-1", description: title },
+    { status: "pending", stepId: "step-3", planId: "plan-1", description: "Restructure finalizer and state transition" },
+  ];
+  const wide = await renderComponent(h(PlanList, { plan }), 100, 30);
+  assert.ok(wide.includes(title), "the complete Plan title must remain visible at wide widths");
+  const frame = await renderComponent(h(PlanList, { plan }), 100, 30);
+  assert.equal((frame.match(/\[✓\]|\[•\]|\[ \]|\[×\]/g) || []).length, 3, frame);
+  assert.equal(frame.match(new RegExp(title.split(/\s+/).slice(0, 4).join("\\s+"), "g"))?.length, 1, frame);
+});
+
+test("terminal resize never duplicates Plan rows or splits markers", async () => {
+  const plan = [
+    { status: "done", description: "Read app/agent.js" },
+    { status: "running", stepId: "s2", description: "Implement token masking utility" },
+    { status: "pending", description: "Add intent resolver logic" },
+  ];
+  for (const width of [30, 40, 60, 80]) {
+    const frame = await renderComponent(h(PlanList, { plan }), width, 30);
+    const lines = frame.split("\n").filter(Boolean);
+    const markers = lines.filter(line => /^\[[ ✓•×]\]/.test(line));
+    assert.equal(markers.length, 3, `${width}: ${frame}`);
+    assert.ok(markers.every(line => line.startsWith("[") && line.indexOf("]") === 2), `${width}: ${frame}`);
+  }
+});
+
 test("numbered lists reserve one content column for one and two digit markers", async () => {
   const content = [
     "1. First item with a long description that wraps onto another line.",

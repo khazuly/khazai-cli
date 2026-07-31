@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useStdin } from "ink";
+import { useStdin, useStdout } from "ink";
 import { canonicalCommand } from "../commands.js";
 
 export const COMMAND_VIEWPORT_SIZE = 6;
@@ -70,6 +70,14 @@ export function useCommandBoundaryKeys(enabled, lastIndex, selectIndex) {
 }
 
 export function useCommandViewport(items, resetKey) {
+  const { stdout } = useStdout();
+  const [columns, setColumns] = useState(stdout?.columns || 80);
+  useEffect(() => {
+    const handleResize = () => setColumns(stdout?.columns || 80);
+    stdout?.on?.("resize", handleResize);
+    return () => stdout?.off?.("resize", handleResize);
+  }, [stdout]);
+  const resetKeyWithWidth = `${resetKey}\u0001w:${columns}`;
   const [selectedIndex, setSelectedIndex] = useState(() => items.length ? 0 : -1);
   const [scrollOffset, setScrollOffset] = useState(0);
   const selectedIndexRef = useRef(selectedIndex);
@@ -88,7 +96,7 @@ export function useCommandViewport(items, resetKey) {
       scrollOffsetRef.current = 0;
       setScrollOffset(0);
     }
-  }, [resetKey, itemCount]);
+  }, [resetKeyWithWidth, itemCount]);
 
   const selectIndex = requestedIndex => {
     const nextIndex = clampIndex(requestedIndex, itemCount);

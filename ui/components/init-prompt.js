@@ -36,7 +36,7 @@ const MODES = {
   failed: {
     title: "AGENTS.md generation failed",
     options: [
-      { label: "Retry", value: "retry" },
+      { label: "Retry generation", value: "regenerate" },
       { label: "Change model", value: "model" },
       { label: "Cancel", value: "cancel" },
     ],
@@ -243,7 +243,7 @@ export function InitPrompt({
 
     mode === "failed"
       ? h(Box, { flexDirection: "column", marginTop: 1 },
-          h(Text, { color: theme.error, bold: true }, "[×] AGENTS.md generation failed."),
+          h(Text, { color: theme.error, bold: true }, "[×] Generated AGENTS.md could not be prepared."),
           error ? h(Text, { color: theme.muted, wrap: "wrap", marginTop: 1 }, error) : null,
         )
       : h(Box, { flexDirection: "column" },

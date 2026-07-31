@@ -490,13 +490,29 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
   const rangeEnd = total > COMMAND_VIEWPORT_SIZE
     ? Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, total)
     : null;
+  const { stdout } = useStdout();
+  const terminalWidth = Math.max(24, stdout?.columns || 80);
+  const dropdownWidth = Math.max(24, Math.min(72, terminalWidth - 2));
+  const markerColumn = 2;
+  const commandColumn = Math.max(
+    3,
+    Math.min(
+      24,
+      ...commandResults.map(item => String(item.name || "").length),
+    ),
+  );
+  const descriptionWidth = Math.max(8, dropdownWidth - markerColumn - commandColumn - 3);
 
 
   const renderItems = () => {
+    const renderRow = (item, index) =>
+      renderCommandRow(item, commandViewport, index, inSubMode, activeModel, theme, {
+        markerColumn,
+        commandColumn,
+        descriptionWidth,
+      });
     if (inSubMode) {
-      return commandViewport.visibleItems.map((item, i) =>
-        renderCommandRow(item, commandViewport, i, inSubMode, activeModel, theme)
-      );
+      return commandViewport.visibleItems.map((item, i) => renderRow(item, i));
     }
 
 
@@ -521,7 +537,7 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
           );
         }
       }
-      rows.push(renderCommandRow(item, commandViewport, i, inSubMode, activeModel, theme));
+      rows.push(renderRow(item, i));
       currentCategoryCount++;
     }
     return rows;
@@ -531,7 +547,7 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
     flexDirection: "column",
     marginLeft: 2,
     marginBottom: 1,
-    width: Math.max(24, Math.min(72, (process.stdout.columns || 80) - 2)),
+    width: dropdownWidth,
   },
     h(Text, { color: theme.metadata, bold: false },
       label,
@@ -541,17 +557,24 @@ function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, 
   );
 }
 
-function renderCommandRow(item, viewport, localIndex, inSubMode, activeModel, theme) {
+function renderCommandRow(item, viewport, localIndex, inSubMode, activeModel, theme, layout) {
   const selected = viewport.scrollOffset + localIndex === viewport.selectedIndex;
   const name = item.name || "";
-  const desc = inSubMode ? item.description || "" : item.description || "";
+  const desc = item.description || "";
   const isActive = inSubMode && item.name === activeModel;
-  return h(Box, { key: name, flexShrink: 0 },
-    h(Text, {
-      color: selected ? theme.secondary : undefined,
-      bold: selected || isActive,
-    }, selected ? "› " : "  ", name),
-    desc ? h(Text, { dimColor: true, wrap: "truncate-end" }, "  ", desc) : null,
-    isActive ? h(Text, { dimColor: true }, "  (active)") : null,
+  const width = layout?.descriptionWidth || 0;
+  return h(Box, { key: name, flexShrink: 0, width: "100%" },
+    h(Box, { width: layout?.markerColumn || 2, flexShrink: 0 },
+      h(Text, { color: selected ? theme.secondary : undefined, bold: selected }, selected ? "›" : " "),
+    ),
+    h(Box, { flexShrink: 0, marginRight: 2 },
+      h(Text, { color: selected ? theme.secondary : undefined, bold: selected || isActive }, name),
+    ),
+    desc
+      ? h(Box, { flexGrow: 1, minWidth: 0, width },
+        h(Text, { dimColor: true, wrap: "truncate-end" }, desc),
+      )
+      : null,
+    isActive ? h(Box, { flexShrink: 0 }, h(Text, { dimColor: true }, "(active)")) : null,
   );
 }

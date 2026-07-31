@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement as h } from "react";
-import { workingShimmerMask } from "../ui/components/activity-bar.js";
+import { render } from "ink";
+import { deriveActivityLabel, workingShimmerMask } from "../ui/components/activity-bar.js";
 import { SessionFooter } from "../ui/components/session-footer.js";
 import { SPINNER_FRAMES } from "../ui/components/status-bar.js";
-import { renderComponent } from "./helpers/ink-render.js";
+import { renderComponent, TerminalInput, TerminalOutput, stripAnsi } from "./helpers/ink-render.js";
 
 const promptProps = { onSubmit() {}, onCommand() {}, commands: [] };
 
@@ -86,6 +87,119 @@ test("init mode shows only the four high-level activity phases", async () => {
     promptProps,
   }), 72, 12);
   assert.match(preparing, /Preparing preview/);
+});
+
+test("the AGENTS.md shimmer stops as soon as generation finalizes", async () => {
+  const idle = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: null,
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.doesNotMatch(idle, /Generating AGENTS\.md/);
+
+  const waiting = await renderComponent(h(SessionFooter, {
+    running: false,
+    modeStatus: null,
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.doesNotMatch(waiting, /Generating AGENTS\.md/);
+});
+
+test("one hundred animation frames still produce only one ActivityBar row", async () => {
+  for (let frame = 0; frame < 100; frame++) {
+    const mask = workingShimmerMask(frame, "Working");
+    assert.equal(mask.length, 7);
+    assert.equal(mask.filter(Boolean).length, 2);
+  }
+  const stdout = new TerminalOutput(72, 14);
+  const stdin = new TerminalInput();
+  const instance = render(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "init", status: "generating" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
+  await new Promise(resolve => setTimeout(resolve, 420));
+  const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).filter(frame => frame.trim());
+  assert.ok(frames.length >= 4, `expected several shimmer frames, got ${frames.length}`);
+  for (const frame of frames) {
+    assert.equal((frame.match(/Generating AGENTS\.md/g) || []).length, 1, frame);
+    assert.equal((frame.match(/Esc cancel/g) || []).length, 1, frame);
+  }
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
+test("elapsed-time updates never append conversation or activity rows", async () => {
+  const startedAt = Date.now() - 5 * 60_000;
+  const stdout = new TerminalOutput(72, 14);
+  const stdin = new TerminalInput();
+  const instance = render(h(SessionFooter, {
+    running: true,
+    contextUsage: {
+      currentContextTokens: 91_000,
+      contextLimit: 100_000,
+      compactionStatus: "summarizing",
+      compactionStartedAt: startedAt,
+    },
+    model: "big-cock",
+    promptProps,
+  }), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
+  await new Promise(resolve => setTimeout(resolve, 1_350));
+  const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).filter(frame => frame.trim());
+  assert.ok(frames.length >= 8, `expected elapsed ticks, got ${frames.length}`);
+  for (const frame of frames) {
+    assert.equal((frame.match(/Compacting context/g) || []).length, 1, frame);
+    assert.equal((frame.match(/Ask anything\.\.\./g) || []).length, 1, frame);
+  }
+  const times = frames.map(frame => (frame.match(/Compacting context · (\d+s)/) || [])[1]).filter(Boolean);
+  assert.ok(times.length >= 2, "elapsed seconds must tick without appending rows");
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
+test("ActivityBar displays a concise derived label that never wraps", () => {
+  const label = deriveActivityLabel(
+    "session.js: finalize init generation exactly once at finish event, stop shimmer immediately"
+  );
+  assert.equal(label, "Finalizing init generation");
+  assert.ok(label.length <= 48);
+  assert.ok(!label.includes("\n"));
+  assert.equal(deriveActivityLabel("Fix parseInitResult: fenced and plain Markdown extraction"), "Fixing parseInitResult");
+  assert.equal(deriveActivityLabel("session.js: restructure finalizer and state transition"), "Restructuring finalizer");
+  for (let frame = 0; frame < 100; frame++) {
+    assert.equal(deriveActivityLabel("session.js: finalize init generation exactly once at finish event, stop shimmer immediately"), label);
+  }
+});
+
+test("prompt input and footer remain stationary while activity ticks", async () => {
+  const startedAt = Date.now() - 12_000;
+  const renderFooter = () => renderComponent(h(SessionFooter, {
+    running: true,
+    contextUsage: {
+      currentContextTokens: 91_000,
+      contextLimit: 100_000,
+      compactionStatus: "summarizing",
+      compactionStartedAt: startedAt,
+    },
+    model: "big-cock",
+    promptProps,
+  }), 72, 14);
+  const first = await renderFooter();
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const second = await renderFooter();
+  const promptLine = frame => frame.split("\n").find(line => line.includes("Ask anything...")) || "";
+  const footerLine = frame => frame.split("\n").find(line => line.includes("big-cock")) || "";
+  assert.ok(promptLine(first));
+  assert.equal(promptLine(first), promptLine(second));
+  assert.equal(footerLine(first), footerLine(second));
 });
 
 test("idle, queued, compaction, and unknown context layouts remain intact", async () => {

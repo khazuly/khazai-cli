@@ -103,7 +103,7 @@ export const COMMANDS = [
   ] },
 
 
-  { name: "/init", description: "Inspect with the active model and generate AGENTS.md", category: "workspace", aliases: [], visible: true, group: "settings", sub: [
+  { name: "/init", description: "Inspect with the active model and generate AGENTS.md", category: "workspace", aliases: ["/ini"], visible: true, group: "settings", sub: [
     { name: "preview", description: "Generate and preview without writing" },
     { name: "update", description: "Update an existing file while preserving custom rules" },
     { name: "basic", description: "Generate a basic template without AI" },

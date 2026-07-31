@@ -23,6 +23,7 @@ export const DEFAULTS = {
   maxTurns: 200,
   tokenBudget: 24000,
   contextLimit: null,
-  compactThreshold: 0.9,
+  compactThreshold: 0.8,
+  emergencyCompactThreshold: 0.92,
   apiKey: "",
 };

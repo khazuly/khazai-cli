@@ -1,7 +1,7 @@
-import { createElement as h } from "react";
-import { Text, Box } from "ink";
+import { createElement as h, memo } from "react";
+import { Text, Box, useStdout } from "ink";
+import stringWidth from "string-width";
 import { useTheme } from "../theme.js";
-import { PrefixRow } from "./surface.js";
 
 export function planItemPresentation(status) {
   if (["done", "completed"].includes(status)) return { indicator: "[✓]", colorRole: "success" };
@@ -14,10 +14,30 @@ export function completedPlanCount(plan) {
   return (Array.isArray(plan) ? plan : []).filter(item => ["done", "completed"].includes(item.status)).length;
 }
 
-export function PlanList({ plan }) {
+export function planItemKey(planId, item, index) {
+  return `${planId || "plan"}:${item?.stepId || item?.id || index}`;
+}
+
+export function visiblePlanTitle(title, columns = 80) {
+  const text = String(title || "");
+  const budget = Math.max(12, (Math.max(20, columns) - 6) * 3);
+  if (stringWidth(text) <= budget) return text;
+  let visible = "";
+  for (const word of text.split(/\s+/)) {
+    const candidate = visible ? `${visible} ${word}` : word;
+    if (stringWidth(candidate) > budget) break;
+    visible = candidate;
+  }
+  return visible ? `${visible}…` : `${text.slice(0, Math.max(1, budget - 1)).trim()}…`;
+}
+
+function PlanListInner({ plan, planId: planIdProp }) {
   const theme = useTheme();
+  const { stdout } = useStdout();
   if (!plan || plan.length === 0) return null;
   const finished = completedPlanCount(plan);
+  const planId = planIdProp || plan.find(item => item.planId)?.planId || "plan";
+  const columns = stdout?.columns || 80;
 
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Box, {},
@@ -26,14 +46,23 @@ export function PlanList({ plan }) {
     ),
     h(Box, { flexDirection: "column", marginTop: 1 },
       ...plan.map((item, index) => {
-        const status = item.status === "running" && plan.findIndex(entry => entry.status === "running") !== index
-          ? "pending"
-          : item.status;
-        const { indicator, colorRole } = planItemPresentation(status);
-        return h(PrefixRow, { key: `${index}-${item.description}`, prefix: indicator, prefixColor: theme[colorRole] },
-          h(Text, { color: theme.text, wrap: "wrap" }, item.description),
+        const { indicator, colorRole } = planItemPresentation(item.status);
+        const title = item.description || item.text || item.content || item.title || "";
+        return h(Box, {
+          key: planItemKey(planId, item, index),
+          flexDirection: "row",
+          width: "100%",
+        },
+          h(Box, { width: 4, flexShrink: 0 },
+            h(Text, { color: theme[colorRole], wrap: "truncate-end" }, indicator),
+          ),
+          h(Box, { flexGrow: 1, minWidth: 0 },
+            h(Text, { color: theme.text, wrap: "wrap" }, visiblePlanTitle(title, columns)),
+          ),
         );
-      })
-    )
+      }),
+    ),
   );
 }
+
+export const PlanList = memo(PlanListInner);

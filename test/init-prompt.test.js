@@ -164,8 +164,8 @@ test("failed mode shows the concise error and retry options", async () => {
   });
   await new Promise(resolve => setTimeout(resolve, 45));
   const frame = latestFrame(stdout);
-  assert.match(frame, /\[×\] AGENTS\.md generation failed\./);
-  assert.match(frame, /› Retry/);
+  assert.match(frame, /\[×\] Generated AGENTS\.md could not be prepared\./);
+  assert.match(frame, /› Retry generation/);
   assert.match(frame, /Change model/);
   unmount();
 });
@@ -177,5 +177,65 @@ test("warnings are displayed in the preview", async () => {
   });
   await new Promise(resolve => setTimeout(resolve, 45));
   assert.match(latestFrame(stdout), /npm run build/);
+  unmount();
+});
+
+test("failed mode retry regenerates instead of cancelling", async () => {
+  let regenerated = false;
+  let cancelled = false;
+  const { settle, press, unmount } = mount({
+    ...BASE_PROPS,
+    mode: "failed",
+    error: "The model response was not structured JSON or Markdown.",
+    onRegenerate: () => { regenerated = true; },
+    onCancel: () => { cancelled = true; },
+  });
+  await settle();
+  await press("\r");
+  assert.equal(regenerated, true);
+  assert.equal(cancelled, false);
+  unmount();
+});
+
+test("failed mode change model stays selectable and escape cancels without writing", async () => {
+  let modelChanged = false;
+  let written = false;
+  let cancelled = false;
+  const first = mount({
+    ...BASE_PROPS,
+    mode: "failed",
+    error: "AGENTS.md generation timed out.",
+    onWrite: () => { written = true; },
+    onChangeModel: () => { modelChanged = true; },
+  });
+  await first.settle();
+  await first.press("\u001b[B");
+  await first.press("\r");
+  assert.equal(modelChanged, true);
+  assert.equal(written, false);
+  first.unmount();
+
+  const second = mount({
+    ...BASE_PROPS,
+    mode: "failed",
+    error: "Generated AGENTS.md could not be prepared.",
+    onWrite: () => { written = true; },
+    onCancel: () => { cancelled = true; },
+  });
+  await second.settle();
+  await second.press("\u001b");
+  assert.equal(cancelled, true);
+  assert.equal(written, false);
+  second.unmount();
+});
+
+test("confirm triggers a single write even with repeated enter presses", async () => {
+  let writes = 0;
+  const { settle, press, unmount } = mount({ ...BASE_PROPS, onWrite: () => { writes++; } });
+  await settle();
+  await press("\r");
+  await press("\r");
+  await press("\r");
+  assert.equal(writes, 1);
   unmount();
 });

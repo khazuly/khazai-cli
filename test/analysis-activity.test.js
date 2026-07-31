@@ -17,6 +17,7 @@ import {
 import { createPublicActivityChannel } from "../app/public-activity.js";
 import { MessageList } from "../ui/components/message-list.js";
 import { ThemeProvider } from "../ui/theme.js";
+import { render } from "ink";
 import {
   appendResponseDelta,
   commitResponseBuffer,
@@ -26,7 +27,7 @@ import {
   resetResponseBuffer,
   terminalRunResult,
 } from "../ui/session-runtime.js";
-import { renderComponent } from "./helpers/ink-render.js";
+import { renderComponent, TerminalInput, TerminalOutput, stripAnsi } from "./helpers/ink-render.js";
 
 const scope = { runId: "run-1", turnId: "turn-1" };
 
@@ -190,6 +191,54 @@ test("stale run and turn updates are ignored", () => {
   assert.equal(analysisEventIsCurrent({ type: "thinking" }, scope), true);
   assert.equal(clearAnalysisActivity(state, staleRun), state);
   assert.equal(clearAnalysisActivity(state, scope), null);
+});
+
+test("a stale step update cannot modify the current activity", () => {
+  const state = startAnalysisActivity(initialState(), scope, {
+    text: "Finalizing init generation",
+    step: "Step 2 of 7",
+  }, 1_000);
+  const staleStep = updateAnalysisActivity(state, { ...scope, runId: "run-old" }, {
+    text: "Stale step title",
+    step: "Step 9 of 9",
+  });
+  assert.equal(staleStep, state);
+  const staleEpoch = updateAnalysisActivity(state, { ...scope, taskEpoch: 99 }, {
+    text: "Stale epoch title",
+  });
+  assert.equal(staleEpoch, state);
+  const current = updateAnalysisActivity(state, scope, {
+    text: "Restructuring finalizer",
+    step: "Step 3 of 7",
+  });
+  assert.equal(current.text, "Restructuring finalizer");
+  assert.equal(current.step, "Step 3 of 7");
+  const message = analysisActivityMessage(current);
+  assert.equal(message.id, "analysis-turn-1");
+});
+
+test("elapsed ticks update one live think row in place", async () => {
+  const state = startAnalysisActivity(initialState(), scope, {
+    text: "Finalizing init generation",
+    step: "Step 2 of 7",
+  }, Date.now() - 61_000);
+  const message = analysisActivityMessage(state);
+  const stdout = new TerminalOutput(72, 20);
+  const stdin = new TerminalInput();
+  const instance = render(h(ThemeProvider, { name: "system" },
+    h(MessageList, { messages: [message] })
+  ), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
+  await new Promise(resolve => setTimeout(resolve, 1_350));
+  const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).filter(frame => frame.trim());
+  assert.ok(frames.length >= 2, `expected elapsed ticks, got ${frames.length}`);
+  for (const frame of frames) {
+    assert.equal((frame.match(/Finalizing init generation/g) || []).length, 1, frame);
+    assert.equal((frame.match(/Step 2 of 7/g) || []).length, 1, frame);
+    assert.doesNotMatch(frame, /finish event, stop shimmer immediately/, "full Plan title must never appear");
+  }
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
 });
 
 test("completed analysis renders one compact aggregate row", async () => {

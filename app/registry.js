@@ -6,6 +6,7 @@ export class Registry {
   constructor() {
     this._tools = new Map();
     this._aliases = new Map();
+    this._revision = 0;
     this._hooks = {
       "tool.definition": [],
       "tool.execute.before": [],
@@ -13,6 +14,7 @@ export class Registry {
     };
     this.errors = [];
   }
+  get revision() { return this._revision; }
   register(t) {
     const name = String(t?.name || t?.id || "");
     if (!name) throw new TypeError("Invalid tool definition");
@@ -20,6 +22,7 @@ export class Registry {
     for (const alias of Array.isArray(t.aliases) ? t.aliases : []) {
       this.registerAlias(alias, name);
     }
+    this._revision++;
     return this;
   }
   registerAlias(alias, canonicalName) {
@@ -29,6 +32,7 @@ export class Registry {
       throw new TypeError("Invalid tool alias");
     }
     this._aliases.set(name, canonical);
+    this._revision++;
     return this;
   }
   resolveName(name) {

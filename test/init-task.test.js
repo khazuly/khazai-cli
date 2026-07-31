@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../app/agent.js";
@@ -16,7 +16,20 @@ import {
   validateEvidenceReferences,
   validateInitResult,
 } from "../lib/init-task.js";
-import { mergeExistingContent } from "../ui/session.js";
+import { writeAtomicFile } from "../lib/init-generator.js";
+import {
+  appendResponseDelta,
+  commitResponseBuffer,
+  createResponseBuffer,
+  discardResponseBuffer,
+} from "../ui/session-runtime.js";
+import {
+  initFailedState,
+  initPreviewIsCurrent,
+  initPreviewState,
+  initValidatingState,
+  mergeExistingContent,
+} from "../ui/session.js";
 
 function fixtureWorkspace() {
   const root = mkdtempSync(join(tmpdir(), "khazai-init-"));
@@ -252,4 +265,130 @@ test("init agent inspects with read-only tools and returns a structured result",
   assert.equal(preview.ok, true);
   assert.match(preview.markdown, /Project Overview/);
   assert.ok(preview.warnings.every(warning => !warning.includes("npm run test")));
+});
+
+test("a streamed Markdown response finishes and opens the preview", () => {
+  const root = fixtureWorkspace();
+  const evidence = collectInitEvidence(root);
+  const scope = { runId: "run-1", turnId: "turn-1", taskEpoch: 1 };
+  const markdown = "# Project Overview\n\nFixture app.\n\n# Development Commands\n\nRun `npm run test`.";
+  let buffer = createResponseBuffer(scope);
+  for (let offset = 0; offset < markdown.length; offset += 13) {
+    buffer = appendResponseDelta(buffer, scope, markdown.slice(offset, offset + 13));
+  }
+  const committed = commitResponseBuffer(buffer, scope);
+  assert.ok(committed.response, "the streamed response must be committed once");
+  assert.match(committed.response.content, /^# Project Overview/);
+  const repeated = commitResponseBuffer(committed.state, scope);
+  assert.equal(repeated.response, null, "a second commit must not finalize again");
+
+  const validating = initValidatingState({
+    content: committed.response.content,
+    evidence,
+    workspaceRoot: root,
+    generationId: 1,
+  });
+  assert.equal(validating.status, "validating");
+  assert.ok(validating.generatedMarkdown.startsWith("# Project Overview"));
+  assert.ok(validating.inspectedFiles.length > 0);
+  assert.equal(validating.workspaceRoot, root);
+
+  const prepared = prepareInitPreview({ content: validating.generatedMarkdown, evidence });
+  assert.equal(prepared.ok, true);
+
+  const preview = initPreviewState({
+    prepared,
+    evidence,
+    workspaceRoot: validating.workspaceRoot,
+    generationId: 1,
+    mode: "create",
+    proposedContent: prepared.markdown,
+    existing: null,
+    existingPath: prepared.existingPath,
+  });
+  assert.equal(preview.status, "previewing");
+  assert.equal(preview.previewVisible, true);
+  assert.equal(preview.generatedMarkdown, prepared.markdown);
+  assert.ok(preview.wordCount > 0);
+  assert.equal(preview.inspectedCount, validating.inspectedFiles.length);
+});
+
+test("plain Markdown opens the preview without JSON parsing", () => {
+  const root = fixtureWorkspace();
+  const markdown = "# Project Overview\n\nFixture app.\n\n# Development Commands\n\nRun `npm run test`.";
+  const parsed = parseInitResult(markdown);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.result.generatedMarkdown, markdown);
+  const prepared = prepareInitPreview({ content: markdown, evidence: collectInitEvidence(root) });
+  assert.equal(prepared.ok, true);
+  assert.match(prepared.markdown, /^# Project Overview/);
+});
+
+test("fenced Markdown is extracted correctly", () => {
+  const source = "```markdown\n# Project Overview\n\nDemo content.\n```";
+  const parsed = parseInitResult(source);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.result.generatedMarkdown, "# Project Overview\n\nDemo content.");
+  const fenced = parseInitResult("Here is the file:\n\n```md\n# Project Overview\n\nDemo content.\n```");
+  assert.equal(fenced.ok, true);
+  assert.equal(fenced.result.generatedMarkdown, "# Project Overview\n\nDemo content.");
+});
+
+test("a normal agent finalizer cannot clear the initialization preview", () => {
+  const root = fixtureWorkspace();
+  const evidence = collectInitEvidence(root);
+  const scope = { runId: "run-1", turnId: "turn-1", taskEpoch: 1 };
+  const markdown = "# Project Overview\n\nFixture app.";
+  let buffer = createResponseBuffer(scope);
+  buffer = appendResponseDelta(buffer, scope, markdown);
+  const committed = commitResponseBuffer(buffer, scope);
+  const prepared = prepareInitPreview({ content: committed.response.content, evidence });
+  assert.equal(prepared.ok, true);
+  const preview = initPreviewState({
+    prepared,
+    evidence,
+    workspaceRoot: root,
+    generationId: 1,
+    mode: "create",
+    proposedContent: prepared.markdown,
+    existing: null,
+    existingPath: prepared.existingPath,
+  });
+  const cleaned = discardResponseBuffer(committed.state, scope);
+  assert.equal(cleaned.finalCommitted, true);
+  const after = prepareInitPreview({ content: committed.response.content, evidence });
+  assert.equal(after.ok, true);
+  assert.equal(preview.status, "previewing");
+  assert.equal(preview.previewVisible, true);
+});
+
+test("a stale generation callback cannot open a preview", () => {
+  assert.equal(initPreviewIsCurrent(3, 2), false);
+  assert.equal(initPreviewIsCurrent(3, 3), true);
+  assert.equal(initPreviewIsCurrent(3, undefined), true);
+  assert.equal(initPreviewIsCurrent(3, 0), false);
+});
+
+test("invalid output enters a visible failed state", () => {
+  assert.equal(parseInitResult("just some prose").ok, false);
+  const prepared = prepareInitPreview({ content: "just some prose", evidence: null });
+  assert.equal(prepared.ok, false);
+  const failed = initFailedState({
+    error: `Generated AGENTS.md could not be prepared. ${prepared.error}`,
+    generationId: 1,
+    evidence: null,
+    workspaceRoot: "/tmp/demo",
+  });
+  assert.equal(failed.mode, "failed");
+  assert.equal(failed.previewVisible, true);
+  assert.match(failed.error, /^Generated AGENTS\.md could not be prepared\./);
+});
+
+test("confirm writes AGENTS.md atomically", () => {
+  const root = fixtureWorkspace();
+  const path = join(root, "AGENTS.md");
+  assert.equal(existsSync(path), false);
+  writeAtomicFile("# Project Overview\n\nFixture app.", path);
+  assert.equal(existsSync(path), true);
+  assert.match(readFileSync(path, "utf-8"), /^# Project Overview/);
 });

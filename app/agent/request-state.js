@@ -35,8 +35,11 @@ export function providerFailureContent(error, model = "Model") {
   if (failureClass === "unhealthy_tool_route") {
     return "[×] The selected model route is temporarily unavailable for tool calls.";
   }
-  if (failureClass === "unhealthy_model_route") {
-    return "[×] The selected model route is temporarily unavailable.";
+  if (failureClass === "unhealthy_model_route" || failureClass === "provider_infrastructure") {
+    const modelName = model && model !== "Model" ? String(model) : null;
+    return modelName
+      ? `[×] ${modelName} is temporarily unavailable.`
+      : "[×] Request failed · Model route temporarily unavailable";
   }
   if (status) {
     return `[×] ${model} provider returned HTTP ${status} after ${attempts} attempt${attempts === 1 ? "" : "s"}.`;
@@ -93,7 +96,8 @@ export function prepareProviderRetry(agent, scope = null) {
 export async function initializeAgentRequest(agent, input, signal, authorizedInput = input, scope = null) {
   agent._recoverableProviderRequest = null;
   agent._messages = completedConversationHistory(agent._messages);
-  agent._messages.push({ role: "user", content: input });
+  agent._historyRevision++;
+  agent._appendMessage({ role: "user", content: input });
   agent._requestStartIndex = agent._messages.length - 1;
   agent._currentRequest = input;
   agent._pendingAction = null;
@@ -116,6 +120,7 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._totalWrites = 0;
   agent._plan = null;
   agent._planId = null;
+  agent._currentStepId = null;
   agent._planIndex = 0;
   agent._lastToolResult = null;
   agent._toolCallHistory = [];

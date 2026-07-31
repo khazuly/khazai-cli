@@ -38,7 +38,7 @@ export class ToolMethods {
 
   _recordShellReuse(tool, decision) {
     const result = this._protectForContext(String(decision.result || ""));
-    this._messages.push({
+    this._appendMessage({
       role: "assistant",
       content: null,
       tool_calls: [{
@@ -47,12 +47,7 @@ export class ToolMethods {
         function: { name: tool.name, arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(tool.args))) },
       }],
     });
-    this._messages.push({
-      role: "tool",
-      tool_call_id: tool.id,
-      name: tool.name,
-      content: result,
-    });
+    this._pushToolMessage(tool.name, tool.id, result);
     this._toolEvidence.push({
       tool: tool.name,
       args: { ...tool.args },
@@ -66,7 +61,7 @@ export class ToolMethods {
 
   _finalizeShellBlocker(result) {
     const answer = String(result || "Shell execution is blocked.");
-    this._messages.push({ role: "assistant", content: answer });
+    this._appendMessage({ role: "assistant", content: answer });
     this._activeTask.pendingProblem = answer;
     this._lifecycle.finishStep("tool-error");
     this._clearPendingAction();
@@ -94,7 +89,7 @@ export class ToolMethods {
       this._lifecycle.finishStep("tool-calls");
       return true;
     }
-    this._messages.push({
+    this._appendMessage({
       role: "assistant",
       content: null,
       tool_calls: calls.map(call => ({
@@ -139,12 +134,7 @@ export class ToolMethods {
           failed: event.failed,
           metadata,
         });
-        this._messages.push({
-          role: "tool",
-          tool_call_id: event.call.id,
-          name: event.call.name,
-          content: result,
-        });
+        this._pushToolMessage(event.call.name, event.call.id, result);
         yield this._scopedToolEvent({ type: "context-usage", usage: this.contextUsage() }, executionScope);
         this._lastToolResult = result;
         this._activeTask.lastToolResult = result.slice(0, 1500);
@@ -153,7 +143,12 @@ export class ToolMethods {
       if (call.name === "todowrite" && completedPart?.state.status === "completed") {
         const todos = Array.isArray(completedPart.state.metadata?.todos) ? completedPart.state.metadata.todos : [];
         const plan = this._definePlan(todos, executionScope);
-        if (plan) yield this._scopedToolEvent({ type: "plan", items: plan.map(item => ({ ...item })) }, executionScope);
+        if (plan) yield this._scopedToolEvent({
+          type: "plan",
+          items: plan.map(item => ({ ...item })),
+          planId: this._planId,
+          currentStepId: this._currentStepId,
+        }, executionScope);
       }
       yield* this._finishPlanItem(
         planTracker,
@@ -179,13 +174,14 @@ export class ToolMethods {
     const contextLimit = effective.contextLimit;
     const source = effective.contextLimitSource;
     this._usageTracker.setContextLimitSource(source);
-    const context = this._buildContext();
-    const snapshot = this._usageTracker.snapshot(context, contextLimit, {
+    const entry = this._frame();
+    const snapshot = this._usageTracker.snapshot(entry.messages, contextLimit, {
       estimated: true,
       compactionStatus: this._compaction.status,
       compactionStartedAt: this._compaction.startedAt,
       stableTokens: this._compaction.stableTokens,
       historyRevision: this._historyRevision,
+      contextTokens: entry.jsonTokens,
     });
     snapshot.contextLimitSource = source;
     return snapshot;
@@ -195,8 +191,76 @@ export class ToolMethods {
     const usage = this.contextUsage();
     if (!usage.contextLimitKnown) return false;
     const ratio = usage.projectedRequestTokens / usage.contextLimit;
+    const emergency = Number(this._config.emergencyCompactThreshold) || 0.92;
+    if (ratio >= emergency) {
+      return this._compactMessages(true);
+    }
     if (ratio < this._config.compactThreshold) return false;
     return this._compactMessages(false);
+  }
+
+  /**
+   * Projects the normalized provider payload (messages + tool schemas) for
+   * the resolved route so the loop can compact at a safe boundary before
+   * dispatching instead of sending an oversized request first. Results are
+   * cached per history/model/tool-registry/capability revision so unchanged
+   * history is never re-normalized and re-serialized on every iteration.
+   */
+  async _projectProviderPayload(ctx, tools, model) {
+    const projectionKey = [
+      this._lastFrameKey || this._contextCacheKey(),
+      `m:${model}`,
+      `t:${this._registry.revision}`,
+      `c:${this._providerCapabilityRevision || 0}`,
+    ].join("|");
+    const cached = this._contextCache.projection(projectionKey);
+    if (cached) return cached;
+    const serializationStart = performance.now();
+    try {
+      const { estimateProviderPayload } = await import("../../lib/llm.js");
+      const projection = estimateProviderPayload(ctx, tools, model);
+      const effective = this._applyEffectiveSettings();
+      const limit = Number(projection.contextLimit
+        || effective.contextLimit
+        || this._providerContextLimit
+        || 0);
+      const result = {
+        tokens: Number(projection.tokens) || 0,
+        contextLimit: limit || null,
+        ratio: limit > 0 ? (Number(projection.tokens) || 0) / limit : null,
+      };
+      this._markLatencyDuration("serializationMs", serializationStart);
+      this._contextCache.setProjection(projectionKey, result);
+      return result;
+    } catch {
+      this._markLatencyDuration("serializationMs", serializationStart);
+      return { tokens: 0, contextLimit: null, ratio: null };
+    }
+  }
+
+  /**
+   * Builds the provider tool list once per model/agent/tool-registry
+   * revision. Definition hooks run at most once per revision; the mapped
+   * native schema list is reused until the registry or model changes.
+   */
+  async _toolSchemas(model, agent) {
+    const key = `${model}|${agent}|${this._registry.revision}`;
+    const cached = this._toolSchemaCache.get(key);
+    if (cached) return cached;
+    const schemaStart = performance.now();
+    const definitions = await this._registry.definitions({ model, agent, directory: this._workspace });
+    const nativeTools = definitions.map(tool => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: String(tool.description || ""),
+        parameters: tool.parameters || { type: "object", properties: {} },
+      },
+    }));
+    this._markLatencyDuration("toolSchemaBuildMs", schemaStart);
+    this._contextCache.stats.toolSchemaBuilds++;
+    this._toolSchemaCache.set(key, nativeTools);
+    return nativeTools;
   }
 
   _buildCompactedMessages(force = false) {
@@ -211,12 +275,23 @@ export class ToolMethods {
     if (this._messages.length < 2) return null;
 
     const target = contextLimit * (force ? 0.2 : 0.45);
+    const preserveTurns = Math.max(0, Number(this._config.preserveRecentTurns) || 0);
     let keptTokens = 0;
     let keepFrom = this._messages.length;
-    for (let index = this._messages.length - 1; index >= 0; index--) {
+    if (!force && preserveTurns > 0) {
+      let turns = 0;
+      for (let index = this._messages.length - 1; index >= 0 && turns < preserveTurns; index--) {
+        const message = this._messages[index];
+        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+        keepFrom = index;
+        keptTokens += this._contextCache.messageMeta(message).size;
+        if (message.role === "assistant" && message.content) turns++;
+      }
+    }
+    for (let index = keepFrom - 1; index >= 0; index--) {
       const message = this._messages[index];
-      const size = countTokens(String(message.content || ""))
-        + countTokens(JSON.stringify(message.tool_calls || []));
+      if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+      const size = this._contextCache.messageMeta(message).size;
       if (keptTokens > 0 && keptTokens + size > target) break;
       keptTokens += size;
       keepFrom = index;
@@ -230,9 +305,10 @@ export class ToolMethods {
       .join("\n")
       .slice(-6000);
 
+    const planBlock = this._preservePlanBlock();
     const newSummary = transcript
-      ? [this._summary, transcript].filter(Boolean).join("\n").slice(-8000)
-      : this._summary;
+      ? [this._summary, planBlock, transcript].filter(Boolean).join("\n").slice(-Math.max(512, this._maxSummaryChars()))
+      : [this._summary, planBlock].filter(Boolean).join("\n").slice(-Math.max(512, this._maxSummaryChars()));
 
     const kept = this._messages.slice(keepFrom);
     return {
@@ -240,6 +316,27 @@ export class ToolMethods {
       summary: newSummary,
       requestStartIndex: Math.max(0, this._requestStartIndex - keepFrom),
     };
+  }
+
+  _maxSummaryChars() {
+    return Math.max(512, (Number(this._config.maxCompactedSummarySize) || 2048) * 4);
+  }
+
+  _preservePlanBlock() {
+    const parts = [];
+    if (Array.isArray(this._plan) && this._plan.length) {
+      const step = this._currentStepId
+        ? this._plan.find(item => item.stepId === this._currentStepId)
+        : null;
+      parts.push(`Active plan: ${this._plan.length} step(s); current: ${step?.title || step?.description || this._currentStepId || "next"}`);
+    }
+    if (this._activeScope?.changedFiles?.length) {
+      parts.push(`Modified files: ${this._activeScope.changedFiles.join(", ")}`);
+    }
+    if (this._activeTask?.pendingProblem) {
+      parts.push(`Unresolved: ${String(this._activeTask.pendingProblem).slice(0, 500)}`);
+    }
+    return parts.length ? `\nContext state: ${parts.join(" · ")}` : "";
   }
 
   _compactMessages(force = false) {
@@ -250,6 +347,8 @@ export class ToolMethods {
     this._requestStartIndex = result.requestStartIndex;
     this._usageTracker.bumpHistoryRevision();
     this._historyRevision = this._usageTracker.historyRevision;
+    this._lastFrameEntry = null;
+    this._contextCache.reset();
     return true;
   }
 
@@ -304,8 +403,8 @@ export class ToolMethods {
     const command = String(input || "").slice(1).trim();
     if (!command) {
       const answer = "Enter a command after !.";
-      this._messages.push({ role: "user", content: input });
-      this._messages.push({ role: "assistant", content: answer });
+      this._appendMessage({ role: "user", content: input });
+      this._appendMessage({ role: "assistant", content: answer });
       yield { type: "stream", token: answer };
       yield { type: "stream-end" };
       return;
@@ -332,7 +431,7 @@ export class ToolMethods {
       currentPlan: [],
       changedFiles: [],
     };
-    this._messages.push({ role: "user", content: protectedInput });
+    this._appendMessage({ role: "user", content: protectedInput });
     this._requestStartIndex = this._messages.length - 1;
     this._toolEvidence = [];
     this._toolCallHistory = [];
@@ -349,7 +448,7 @@ export class ToolMethods {
     this._shellScheduler.reserve(call);
     yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
     if (!this._isActiveRun(executionScope)) return;
-    this._messages.push({
+    this._appendMessage({
       role: "assistant",
       content: null,
       tool_calls: [{
@@ -374,12 +473,7 @@ export class ToolMethods {
       }
     }
     if (!this._isActiveRun(executionScope)) return;
-    this._messages.push({
-      role: "tool",
-      tool_call_id: call.id,
-      name: call.name,
-      content: result.slice(0, 6000),
-    });
+    this._pushToolMessage(call.name, call.id, result);
     this._toolEvidence.push({ tool: "bash", args: call.args, result, failed, metadata: toolMetadata(call, result) });
     this._lastToolResult = result;
     this._activeTask.lastToolResult = result.slice(0, 1500);
@@ -390,82 +484,23 @@ export class ToolMethods {
     const answer = failed
       ? `Command finished with exit code ${exitCode ?? "unknown"}.`
       : `Command finished with exit code ${exitCode ?? "0"}.`;
-    this._messages.push({ role: "assistant", content: answer });
+    this._appendMessage({ role: "assistant", content: answer });
     this._finishLatency();
     yield { type: "stream", token: answer };
     yield { type: "stream-end" };
   }
 
   _buildContext() {
-    const sys = this._buildSystem();
-    const activeObjective = [
-      "ACTIVE TASK FOR THIS TURN:",
-      String(this._activeScope?.objective || this._currentRequest || ""),
-      "Treat every earlier task as completed historical context unless this user message explicitly requests continuation.",
-    ].join("\n");
-    const summary = this._summary
-      ? [{ role: "assistant", content: `Earlier conversation summary:\n${this._summary}` }]
-      : [];
-    const limit = this._applyEffectiveSettings().contextLimit || 0;
-
-
-    if (limit <= 0) {
-      const allMessages = this._messages
-        .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
-      const context = [
-        { role: "system", content: sys },
-        { role: "system", content: activeObjective },
-        ...summary,
-        ...allMessages,
-      ];
-      return this._secretStore.resolveSerializable(
+    const entry = this._frame();
+    let context = entry.messages;
+    if (entry.hasPlaceholders) {
+      context = this._secretStore.resolveSerializable(
         context,
         this._activeRun?.runId,
         this._activeRun?.turnId,
       );
     }
-
-
-    const boundary = Math.max(0, Math.min(this._requestStartIndex, this._messages.length));
-    const active = this._messages.slice(boundary)
-      .filter(message => !String(message.content || "").startsWith("[INTERNAL STEERING]"));
-    let used = countTokens(sys) + countTokens(activeObjective)
-      + countTokens(summary[0]?.content || "")
-      + active.reduce((total, message) => total
-        + countTokens(String(message.content || ""))
-        + countTokens(JSON.stringify(message.tool_calls || [])), 0);
-    const historical = [];
-    if (limit > 0) {
-      for (let index = boundary - 1; index >= 0; index--) {
-        const message = this._messages[index];
-        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-        const size = countTokens(String(message.content || ""))
-          + countTokens(JSON.stringify(message.tool_calls || []));
-        if (historical.length > 0 && used + size > limit) break;
-        historical.unshift(message);
-        used += size;
-      }
-      while (historical.length > 0 && historical[0]?.role === "tool") {
-        const idx = this._messages.indexOf(historical[0]);
-        if (idx > 0) {
-          historical.unshift(this._messages[idx - 1]);
-        } else {
-          historical.shift();
-        }
-      }
-    }
-    const context = [
-      { role: "system", content: sys },
-      { role: "system", content: activeObjective },
-      ...summary,
-      ...historical,
-      ...active,
-    ];
-    return this._secretStore.resolveSerializable(
-      context,
-      this._activeRun?.runId,
-      this._activeRun?.turnId,
-    );
+    return context;
   }
 
 

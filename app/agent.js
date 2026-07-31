@@ -17,7 +17,10 @@ import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
 import { createToolExecutor } from "./agent/tool-executor-factory.js";
 import { ContextUsageTracker } from "./context-usage.js";
+import { ContextCache } from "./context-cache.js";
 import { resolveEffectiveSettings } from "../config/model-settings.js";
+import { configRevision } from "../config/store.js";
+import { performance } from "node:perf_hooks";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
@@ -50,6 +53,7 @@ export class Agent {
     this._activeScope = null;
     this._plan = null;
     this._planId = null;
+    this._currentStepId = null;
     this._planIndex = 0;
     this._lastToolIsRead = false;
     this._depsInstalled = false;
@@ -117,6 +121,11 @@ export class Agent {
     this._resetSession = opts.resetSession || resetSession;
     this._recoverableProviderRequest = null;
     this._usageTracker = new ContextUsageTracker(opts.sessionState?.contextUsage);
+    this._contextCache = new ContextCache();
+    this._toolSchemaCache = new Map();
+    this._storedToolResults = new Map();
+    this._lastFrameEntry = null;
+    this._lastRequestMetrics = null;
     this._providerContextLimit = null;
     this._contextLimitSource = "unknown";
     this._sessionSettingOverrides = opts.sessionSettingOverrides || {};
@@ -197,6 +206,8 @@ export class Agent {
     }
     this._model = model;
     this._systemCache = null;
+    this._contextCache.reset();
+    this._toolSchemaCache.clear();
   }
   hasRecoverableProviderRequest() {
     return Boolean(
@@ -262,20 +273,171 @@ export class Agent {
     return true;
   }
 
+  /**
+   * Appends one canonical message and invalidates derived caches. All
+   * provider history is appended through this helper; nothing else touches
+   * `_messages` in production paths.
+   */
+  _appendMessage(message) {
+    this._messages.push(message);
+    this._lastFrameEntry = null;
+    return message;
+  }
+
+  _storedOutputReference(callId) {
+    return `khazai-output:${String(callId || "")}`;
+  }
+
+  _conciseToolContent(name, callId, content) {
+    const preview = Math.max(0, Number(this._config.toolResultPreviewSize) || 0);
+    const text = String(content ?? "");
+    if (preview <= 0 || text.length <= preview) {
+      return { stored: text, concise: text, truncated: false };
+    }
+    const reference = this._storedOutputReference(callId);
+    const concise = `[Tool result: ${name} · stored output ${reference}]\n${text.slice(0, preview)}\n…(full output available as ${reference})`;
+    return { stored: text, concise, truncated: true, reference };
+  }
+
+  /**
+   * Stores the full tool output outside active provider history and appends
+   * a concise structured result (excerpt + stored-output reference) to the
+   * canonical history. The full output stays available internally and in
+   * the persisted lifecycle parts shown by `/details`.
+   */
+  _pushToolMessage(name, callId, content) {
+    const { stored, concise, truncated, reference } = this._conciseToolContent(name, callId, content);
+    if (truncated) {
+      this._storedToolResults.set(String(callId || ""), stored);
+      if (this._storedToolResults.size > 200) {
+        const oldest = this._storedToolResults.keys().next().value;
+        if (oldest !== undefined) this._storedToolResults.delete(oldest);
+      }
+    }
+    void reference;
+    this._appendMessage({
+      role: "tool",
+      tool_call_id: callId,
+      name,
+      content: concise,
+    });
+    return stored;
+  }
+
+  _contextCacheKey() {
+    const last = this._messages.at(-1) || null;
+    const fingerprint = last
+      ? `${this._messages.length}:${this._contextCache.messageMeta(last).hash}`
+      : `${this._messages.length}:`;
+    return [
+      `h:${this._historyRevision}:${fingerprint}`,
+      `m:${this._model}`,
+      `t:chars4`,
+    ].join("|");
+  }
+
+  /**
+   * Returns the cached provider frame for the current history revision.
+   * The returned entry contains `messages` (canonical, unresolved) plus
+   * cached token counts, payload size, and validation stats.
+   */
+  _frame() {
+    const effective = this._applyEffectiveSettings();
+    const sys = this._buildSystem();
+    const activeObjective = [
+      "ACTIVE TASK FOR THIS TURN:",
+      String(this._activeScope?.objective || this._currentRequest || ""),
+      "Treat every earlier task as completed historical context unless this user message explicitly requests continuation.",
+    ].join("\n");
+    const limit = effective.contextLimit || 0;
+    const key = this._contextCacheKey();
+    const entry = this._contextCache.buildFrame(key, {
+      messages: this._messages,
+      requestStartIndex: limit > 0 ? this._requestStartIndex : 0,
+      limit,
+      sys,
+      activeObjective,
+      summary: this._summary,
+    });
+    this._lastFrameEntry = entry;
+    this._lastFrameKey = key;
+    if (this._debug) {
+      const { frameBuilds, frameHits } = this._contextCache.stats;
+      console.error(`[khazai debug] context cache builds=${frameBuilds} hits=${frameHits} revision=${key.split("|")[0]}`);
+    }
+    return entry;
+  }
+
+  _markLatencyDuration(name, startMs) {
+    if (!this._latency) return;
+    this._latency[name] = Math.max(0, performance.now() - startMs);
+  }
+
+  latencyReport() {
+    const usage = this.contextUsage();
+    const metrics = this._lastRequestMetrics || {};
+    const number = value => Math.max(0, Number(value) || 0);
+    const localPreparationMs = Math.round(
+      number(metrics.historyPreparationMs)
+      + number(metrics.messageValidationMs)
+      + number(metrics.tokenCountingMs)
+      + number(metrics.compactionCheckMs)
+      + number(metrics.toolSchemaBuildMs)
+      + number(metrics.serializationMs),
+    );
+    return {
+      contextTokens: usage.currentContextTokens,
+      contextLimit: usage.contextLimit,
+      messageCount: metrics.messageCount || 0,
+      payloadBytes: metrics.serializedPayloadBytes || 0,
+      historyPreparationMs: metrics.historyPreparationMs || 0,
+      messageValidationMs: metrics.messageValidationMs || 0,
+      tokenCountingMs: metrics.tokenCountingMs || 0,
+      compactionCheckMs: metrics.compactionCheckMs || 0,
+      compactionMs: metrics.compactionMs || 0,
+      toolSchemaBuildMs: metrics.toolSchemaBuildMs || 0,
+      serializationMs: metrics.serializationMs || 0,
+      requestUploadMs: metrics.requestUploadMs || 0,
+      providerTimeToFirstByteMs: metrics.providerTimeToFirstByteMs || 0,
+      providerTimeToFirstTokenMs: metrics.providerTimeToFirstTokenMs || 0,
+      totalResponseMs: metrics.totalResponseMs || 0,
+      localPreparationMs,
+      providerPrefillMs: (metrics.providerTimeToFirstTokenMs || 0) + (metrics.requestUploadMs || 0),
+      compactionLabel: metrics.compactionLabel || "Not required",
+    };
+  }
+
   async replaceRegistry(registry) {
     if (typeof registry.load === "function") await registry.load(this._workspace);
     this._registry = registry.subset?.(this._agentProfile.tools || ["*"]) || registry;
     this._registryReady = Promise.resolve();
+    this._toolSchemaCache.clear();
   }
   _applyEffectiveSettings() {
+    const settingsKey = [
+      this._model,
+      this._providerContextLimit,
+      configRevision(),
+    ].join(":");
+    if (this._effectiveSettingsKey === settingsKey && this._effectiveSettings) {
+      if (this._config.compactThreshold === undefined) {
+        Object.assign(this._config, this._effectiveSettings, {
+          compactThreshold: this._effectiveSettings.compactionThreshold,
+          emergencyCompactThreshold: this._effectiveSettings.emergencyCompactionThreshold,
+        });
+      }
+      return this._effectiveSettings;
+    }
     const effective = resolveEffectiveSettings(this._model, {
       config: this._config,
       sessionOverrides: this._sessionSettingOverrides,
       providerMetadata: { contextLimit: this._providerContextLimit },
     });
+    this._effectiveSettingsKey = settingsKey;
     this._effectiveSettings = effective;
     Object.assign(this._config, effective, {
       compactThreshold: effective.compactionThreshold,
+      emergencyCompactThreshold: effective.emergencyCompactionThreshold,
     });
     return effective;
   }

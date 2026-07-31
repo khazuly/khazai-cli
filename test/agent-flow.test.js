@@ -193,7 +193,7 @@ test("recoverable provider continuation retries without rerunning completed tool
   for await (const event of agent.loop("inspect and answer")) failed.push(event);
   assert.equal(toolCalls, 1);
   assert.equal(agent.hasRecoverableProviderRequest(), true);
-  assert.equal(failed.at(-1).content, "[×] big-cock provider returned HTTP 500 after 3 attempts.");
+  assert.equal(failed.at(-1).content, "[×] big-cock is temporarily unavailable.");
 
   const recovered = [];
   for await (const event of agent.loop("", undefined, {

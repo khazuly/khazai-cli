@@ -23,7 +23,7 @@ export function inspectionCommand(command) {
   }
   if (/\b(?:curl|wget)\b[\s\S]*-o\s+\/tmp\//i.test(text)) return true;
   if (/\b(?:curl|wget)\b[\s\S]*https?:\/\//i.test(text) && !/\b(?:rm|unlink|rmdir|mv|cp)\b/i.test(text)) return true;
-  return /^(?:ls|find|rg|grep|cat|head|tail|sed|pwd|curl|wget|git\s+(?:status|diff|log|show)\b|node\s+(?:--check\b|-e\b|-(?:\s|$|<))|python(?:3)?\s+(?:-c\b|-(?:\s|$|<))|python(?:3)?\s+<<)/i.test(text);
+  return /^(?:ls|find|rg|grep|cat|head|tail|sed|pwd|curl|wget|git\s+(?:status|diff|log|show)\b|node\s+(?:--check\b|-e\b|-(?:\s|$|<))|python(?:3)?\s+(?:-c\b|-(?:\s|$|<))|python(?:3)?\s+<<|node\s+--version|python3?\s+--version|file\b|stat\b|wc\b)/i.test(text);
 }
 
 export function validationCommand(command) {

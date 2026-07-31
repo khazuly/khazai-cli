@@ -18,10 +18,48 @@ export class StateMethods {
   _finishLatency() {
     if (!this._latency) return;
     this._markLatency("completed");
+    const metrics = {
+      historyPreparationMs: this._latency.historyPreparationMs ?? null,
+      messageValidationMs: this._latency.messageValidationMs ?? null,
+      tokenCountingMs: this._latency.tokenCountingMs ?? null,
+      compactionCheckMs: this._latency.compactionCheckMs ?? null,
+      compactionMs: this._latency.compactionMs ?? null,
+      toolSchemaBuildMs: this._latency.toolSchemaBuildMs ?? null,
+      serializationMs: this._latency.serializationMs ?? null,
+      requestUploadMs: this._latency.providerFirstByte !== undefined
+        ? this._latency.providerFirstByte - this._latency.requestDispatched
+        : null,
+      providerTimeToFirstByteMs: this._latency.providerFirstByte !== undefined
+        ? this._latency.providerFirstByte - this._latency.requestDispatched
+        : null,
+      providerTimeToFirstTokenMs: this._latency.providerFirstDelta !== undefined && this._latency.providerFirstByte !== undefined
+        ? this._latency.providerFirstDelta - this._latency.providerFirstByte
+        : null,
+      totalResponseMs: this._latency.completed - this._latency.inputReceived,
+      messageCount: this._latency.messageCount ?? null,
+      serializedPayloadBytes: this._latency.serializedPayloadBytes ?? null,
+      currentContextTokens: this._latency.currentContextTokens ?? null,
+      compactionLabel: this._latency.compactionLabel ?? "Not required",
+    };
+    this._lastRequestMetrics = metrics;
     if (this._debug) {
       const start = this._latency.inputReceived;
-      const metric = value => value === undefined ? null : Math.round((value - start) * 10) / 10;
+      const metric = value => value === undefined || value === null ? null : Math.round((value - start) * 10) / 10;
       console.error(`[khazai debug] latency ${JSON.stringify({
+        historyPreparationMs: metrics.historyPreparationMs,
+        messageValidationMs: metrics.messageValidationMs,
+        tokenCountingMs: metrics.tokenCountingMs,
+        compactionCheckMs: metrics.compactionCheckMs,
+        compactionMs: metrics.compactionMs,
+        toolSchemaBuildMs: metrics.toolSchemaBuildMs,
+        serializationMs: metrics.serializationMs,
+        requestUploadMs: metrics.requestUploadMs,
+        providerTimeToFirstByteMs: metrics.providerTimeToFirstByteMs,
+        providerTimeToFirstTokenMs: metrics.providerTimeToFirstTokenMs,
+        totalResponseMs: metrics.totalResponseMs,
+        messageCount: metrics.messageCount,
+        serializedPayloadBytes: metrics.serializedPayloadBytes,
+        currentContextTokens: metrics.currentContextTokens,
         dispatchMs: metric(this._latency.requestDispatched),
         providerFirstDeltaMs: metric(this._latency.providerFirstDelta),
         uiFirstTextMs: metric(this._latency.uiFirstText),
@@ -61,6 +99,11 @@ export class StateMethods {
         ? state.canonicalProviderMessages.slice(-200)
         : completedConversationHistory(filtered);
     }
+    this._messages = this._messages.map(message => {
+      if (message?.role !== "tool") return message;
+      const { concise, truncated } = this._conciseToolContent(message.name, message.tool_call_id, message.content);
+      return truncated ? { ...message, content: concise } : message;
+    });
     this._summary = typeof state.summary === "string" ? state.summary : "";
     if (state.model) this._model = String(state.model);
     if (state.sessionId) {
@@ -85,6 +128,7 @@ export class StateMethods {
     this._activeScope = null;
     this._plan = null;
     this._planId = null;
+    this._currentStepId = null;
     this._planIndex = 0;
     this._pendingBatchCalls = [];
     this._toolCallHistory = [];
@@ -93,6 +137,8 @@ export class StateMethods {
     if (state.historyRevision !== undefined) {
       this._historyRevision = state.historyRevision;
     }
+    this._historyRevision++;
+    this._contextCache.reset();
     return true;
   }
 
@@ -200,7 +246,7 @@ export class StateMethods {
 
   _boundedLoopRecoveryAnswer() {
     const answer = "I couldn't make further progress because the available actions kept repeating without changing the task result. Please provide the exact target or expected outcome.";
-    this._messages.push({ role: "assistant", content: answer });
+    this._appendMessage({ role: "assistant", content: answer });
     this._clearPendingAction();
     this._finishLatency();
     return answer;
@@ -465,7 +511,7 @@ export class StateMethods {
       guidance: redactSecrets(guidance || "Continue from the current task state with a safe next action."),
     };
     if (this._debug) console.error(`[khazai debug] steering ${JSON.stringify(event)}`);
-    this._messages.push({
+    this._appendMessage({
       role: "user",
       content: `[INTERNAL STEERING]\nDetected intent: ${event.detectedIntent}\nProposed action: ${event.proposedAction}\nRecommended action: ${event.recommendedAction}\nGuidance: ${event.guidance}`,
     });

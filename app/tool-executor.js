@@ -286,6 +286,27 @@ export class ToolExecutor {
       yield* this._unknown(call);
       return;
     }
+    if (this.readOnly && !planToolIsReadOnly(call, tool)) {
+      const part = this.lifecycle.invalid({
+        callId: call.id,
+        requestedTool: call.name,
+        input: this.protectData(call.args),
+        error: this.readOnlyMessage,
+        metadata: { runId: this.runId, turnId: this.turnId, taskEpoch: this.taskEpoch, blocked: true },
+      });
+      this.shellScheduler?.complete(call, this.readOnlyMessage, true);
+      yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
+      yield this._scoped({ type: "tool-result", tool: call.name, result: this.readOnlyMessage, callId: call.id, failed: true, blocked: true });
+      yield this._scoped({
+        type: "execution-result",
+        call,
+        part,
+        result: this.readOnlyMessage,
+        failed: true,
+        finishReason: "blocked",
+      });
+      return;
+    }
     const part = this.lifecycle.pending({
       callId: call.id,
       tool: call.name,
@@ -294,16 +315,6 @@ export class ToolExecutor {
     });
     yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
     if (!this._isActive()) return;
-
-    const invalid = schemaError(tool, call.args);
-    if (invalid) {
-      yield* this._reject(part, call, invalid, "tool-error");
-      return;
-    }
-    if (this.readOnly && !planToolIsReadOnly(call, tool)) {
-      yield* this._reject(part, call, this.readOnlyMessage, "blocked");
-      return;
-    }
 
     const external = this.permissionService.evaluateExternalDirectory(call.name, call.args);
     if (external?.decision === "deny") {

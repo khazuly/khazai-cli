@@ -29,6 +29,7 @@ import { SettingsMenu } from "./components/settings-menu.js";
 import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
 import { PlanList } from "./components/plan-list.js";
+import { deriveActivityLabel } from "./components/activity-bar.js";
 import { SessionFooter } from "./components/session-footer.js";
 import { EmptyState } from "./components/empty-state.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
@@ -103,20 +104,36 @@ function readFileName(args) {
   return parts.at(-1) || String(args?.path || "");
 }
 
-function thinkActivityFromPlan(plan, phase) {
+function thinkActivityFromPlan(plan, phase, currentStepId = null) {
   const items = Array.isArray(plan) ? plan : [];
-  const activeIndex = items.findIndex(item => item.status === "in_progress" || item.status === "running" || item.status === "active");
+  const stepText = item => {
+    const raw = removeEmoji(item.text || item.content || item.title || item.description || "").trim();
+    return raw ? deriveActivityLabel(raw) : "Analyzing the execution context";
+  };
+  const stepLabel = (item, index) => items.length > 1
+    ? `Step ${item.order || index + 1} of ${items.length}`
+    : null;
+  if (currentStepId) {
+    const currentIndex = items.findIndex(item => (item.stepId || item.id) === currentStepId);
+    if (currentIndex >= 0) {
+      return {
+        text: stepText(items[currentIndex]),
+        step: stepLabel(items[currentIndex], currentIndex),
+      };
+    }
+  }
+  const activeIndex = items.findIndex(item => ["active", "running", "in_progress"].includes(item.status));
   if (activeIndex >= 0) {
     return {
-      text: removeEmoji(items[activeIndex].text || items[activeIndex].content || items[activeIndex].title || items[activeIndex].description || "Analyzing the execution context").trim(),
-      step: items.length > 1 ? `Step ${activeIndex + 1} of ${items.length}` : null,
+      text: stepText(items[activeIndex]),
+      step: stepLabel(items[activeIndex], activeIndex),
     };
   }
   const pendingIndex = items.findIndex(item => !item.status || item.status === "pending");
   if (pendingIndex >= 0) {
     return {
-      text: removeEmoji(items[pendingIndex].text || items[pendingIndex].content || items[pendingIndex].title || items[pendingIndex].description || "Analyzing the execution context").trim(),
-      step: items.length > 1 ? `Step ${pendingIndex + 1} of ${items.length}` : null,
+      text: stepText(items[pendingIndex]),
+      step: stepLabel(items[pendingIndex], pendingIndex),
     };
   }
   const text = phase === "continuation"
@@ -154,7 +171,6 @@ export function formatInteractiveQuestion(question, options = []) {
 
 export function mergeExistingContent(existing, generated) {
   if (!existing) return generated;
-
   const genSections = parseSections(generated);
   const existingSections = parseSections(existing);
   const merged = [];
@@ -199,6 +215,66 @@ function parseSections(content) {
   return sections;
 }
 
+const INIT_LIFECYCLE_TIMEOUT_MS = 900_000;
+
+export function initPreviewIsCurrent(currentGeneration, generationId) {
+  return generationId == null || generationId === currentGeneration;
+}
+
+export function initValidatingState({ content, evidence, workspaceRoot, generationId }) {
+  return {
+    generatedMarkdown: String(content || ""),
+    inspectedFiles: [...new Set((evidence?.inspectedFiles || []).map(file => String(file)))],
+    workspaceRoot: String(evidence?.workspaceRoot || workspaceRoot || ""),
+    status: "validating",
+    generationId,
+  };
+}
+
+export function initFailedState({ error, generationId, evidence, workspaceRoot }) {
+  const inspectedFiles = [...new Set((evidence?.inspectedFiles || []).map(file => String(file)))];
+  return {
+    mode: "failed",
+    status: "failed",
+    previewVisible: true,
+    workspaceRoot: String(workspaceRoot || evidence?.workspaceRoot || ""),
+    inspectedCount: inspectedFiles.length,
+    inspectedFiles,
+    sectionCount: 0,
+    wordCount: 0,
+    previewContent: "",
+    proposedContent: "",
+    existingPath: null,
+    warnings: [],
+    error: String(error || ""),
+    generationId,
+    evidence: evidence || null,
+  };
+}
+
+export function initPreviewState({ prepared, evidence, workspaceRoot, generationId, mode, proposedContent, existing, existingPath }) {
+  const inspectedFiles = [...new Set((evidence?.inspectedFiles || []).map(file => String(file)))];
+  return {
+    mode,
+    status: "previewing",
+    previewVisible: true,
+    workspaceRoot: String(prepared.workspaceRoot || workspaceRoot || evidence?.workspaceRoot || ""),
+    inspectedCount: inspectedFiles.length,
+    inspectedFiles,
+    sectionCount: prepared.sectionCount,
+    wordCount: prepared.wordCount,
+    previewContent: prepared.markdown,
+    proposedContent,
+    existingContent: existing || undefined,
+    existingPath: existingPath || null,
+    warnings: prepared.warnings,
+    error: "",
+    generationId,
+    evidence: evidence || null,
+    generatedMarkdown: prepared.markdown,
+  };
+}
+
 export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) {
   const { exit } = useApp();
   const initialConfig = useRef(loadConfig());
@@ -215,9 +291,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [activeMessage, setActiveMessage] = useState(null);
   const [plan, setPlanState] = useState([]);
   const planRef = useRef([]);
+  const planStepRef = useRef(null);
   const setPlan = useCallback(next => {
     setPlanState(prev => {
       const value = typeof next === "function" ? next(prev) : next;
+      if (!Array.isArray(value) || value.length === 0) planStepRef.current = null;
       planRef.current = value;
       return value;
     });
@@ -1272,7 +1350,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     responseBufferRef.current = createResponseBuffer(analysisScope);
     let initEvidence = null;
     let initPhase = "inspecting";
-    const initResponse = { content: "" };
+    let initToolCallCount = 0;
+    let initLifecycleTimer = null;
+    const initResponse = { content: "", error: "", finalized: false, timedOut: false };
     const setInitPhase = status => {
       if (initPhase !== status) {
         initPhase = status;
@@ -1286,10 +1366,27 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       setInitPhase("inspecting");
     }
     const openInitPrompt = state => {
+      if (!initPreviewIsCurrent(initGenerationRef.current, state.generationId)) return;
       initStateRef.current = state;
       setInitState(state);
       setShowInitPrompt(true);
     };
+    if (initTask) {
+      initLifecycleTimer = setTimeout(() => {
+        if (initResponse.finalized) return;
+        initResponse.finalized = true;
+        initResponse.timedOut = true;
+        setModeStatus(null);
+        openInitPrompt(initFailedState({
+          error: "AGENTS.md generation timed out.",
+          generationId: initTask.generationId || initGenerationRef.current,
+          evidence: initEvidence,
+          workspaceRoot: workspace.path,
+        }));
+        agentRef.current?.abort();
+      }, INIT_LIFECYCLE_TIMEOUT_MS);
+      initLifecycleTimer.unref?.();
+    }
     const gitBefore = sessionStoreRef.current.captureGitState();
     const agentStateBefore = agentRef.current?.exportSessionState?.() || null;
     const activate = message => {
@@ -1327,7 +1424,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       analysisRef.current = startAnalysisActivity(
         analysisRef.current,
         analysisScope,
-        thinkActivityFromPlan(planRef.current),
+        thinkActivityFromPlan(planRef.current, undefined, planStepRef.current),
       );
       analysisRef.current = updatePublicAnalysisActivity(
         analysisRef.current,
@@ -1425,8 +1522,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
       if (!content) return "";
       if (initTask) {
-        initResponse.content = content;
-        setInitPhase("preparing");
+        if (!initResponse.finalized) {
+          initResponse.content = content;
+          initResponse.finalized = true;
+          setModeStatus(null);
+        }
         finalCommitted = true;
         return content;
       }
@@ -1549,7 +1649,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (planningRun) setModeStatus({ mode: "plan", status: "investigating" });
         resetStreaming();
         finishReadBatch();
-        showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase));
+        showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase, planStepRef.current));
         continue;
       }
 
@@ -1568,17 +1668,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         pauseAnalysis();
         clearActive();
         latestPlan = ev.items.map(item => ({ ...item, status: item.status || "pending" }));
+        if (typeof ev.currentStepId === "string") planStepRef.current = ev.currentStepId;
         setPlan(latestPlan);
         continue;
       }
 
       if (ev.type === "plan-update") {
         setPlan(prev => {
-          const next = prev.map((item, i) =>
-            i === ev.index ? { ...item, status: ev.status } : item
-          );
+          if (!Array.isArray(prev) || !ev.stepId) return prev;
+          const matches = item => item.stepId === ev.stepId || item.id === ev.stepId;
+          if (ev.planId && !prev.some(item => item.planId === ev.planId)) return prev;
+          const matched = prev.find(matches);
+          if (!matched || matched.status === ev.status) return prev;
+          const next = prev.map(item => matches(item) ? { ...item, status: ev.status } : item);
+          if (typeof ev.currentStepId === "string") planStepRef.current = ev.currentStepId;
           if (activeRef.current?.type === "think") {
-            updateAnalysis(thinkActivityFromPlan(next));
+            updateAnalysis(thinkActivityFromPlan(next, undefined, planStepRef.current));
           }
           return next;
         });
@@ -1734,6 +1839,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         if (ev.tool === "question") continue;
         if (initTask) {
+          initToolCallCount++;
           if (initPhase === "inspecting") setInitPhase("reviewing");
           if (ev.tool === "read" && ev.args?.path) {
             initEvidence.inspectedFiles.push(String(ev.args.path));
@@ -1743,6 +1849,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           }
           if (ev.tool === "glob" && ev.args?.pattern) {
             initEvidence.patterns.push(String(ev.args.pattern));
+          }
+          if (initToolCallCount >= 30) {
+            setInitPhase("generating");
+            agent.abort();
+            continue;
           }
         }
         resetStreaming();
@@ -1760,6 +1871,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
         if (ev.tool === "read") {
           startRead(ev.callId, agent.redactSerializableForDisplay(ev.args || {}));
+          continue;
+        }
+        if (initTask) {
           continue;
         }
         finishReadBatch();
@@ -1862,12 +1976,16 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finishReadBatch();
         const safeContent = removeAssistantProtocolText(agent.redactForDisplay(removeEmoji(ev.content))).trim();
         const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
+        const providerFailure = ev.recoverable || /^\[×\]/.test(safeContent);
         if (ev.type === "answer") {
           pauseAnalysis();
           finishedNormally = true;
           finalResponse = safeContent;
           if (!planningRun) setPlan([]);
-        } else if (ev.recoverable) {
+        } else if (providerFailure) {
+          // One concise provider outcome: the "[×] ..." line is archived as
+          // a provider-error message and no duplicate "Finished with issues"
+          // summary is rendered for the same failure.
           recoverableFailure = true;
           pauseAnalysis();
           clearActive();
@@ -1886,14 +2004,13 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
         if (safeContent && !thinkTimeout) {
           if (initTask) {
-            initResponse.content = safeContent;
-            setInitPhase("preparing");
-            finalCommitted = true;
+            if (!initResponse.finalized) initResponse.error = safeContent;
+            setModeStatus(null);
             if (ev.type === "answer") finishedNormally = true;
           } else {
             appendArchived({
               id: nextId(),
-              type: ev.recoverable ? "provider-error" : ev.type,
+              type: providerFailure ? "provider-error" : ev.type,
               content: safeContent,
             });
             if (ev.type === "answer") finalCommitted = true;
@@ -1973,83 +2090,85 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (initTask) {
         agentRef.current = previousAgent;
         setModeStatus(null);
+        if (initLifecycleTimer) {
+          clearTimeout(initLifecycleTimer);
+          initLifecycleTimer = null;
+        }
         const initCancelled = cancelledRunIdRef.current === runId;
         if (initCancelled) {
           initStateRef.current = null;
           setInitState(null);
           initRegenerateRef.current = null;
+        } else if (initResponse.timedOut) {
+          initRegenerateRef.current = null;
         } else if (!initResponse.content) {
-          const initGenerationId = initTask.generationId || ++initGenerationRef.current;
-          const failedState = errorText => openInitPrompt({
-            mode: "failed",
-            workspaceRoot: initEvidence?.workspaceRoot || workspace.path,
-            inspectedCount: initEvidence?.inspectedFiles?.length || 0,
-            sectionCount: 0,
-            wordCount: 0,
-            previewContent: initResponse.content,
-            proposedContent: "",
-            existingPath: null,
-            warnings: [],
-            error: errorText,
-            generationId: initGenerationId,
+          openInitPrompt(initFailedState({
+            error: initResponse.error || fatalError || "The model returned no content.",
+            generationId: initTask.generationId || ++initGenerationRef.current,
             evidence: initEvidence,
+            workspaceRoot: workspace.path,
+          }));
+        } else {
+          const generationId = initTask.generationId || ++initGenerationRef.current;
+          const validating = initValidatingState({
+            content: initResponse.content,
+            evidence: initEvidence,
+            workspaceRoot: workspace.path,
+            generationId,
           });
-          if (!initResponse.content) {
-            failedState(fatalError || "The model returned no content.");
-          } else {
-            const prepared = prepareInitPreview({ content: initResponse.content, evidence: initEvidence });
-            if (!prepared.ok) {
-              failedState(prepared.error);
-            } else if (initTask.kind === "preview") {
+          const prepared = prepareInitPreview({ content: validating.generatedMarkdown, evidence: initEvidence });
+          if (!prepared.ok) {
+            openInitPrompt(initFailedState({
+              error: `Generated AGENTS.md could not be prepared. ${prepared.error}`,
+              generationId,
+              evidence: initEvidence,
+              workspaceRoot: validating.workspaceRoot,
+            }));
+          } else if (initTask.kind === "preview") {
+            appendArchived({
+              id: nextId(),
+              type: "answer",
+              content: `# AGENTS.md Preview\n\n${prepared.markdown}`,
+            });
+            if (prepared.warnings.length) {
               appendArchived({
                 id: nextId(),
                 type: "answer",
-                content: `# AGENTS.md Preview\n\n${prepared.markdown}`,
+                content: prepared.warnings.map(warning => `! ${warning}`).join("\n"),
               });
-              if (prepared.warnings.length) {
-                appendArchived({
-                  id: nextId(),
-                  type: "answer",
-                  content: prepared.warnings.map(warning => `! ${warning}`).join("\n"),
-                });
-              }
-            } else {
-              const existing = prepared.existing;
-              const mode = existing
-                ? (initTask.kind === "force" ? "replaceConfirm" : "update")
-                : "create";
-              let proposedContent = prepared.markdown;
-              let mergedExisting = false;
-              if (mode === "update") {
-                const merged = mergeExistingContent(existing, prepared.markdown);
-                if (merged === existing) {
-                  mergedExisting = true;
-                } else {
-                  proposedContent = merged;
-                }
-              }
-              if (mergedExisting) {
-                appendArchived({
-                  id: nextId(),
-                  type: "answer",
-                  content: "AGENTS.md is already up to date.",
-                });
+            }
+          } else {
+            const existing = prepared.existing;
+            const mode = existing
+              ? (initTask.kind === "force" ? "replaceConfirm" : "update")
+              : "create";
+            let proposedContent = prepared.markdown;
+            let mergedExisting = false;
+            if (mode === "update") {
+              const merged = mergeExistingContent(existing, prepared.markdown);
+              if (merged === existing) {
+                mergedExisting = true;
               } else {
-                openInitPrompt({
-                  mode,
-                  workspaceRoot: prepared.workspaceRoot,
-                  inspectedCount: [...new Set(initEvidence?.inspectedFiles || [])].length,
-                  sectionCount: prepared.sectionCount,
-                  wordCount: prepared.wordCount,
-                  previewContent: prepared.markdown,
-                  proposedContent,
-                  existingContent: existing || undefined,
-                  existingPath: prepared.existingPath,
-                  warnings: prepared.warnings,
-                  generationId: initGenerationId,
-                  evidence: initEvidence,
-                });
+                proposedContent = merged;
               }
+            }
+            if (mergedExisting) {
+              appendArchived({
+                id: nextId(),
+                type: "answer",
+                content: "AGENTS.md is already up to date.",
+              });
+            } else {
+              openInitPrompt(initPreviewState({
+                prepared,
+                evidence: initEvidence,
+                workspaceRoot: validating.workspaceRoot,
+                generationId,
+                mode,
+                proposedContent,
+                existing,
+                existingPath: prepared.existingPath,
+              }));
             }
           }
         }
@@ -2172,6 +2291,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setPendingQuestion(null);
     setModeStatus({ mode: "build", status: "preparing" });
     setPlan(plan.steps.map(description => ({ description, status: "pending" })));
+    planStepRef.current = null;
     queueMicrotask(() => submitRef.current?.(approvedPlanRequest(plan), {
       approvedPlan: plan,
       internalInput: true,

@@ -123,7 +123,8 @@ export const GLOBAL_DEFAULTS = {
 
   contextLimit: null,
   automaticCompaction: true,
-  compactionThreshold: 0.9,
+  compactionThreshold: 0.8,
+  emergencyCompactionThreshold: 0.92,
   preserveRecentTurns: 5,
   maxCompactedSummarySize: 2_048,
 
@@ -199,6 +200,7 @@ export const SETTING_SECTIONS = {
       { key: "contextLimit", label: "Context limit override", type: "context-limit" },
       { key: "automaticCompaction", label: "Automatic compaction enabled", type: "boolean" },
       { key: "compactionThreshold", label: "Compaction threshold", type: "float", min: 0.01, max: 1, step: 0.05 },
+      { key: "emergencyCompactionThreshold", label: "Emergency compaction threshold", type: "float", min: 0.01, max: 1, step: 0.05 },
       { key: "preserveRecentTurns", label: "Preserve recent turns", type: "int", min: 0, max: 50 },
       { key: "maxCompactedSummarySize", label: "Maximum compacted-summary size", type: "int", min: 128, max: 16_384 },
     ],
@@ -289,6 +291,12 @@ const VALIDATORS = {
     if (n <= 0 || n > 1) return { valid: false, message: "Compaction threshold must be greater than 0 and at most 1." };
     return { valid: true, value: Math.round(n * 100) / 100 };
   },
+  emergencyCompactionThreshold(value) {
+    const n = positiveFloat(value);
+    if (n === null) return { valid: false, message: "Emergency compaction threshold must be a number." };
+    if (n <= 0 || n > 1) return { valid: false, message: "Emergency compaction threshold must be greater than 0 and at most 1." };
+    return { valid: true, value: Math.round(n * 100) / 100 };
+  },
   defaultInt(value, def, min, max) {
     const n = positiveInt(value);
     if (n === null) return { valid: false, message: `Must be a positive integer.` };
@@ -306,6 +314,7 @@ export function validateSetting(key, value, model) {
     case "maxOutputTokens": return VALIDATORS.maxOutputTokens(value, caps);
     case "contextLimit": return VALIDATORS.contextLimit(value);
     case "compactionThreshold": return VALIDATORS.compactionThreshold(value);
+    case "emergencyCompactionThreshold": return VALIDATORS.emergencyCompactionThreshold(value);
     case "requestTimeoutMs": return VALIDATORS.defaultInt(value, null, 5_000, 600_000);
     case "toolTimeoutMs": return VALIDATORS.defaultInt(value, null, 1_000, 300_000);
     case "maxProviderRetries": return VALIDATORS.defaultInt(value, null, 0, 10);

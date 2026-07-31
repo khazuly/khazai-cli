@@ -101,8 +101,11 @@ export class ContextUsageTracker {
     compactionStartedAt = null,
     stableTokens = null,
     historyRevision,
+    contextTokens = null,
   } = {}) {
-    const recounted = countProviderContext(messages);
+    const recounted = Number.isFinite(contextTokens) && contextTokens >= 0
+      ? contextTokens
+      : countProviderContext(messages);
     const activeCompaction = ["scheduled", "preparing", "summarizing", "committing", "recounting"]
       .includes(compactionStatus);
     const currentContextTokens = activeCompaction && Number.isFinite(stableTokens)
