@@ -1,8 +1,9 @@
 import { createElement as h } from "react";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Box, Static } from "ink";
+import { Box, Static, useApp } from "ink";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { Agent } from "../app/agent.js";
 import { PermissionService } from "../app/permission.js";
 import { Registry } from "../app/registry.js";
@@ -37,6 +38,8 @@ import { redactSecrets } from "../lib/secrets.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
 import { formatQueuedMessages, UserMessageQueue } from "./user-message-queue.js";
+import { InitPrompt } from "./components/init-prompt.js";
+import { formatSessionList, SessionManager } from "./components/session-manager.js";
 import { formatUsageReport } from "./context-usage.js";
 import { manageMcpCommand } from "./mcp-command.js";
 import {
@@ -141,7 +144,55 @@ export function formatInteractiveQuestion(question, options = []) {
   return lines.filter(Boolean).join("\n");
 }
 
+export function mergeExistingContent(existing, generated) {
+  if (!existing) return generated;
+
+  const genSections = parseSections(generated);
+  const existingSections = parseSections(existing);
+  const merged = [];
+  const seenHeadings = new Set();
+
+  for (const [heading, body] of genSections) {
+    merged.push(heading);
+    merged.push("");
+    for (const line of body) merged.push(line);
+    if (!body.join("").trim()) merged.push("");
+    seenHeadings.add(heading.toLowerCase().trim());
+  }
+
+  for (const [heading, body] of existingSections) {
+    const key = heading.toLowerCase().trim();
+    if (seenHeadings.has(key)) continue;
+    merged.push(heading);
+    merged.push("");
+    for (const line of body) merged.push(line);
+    if (!body.join("").trim()) merged.push("");
+  }
+
+  return merged.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+function parseSections(content) {
+  const lines = content.split("\n");
+  const sections = [];
+  let currentHeading = null;
+  let currentBody = [];
+  for (const line of lines) {
+    const heading = line.match(/^# /);
+    if (heading) {
+      if (currentHeading) sections.push([currentHeading, currentBody]);
+      currentHeading = line;
+      currentBody = [];
+    } else if (currentHeading) {
+      currentBody.push(line);
+    }
+  }
+  if (currentHeading) sections.push([currentHeading, currentBody]);
+  return sections;
+}
+
 export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) {
+  const { exit } = useApp();
   const initialConfig = useRef(loadConfig());
   const sessionStoreRef = useRef(null);
   const currentSessionRef = useRef(null);
@@ -176,6 +227,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [modeStatus, setModeStatus] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState(null);
+  const [showInitPrompt, setShowInitPrompt] = useState(false);
+  const [initState, setInitState] = useState(null);
+  const [sessionManagerSessions, setSessionManagerSessions] = useState(null);
   const contextUsageRef = useRef({});
   const agentRef = useRef(null);
   const activeRef = useRef(null);
@@ -199,6 +253,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const openPlanApprovalRef = useRef(null);
   const planActionRef = useRef(null);
   const buildStartedPlanIdRef = useRef(null);
+  const exitStartedRef = useRef(false);
   if (!messageQueueRef.current) {
     messageQueueRef.current = new UserMessageQueue(currentSessionRef.current.id);
   }
@@ -288,7 +343,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     buildStartedPlanIdRef.current = null;
     setCompletedMessages(session.messages || []);
     setActiveMessage(null);
-    setPlan([]);
+    setPlan(Array.isArray(session.savedPlan) ? session.savedPlan.map(item => ({ ...item })) : []);
     setExpandedTool(null);
     setCurrentModel(session.model);
     setModeStatus(session.agent === "plan"
@@ -300,10 +355,103 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setSessionKey(key => key + 1);
   }, [workspace.path]);
 
+  const freshSession = useCallback(() => {
+    const now = new Date().toISOString();
+    return {
+      version: 4,
+      id: randomUUID(),
+      workspace: resolve(workspace.path),
+      title: "",
+      model: loadConfig().model,
+      agent: loadConfig().defaultAgent || "build",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      agentState: null,
+      savedPlan: [],
+      parts: [],
+      turns: [],
+      redo: [],
+      permissionMode: "prompt",
+      runtime: { version: 2, lastPartAt: null },
+    };
+  }, [workspace.path]);
+
+  const removeStoredSessions = useCallback(ids => {
+    const selected = new Set(ids);
+    const removesCurrent = selected.has(currentSessionRef.current.id);
+    const result = sessionStoreRef.current.deleteSessions([...selected]);
+    if (removesCurrent && result.failed === 0) loadStoredSession(freshSession());
+    return result;
+  }, [freshSession, loadStoredSession]);
+
+  const persistBeforeExit = useCallback(() => {
+    const session = currentSessionRef.current;
+    const agentState = agentRef.current?.exportSessionState?.() || agentSessionRef.current;
+    currentSessionRef.current = sessionStoreRef.current.save({
+      ...session,
+      messages: completedRef.current,
+      agentState,
+      savedPlan: planRef.current.map(item => ({ ...item })),
+    });
+  }, []);
+
+  const performExit = useCallback(async save => {
+    if (exitStartedRef.current) return;
+    exitStartedRef.current = true;
+    messageQueueRef.current.markExiting();
+    if (save) {
+      try {
+        persistBeforeExit();
+      } catch {
+        exitStartedRef.current = false;
+        appendArchived({ id: nextId(), type: "error", content: "The session could not be saved. Exit was cancelled." });
+        return;
+      }
+    }
+    agentRef.current?.abort();
+    activeScopeRef.current = null;
+    responseBufferRef.current = null;
+    questionResolverRef.current?.resolve("");
+    questionResolverRef.current = null;
+    try { await mcpManager?.shutdown?.(); } catch {}
+    exit();
+  }, [appendArchived, exit, mcpManager, persistBeforeExit]);
+
   const handleCommand = useCallback(async (cmd, arg) => {
     if (cmd === "/exit") {
-      messageQueueRef.current.markExiting();
-      process.exit(0);
+      if (pendingQuestion || showInitPrompt || showSettings || sessionManagerSessions) {
+        appendArchived({ id: nextId(), type: "error", content: "Close the active confirmation or manager before exiting." });
+        return;
+      }
+      const queued = messageQueueRef.current.pendingCount();
+      const unsaved = submittingRef.current
+        || completedRef.current.length !== (currentSessionRef.current.messages || []).length;
+      if (submittingRef.current || queued > 0 || unsaved) {
+        const action = await requestValue(
+          "Exit KhazAI?",
+          ["Cancel", "Save and exit", "Exit without saving"],
+          {
+            archive: false,
+            kind: "mcp",
+            values: [
+              { label: "Cancel", value: "cancel" },
+              { label: "Save and exit", value: "save" },
+              { label: "Exit without saving", value: "discard" },
+            ],
+            context: [
+              `Active run       ${submittingRef.current ? "Yes" : "No"}`,
+              `Queued messages  ${queued}`,
+              `Unsaved changes  ${unsaved ? "Yes" : "No"}`,
+            ].join("\n"),
+          },
+        );
+        if (action === "cancel" || !action) return;
+        await performExit(action === "save");
+        return;
+      }
+      await performExit(true);
+      return;
     }
     if (cmd === "/queue") {
       if (String(arg || "").trim().toLowerCase() === "clear") {
@@ -327,6 +475,117 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     if (cmd === "/cancel") {
       abortRef.current?.();
+      return;
+    }
+    if (cmd === "/init") {
+      const lowerArg = String(arg || "").trim().toLowerCase();
+      const previewOnly = lowerArg === "preview";
+      const updateMode = lowerArg === "update";
+      const forceMode = lowerArg === "--force";
+
+      const { InitGenerator } = await import("../lib/init-generator.js");
+      const generator = new InitGenerator(workspace.path);
+      const root = generator.detectWorkspace();
+
+      if (!root) {
+        appendArchived({ id: nextId(), type: "error", content: "Could not resolve workspace root." });
+        return;
+      }
+
+      const inspection = generator.inspect();
+      const content = generator.generate();
+      const validation = generator.validate(content);
+
+      if (!validation.valid) {
+        appendArchived({ id: nextId(), type: "error", content: `AGENTS.md could not be generated: ${validation.error}` });
+        return;
+      }
+
+      const existingPath = join(root, "AGENTS.md");
+      const fileExists = existsSync(existingPath);
+      const existingContent = fileExists ? readFileSync(existingPath, "utf-8") : null;
+
+      const sectionCount = (content.match(/^# /gm) || []).length || 0;
+
+      if (previewOnly) {
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: `# AGENTS.md Preview\n\n${content}`,
+        });
+        return;
+      }
+
+      if (fileExists && forceMode) {
+        if (existingContent === content) {
+          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
+          return;
+        }
+        setInitState({
+          mode: "replaceConfirm",
+          workspaceRoot: root,
+          sectionCount,
+          inspectedCount: (inspection.inspectedFiles || []).length,
+          previewContent: content,
+          proposedContent: content,
+          existingPath,
+          generator,
+        });
+        setShowInitPrompt(true);
+        return;
+      }
+
+      if (fileExists && updateMode) {
+        const merged = mergeExistingContent(existingContent, content);
+        if (merged === existingContent) {
+          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
+          return;
+        }
+        setInitState({
+          mode: "update",
+          workspaceRoot: root,
+          sectionCount,
+          inspectedCount: (inspection.inspectedFiles || []).length,
+          previewContent: content,
+          proposedContent: merged,
+          existingPath,
+          generator,
+        });
+        setShowInitPrompt(true);
+        return;
+      }
+
+      if (fileExists) {
+        const merged = mergeExistingContent(existingContent, content);
+        if (merged === existingContent) {
+          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
+          return;
+        }
+        setInitState({
+          mode: "update",
+          workspaceRoot: root,
+          sectionCount,
+          inspectedCount: (inspection.inspectedFiles || []).length,
+          previewContent: content,
+          proposedContent: merged,
+          existingPath,
+          generator,
+        });
+        setShowInitPrompt(true);
+        return;
+      }
+
+      setInitState({
+        mode: "create",
+        workspaceRoot: root,
+        sectionCount,
+        inspectedCount: (inspection.inspectedFiles || []).length,
+        previewContent: content,
+        proposedContent: content,
+        existingPath,
+        generator,
+      });
+      setShowInitPrompt(true);
       return;
     }
     if (
@@ -533,7 +792,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       return;
     }
     if (cmd === "/sessions") {
-      const lowerArg = String(arg || "").trim().toLowerCase();
+      const requested = String(arg || "").trim();
+      const [action = "", ...actionArgs] = requested.split(/\s+/);
+      const lowerArg = action.toLowerCase();
       if (lowerArg === "clear") {
         if (submittingRef.current) {
           appendArchived({
@@ -566,48 +827,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           },
         );
         if (!confirmed) return;
-        const ids = sessions.map(s => s.id);
-        const currentId = currentSessionRef.current.id;
-        const currentDeleted = ids.includes(currentId);
-        agentRef.current?.abort();
-        activeScopeRef.current = null;
-        questionResolverRef.current?.resolve("");
-        questionResolverRef.current = null;
-        setPendingQuestion(null);
-        messageQueueRef.current.clearPending();
-        setQueuedCount(0);
-        structuredCallsRef.current.clear();
-        const result = sessionStoreRef.current.deleteSessions(ids);
-        if (currentDeleted) {
-          const freshSession = {
-            version: 4,
-            id: randomUUID(),
-            workspace: resolve(workspace.path),
-            title: "",
-            model: loadConfig().model,
-            agent: loadConfig().defaultAgent || "build",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            messages: [],
-            agentState: null,
-            parts: [],
-            turns: [],
-            redo: [],
-            permissionMode: "prompt",
-            runtime: { version: 2, lastPartAt: null },
-          };
-          currentSessionRef.current = freshSession;
-          completedRef.current = [];
-          activeRef.current = null;
-          analysisRef.current = null;
-          responseBufferRef.current = null;
-          setCompletedMessages([]);
-          setActiveMessage(null);
-          setPlan([]);
-          setExpandedTool(null);
-          setCurrentModel(freshSession.model);
-          setSessionKey(key => key + 1);
-        }
+        const result = removeStoredSessions(sessions.map(s => s.id));
         if (result.failed === 0) {
           appendArchived({
             id: nextId(),
@@ -626,17 +846,71 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
       const sessions = sessionStoreRef.current.list();
       if (sessions.length === 0) {
-        appendArchived({ id: nextId(), type: "answer", content: "No saved sessions for this folder." });
+        if (lowerArg === "list") {
+          appendArchived({ id: nextId(), type: "answer", content: "No saved sessions found for this folder." });
+        } else {
+          setSessionManagerSessions([]);
+        }
         return;
       }
-      const values = sessions.map(session => ({
-        label: `${session.title} · ${session.model} · ${session.id.slice(0, 8)}`,
-        value: session.id,
-      }));
-      const id = arg || await requestValue("Select a session", values.map(entry => entry.label), { values });
-      if (!id) return;
-      try { loadStoredSession(sessionStoreRef.current.load(id)); }
-      catch { appendArchived({ id: nextId(), type: "error", content: `Session "${id}" was not found.` }); }
+      if (!lowerArg) {
+        setSessionManagerSessions(sessions);
+        return;
+      }
+      if (lowerArg === "list") {
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: formatSessionList(sessions, currentSessionRef.current.id, workspace.path),
+        });
+        return;
+      }
+      const id = actionArgs.join(" ").trim();
+      if (lowerArg === "resume") {
+        if (!id) {
+          appendArchived({ id: nextId(), type: "error", content: "Usage: /sessions resume <session-id>" });
+          return;
+        }
+        try { loadStoredSession(sessionStoreRef.current.load(id)); }
+        catch { appendArchived({ id: nextId(), type: "error", content: `Session "${id}" was not found.` }); }
+        return;
+      }
+      if (lowerArg === "delete") {
+        if (!id) {
+          appendArchived({ id: nextId(), type: "error", content: "Usage: /sessions delete <session-id>" });
+          return;
+        }
+        const target = sessions.find(session => session.id === id);
+        if (!target) {
+          appendArchived({ id: nextId(), type: "error", content: `Session "${id}" was not found.` });
+          return;
+        }
+        const confirmed = await requestValue(
+          `Remove session \`${target.title || target.id}\`?`,
+          ["Cancel", "Remove"],
+          {
+            archive: false,
+            kind: "mcp",
+            values: [
+              { label: "Cancel", value: false },
+              { label: "Remove", value: true },
+            ],
+          },
+        );
+        if (!confirmed) return;
+        const result = removeStoredSessions([id]);
+        appendArchived({
+          id: nextId(),
+          type: result.failed ? "error" : "answer",
+          content: result.failed ? `Session "${id}" could not be removed.` : `Session "${id}" was removed.`,
+        });
+        return;
+      }
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: `Unknown sessions action "${action}". Use list, resume, delete, or clear.`,
+      });
       return;
     }
     if (cmd === "/continue") {
@@ -820,7 +1094,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (cmd === "/help") {
       appendArchived({ id: nextId(), type: "answer", content: `# Commands\n\n${formatCommandHelp()}` });
     }
-  }, [appendArchived, currentModel, loadStoredSession, mcpManager, requestValue, workspace.path]);
+  }, [
+    appendArchived,
+    currentModel,
+    loadStoredSession,
+    mcpManager,
+    pendingQuestion,
+    performExit,
+    removeStoredSessions,
+    requestValue,
+    sessionManagerSessions,
+    showInitPrompt,
+    showSettings,
+    workspace.path,
+  ]);
 
   const handleThemePreview = useCallback((cmd, value) => {
     if (cmd !== "/theme") return;
@@ -1542,9 +1829,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             ...session,
             messages: completedRef.current,
             agentState: agentSessionRef.current,
+            savedPlan: latestPlan.map(item => ({ ...item })),
           });
         } else {
           if (session.turns.length === 0) session.title = redactSecrets(input).slice(0, 72);
+          session.savedPlan = latestPlan.map(item => ({ ...item }));
           currentSessionRef.current = sessionStoreRef.current.recordTurn(session, {
             input,
             before: gitBefore,
@@ -1852,6 +2141,112 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setSettingsSection(null);
   }, []);
 
+  const handleInitGenerate = useCallback(() => {
+    if (!initState) return;
+    setShowInitPrompt(false);
+    try {
+      initState.generator.writeAtomic(initState.proposedContent, initState.existingPath);
+      appendArchived({
+        id: nextId(),
+        type: "answer",
+        content: `AGENTS.md generated at \`${initState.existingPath}\``,
+      });
+    } catch (error) {
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: `AGENTS.md could not be generated.`,
+      });
+    }
+    setInitState(null);
+  }, [initState, appendArchived]);
+
+  const handleInitUpdate = useCallback(() => {
+    if (!initState) return;
+    setShowInitPrompt(false);
+    try {
+      initState.generator.writeAtomic(initState.proposedContent, initState.existingPath);
+      appendArchived({
+        id: nextId(),
+        type: "answer",
+        content: `AGENTS.md updated at \`${initState.existingPath}\``,
+      });
+    } catch (error) {
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: `AGENTS.md could not be updated.`,
+      });
+    }
+    setInitState(null);
+  }, [initState, appendArchived]);
+
+  const handleInitReplace = useCallback(() => {
+    if (!initState) return;
+    setShowInitPrompt(false);
+    try {
+      initState.generator.writeAtomic(initState.previewContent, initState.existingPath);
+      appendArchived({
+        id: nextId(),
+        type: "answer",
+        content: `AGENTS.md replaced at \`${initState.existingPath}\``,
+      });
+    } catch (error) {
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: `AGENTS.md could not be replaced.`,
+      });
+    }
+    setInitState(null);
+  }, [initState, appendArchived]);
+
+  const handleInitPreview = useCallback(() => {
+    if (!initState) return;
+    appendArchived({
+      id: nextId(),
+      type: "answer",
+      content: `# AGENTS.md Preview\n\n${initState.previewContent}`,
+    });
+  }, [initState, appendArchived]);
+
+  const handleInitCancel = useCallback(() => {
+    setShowInitPrompt(false);
+    setInitState(null);
+  }, []);
+
+  const handleResumeSession = useCallback(id => {
+    try {
+      const session = sessionStoreRef.current.load(id);
+      setSessionManagerSessions(null);
+      loadStoredSession(session);
+    } catch {
+      appendArchived({ id: nextId(), type: "error", content: `Session "${id}" was not found.` });
+      setSessionManagerSessions(sessionStoreRef.current.list());
+    }
+  }, [appendArchived, loadStoredSession]);
+
+  const handleDeleteSession = useCallback(id => {
+    const result = removeStoredSessions([id]);
+    if (result.failed) {
+      appendArchived({ id: nextId(), type: "error", content: `Session "${id}" could not be removed.` });
+    }
+    setSessionManagerSessions(sessionStoreRef.current.list());
+  }, [appendArchived, removeStoredSessions]);
+
+  const handleClearSessions = useCallback(() => {
+    const sessions = sessionStoreRef.current.list();
+    const result = removeStoredSessions(sessions.map(session => session.id));
+    if (result.failed) {
+      appendArchived({
+        id: nextId(),
+        type: "error",
+        content: `${result.failed} session${result.failed === 1 ? "" : "s"} could not be removed.`,
+      });
+    }
+    setSessionManagerSessions(sessionStoreRef.current.list());
+  }, [appendArchived, removeStoredSessions]);
+
   return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
     h(Static, {
       key: `history-${sessionKey}`,
@@ -1879,14 +2274,41 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         ? h(EmptyState)
         : null,
       h(PlanList, { plan: visiblePlan }),
-      showSettings
-        ? h(SettingsMenu, {
-            model: currentModel,
-            initialSection: settingsSection === "reset" ? "reset" : settingsSection,
-            onClose: handleCloseSettings,
-            onSettingChange: handleSettingChange,
+      sessionManagerSessions !== null
+        ? h(SessionManager, {
+            key: "session-manager",
+            workspacePath: workspace.path,
+            sessions: sessionManagerSessions,
+            currentSessionId: currentSessionRef.current.id,
+            onResume: handleResumeSession,
+            onDelete: handleDeleteSession,
+            onClear: handleClearSessions,
+            onClose: () => setSessionManagerSessions(null),
           })
-        : h(SessionFooter, {
+        : null,
+      showInitPrompt && initState
+        ? h(InitPrompt, {
+            mode: initState.mode,
+            workspaceRoot: initState.workspaceRoot,
+            sectionCount: initState.sectionCount,
+            inspectedCount: initState.inspectedCount,
+            previewContent: initState.previewContent,
+            proposedContent: initState.proposedContent,
+            onGenerate: handleInitGenerate,
+            onUpdate: handleInitUpdate,
+            onReplace: handleInitReplace,
+            onPreview: handleInitPreview,
+            onCancel: handleInitCancel,
+          })
+        : showSettings
+          ? h(SettingsMenu, {
+              model: currentModel,
+              initialSection: settingsSection === "reset" ? "reset" : settingsSection,
+              onClose: handleCloseSettings,
+              onSettingChange: handleSettingChange,
+            })
+          : h(SessionFooter, {
+            key: "session-footer",
             running,
             waitingForAnswer: Boolean(pendingQuestion),
             queueCount: queuedCount,
@@ -1903,7 +2325,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
               onClear: clearDisplay,
               onAbort: handleAbort,
               commands: COMMANDS,
-              inputActive: !messageQueueRef.current.exiting,
+              inputActive: !messageQueueRef.current.exiting && sessionManagerSessions === null,
               canAbort: running && !pendingQuestion,
               activeModel: currentModel,
               questionOptions: pendingQuestion?.options || [],

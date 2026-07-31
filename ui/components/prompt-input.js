@@ -235,8 +235,8 @@ export function PromptInput({
         const sel = commandViewport.selectedItem;
         if (!sel) return;
         if (!inSubMode && sel.sub) {
-          const newVal = sel.name + " ";
-          setInput({ value: newVal, cursor: newVal.length });
+          onCommand(sel.name, "");
+          setInput({ value: "", cursor: 0 });
           commandViewport.resetSelection();
           return;
         }

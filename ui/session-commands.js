@@ -284,7 +284,7 @@ export async function handleSessionCommand(cmd, arg, context) {
     setThemeName,
     workspacePath,
   } = context;
-  if (cmd === "/exit") process.exit(0);
+  if (cmd === "/exit") return context.exit?.();
   if (cmd === "/allow-all" || cmd === "/auto") {
     const requested = cmd === "/auto" && !String(arg || "").trim()
       ? (autoApproveRef.current ? "off" : "on")

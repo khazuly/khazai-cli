@@ -54,6 +54,9 @@ export const COMMANDS = [
 
   { name: "/new", description: "Start a new session", category: "core", aliases: [], visible: true, group: "session" },
   { name: "/sessions", description: "Resume or manage sessions", category: "core", aliases: [], visible: true, group: "session", sub: [
+    { name: "list", description: "List saved sessions in this folder" },
+    { name: "resume", description: "Resume a session by ID" },
+    { name: "delete", description: "Delete a session by ID" },
     { name: "clear", description: "Delete all saved sessions in this folder" },
   ] },
   { name: "/continue", description: "Resume the latest session", category: "core", aliases: [], visible: false, group: "session" },
@@ -89,8 +92,9 @@ export const COMMANDS = [
   ] },
 
 
+  { name: "/init", description: "Generate AGENTS.md for the workspace", category: "workspace", aliases: [], visible: true, group: "settings" },
   { name: "/help", description: "Show command reference", category: "help", aliases: [], visible: true, group: "settings" },
-  { name: "/exit", description: "Exit KhazAI", category: "help", aliases: [], visible: false, group: "settings" },
+  { name: "/exit", description: "Exit KhazAI", category: "help", aliases: ["/quit"], visible: true, group: "settings" },
 ];
 
 
@@ -149,7 +153,7 @@ export function groupedVisibleCommands(context = {}) {
   })).filter(g => g.commands.length > 0);
 }
 
-export function formatCommandHelp(commands = COMMANDS) {
+export function formatCommandHelp(commands = visibleCommands()) {
   return groupedCommands(commands).map(group => [
     `**${group.label}**`,
     ...group.commands.map(command => `\`${command.name}\` — ${command.description}`),

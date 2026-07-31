@@ -317,7 +317,7 @@ export class SessionStore {
       })
       .filter(session => session?.id && typeof session.workspace === "string" && resolve(session.workspace) === this.workspace)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map(({ id, title, model, agent, createdAt, updatedAt }) => ({ id, title, model, agent, createdAt, updatedAt }));
+      .map(({ id, title, model, agent, createdAt, updatedAt, messages }) => ({ id, title, model, agent, createdAt, updatedAt, messageCount: Array.isArray(messages) ? messages.length : 0 }));
   }
 
   fork(id) {
