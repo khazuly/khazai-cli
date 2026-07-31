@@ -35,6 +35,13 @@ import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
 import { redactSecrets } from "../lib/secrets.js";
+import { writeAtomicFile } from "../lib/init-generator.js";
+import {
+  INIT_TOOLS,
+  buildInitTaskPrompt,
+  collectInitEvidence,
+  prepareInitPreview,
+} from "../lib/init-task.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
 import { formatQueuedMessages, UserMessageQueue } from "./user-message-queue.js";
@@ -229,6 +236,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [settingsSection, setSettingsSection] = useState(null);
   const [showInitPrompt, setShowInitPrompt] = useState(false);
   const [initState, setInitState] = useState(null);
+  const initStateRef = useRef(null);
+  const initGenerationRef = useRef(0);
+  const initAwaitingInstructionRef = useRef(false);
+  const initRegenerateRef = useRef(null);
+  const handleCommandRef = useRef(null);
   const [sessionManagerSessions, setSessionManagerSessions] = useState(null);
   const contextUsageRef = useRef({});
   const agentRef = useRef(null);
@@ -418,7 +430,82 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     exit();
   }, [appendArchived, exit, mcpManager, persistBeforeExit]);
 
+  const runBasicInit = useCallback(async (arg = "") => {
+    const { InitGenerator } = await import("../lib/init-generator.js");
+    const generator = new InitGenerator(workspace.path);
+    const root = generator.detectWorkspace();
+
+    if (!root) {
+      appendArchived({ id: nextId(), type: "error", content: "Could not resolve workspace root." });
+      return;
+    }
+
+    const inspection = generator.inspect();
+    const content = generator.generate();
+    const validation = generator.validate(content);
+
+    if (!validation.valid) {
+      appendArchived({ id: nextId(), type: "error", content: `AGENTS.md could not be generated: ${validation.error}` });
+      return;
+    }
+
+    const existingPath = join(root, "AGENTS.md");
+    const fileExists = existsSync(existingPath);
+    const existingContent = fileExists ? readFileSync(existingPath, "utf-8") : null;
+    const sectionCount = (content.match(/^# /gm) || []).length || 0;
+    const generationId = ++initGenerationRef.current;
+
+    const open = state => {
+      initStateRef.current = state;
+      setInitState(state);
+      setShowInitPrompt(true);
+    };
+
+    if (!fileExists) {
+      open({
+        mode: "create",
+        workspaceRoot: root,
+        sectionCount,
+        inspectedCount: (inspection.inspectedFiles || []).length,
+        wordCount: content.split(/\s+/).filter(Boolean).length,
+        previewContent: content,
+        proposedContent: content,
+        existingPath,
+        warnings: [],
+        generator,
+        generationId,
+        evidence: null,
+      });
+      return;
+    }
+
+    const merged = mergeExistingContent(existingContent, content);
+    if (merged === existingContent) {
+      appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
+      return;
+    }
+    open({
+      mode: String(arg || "").includes("--force") ? "replaceConfirm" : "update",
+      workspaceRoot: root,
+      sectionCount,
+      inspectedCount: (inspection.inspectedFiles || []).length,
+      wordCount: content.split(/\s+/).filter(Boolean).length,
+      previewContent: content,
+      proposedContent: merged,
+      existingContent,
+      existingPath,
+      warnings: [],
+      generator,
+      generationId,
+      evidence: null,
+    });
+  }, [appendArchived, workspace.path]);
+
   const handleCommand = useCallback(async (cmd, arg) => {
+    if (initAwaitingInstructionRef.current && cmd !== "/init") {
+      initAwaitingInstructionRef.current = false;
+      initRegenerateRef.current = null;
+    }
     if (cmd === "/exit") {
       if (pendingQuestion || showInitPrompt || showSettings || sessionManagerSessions) {
         appendArchived({ id: nextId(), type: "error", content: "Close the active confirmation or manager before exiting." });
@@ -479,114 +566,46 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
     if (cmd === "/init") {
       const lowerArg = String(arg || "").trim().toLowerCase();
-      const previewOnly = lowerArg === "preview";
-      const updateMode = lowerArg === "update";
-      const forceMode = lowerArg === "--force";
+      if (showInitPrompt || initStateRef.current) {
+        appendArchived({
+          id: nextId(),
+          type: "error",
+          content: "Close the active AGENTS.md preview first.",
+        });
+        return;
+      }
+      initAwaitingInstructionRef.current = false;
 
-      const { InitGenerator } = await import("../lib/init-generator.js");
-      const generator = new InitGenerator(workspace.path);
-      const root = generator.detectWorkspace();
+      if (lowerArg === "basic") {
+        runBasicInit(lowerArg);
+        return;
+      }
 
-      if (!root) {
+      if (submittingRef.current) {
+        appendArchived({
+          id: nextId(),
+          type: "error",
+          content: "This command is unavailable while a tool is running.",
+        });
+        return;
+      }
+
+      const kind = lowerArg === "preview"
+        ? "preview"
+        : lowerArg === "update"
+          ? "update"
+          : lowerArg === "--force"
+            ? "force"
+            : "default";
+      const baseline = collectInitEvidence(workspace.path);
+      if (!baseline.workspaceRoot) {
         appendArchived({ id: nextId(), type: "error", content: "Could not resolve workspace root." });
         return;
       }
-
-      const inspection = generator.inspect();
-      const content = generator.generate();
-      const validation = generator.validate(content);
-
-      if (!validation.valid) {
-        appendArchived({ id: nextId(), type: "error", content: `AGENTS.md could not be generated: ${validation.error}` });
-        return;
-      }
-
-      const existingPath = join(root, "AGENTS.md");
-      const fileExists = existsSync(existingPath);
-      const existingContent = fileExists ? readFileSync(existingPath, "utf-8") : null;
-
-      const sectionCount = (content.match(/^# /gm) || []).length || 0;
-
-      if (previewOnly) {
-        appendArchived({
-          id: nextId(),
-          type: "answer",
-          content: `# AGENTS.md Preview\n\n${content}`,
-        });
-        return;
-      }
-
-      if (fileExists && forceMode) {
-        if (existingContent === content) {
-          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
-          return;
-        }
-        setInitState({
-          mode: "replaceConfirm",
-          workspaceRoot: root,
-          sectionCount,
-          inspectedCount: (inspection.inspectedFiles || []).length,
-          previewContent: content,
-          proposedContent: content,
-          existingPath,
-          generator,
-        });
-        setShowInitPrompt(true);
-        return;
-      }
-
-      if (fileExists && updateMode) {
-        const merged = mergeExistingContent(existingContent, content);
-        if (merged === existingContent) {
-          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
-          return;
-        }
-        setInitState({
-          mode: "update",
-          workspaceRoot: root,
-          sectionCount,
-          inspectedCount: (inspection.inspectedFiles || []).length,
-          previewContent: content,
-          proposedContent: merged,
-          existingPath,
-          generator,
-        });
-        setShowInitPrompt(true);
-        return;
-      }
-
-      if (fileExists) {
-        const merged = mergeExistingContent(existingContent, content);
-        if (merged === existingContent) {
-          appendArchived({ id: nextId(), type: "answer", content: "AGENTS.md is already up to date." });
-          return;
-        }
-        setInitState({
-          mode: "update",
-          workspaceRoot: root,
-          sectionCount,
-          inspectedCount: (inspection.inspectedFiles || []).length,
-          previewContent: content,
-          proposedContent: merged,
-          existingPath,
-          generator,
-        });
-        setShowInitPrompt(true);
-        return;
-      }
-
-      setInitState({
-        mode: "create",
-        workspaceRoot: root,
-        sectionCount,
-        inspectedCount: (inspection.inspectedFiles || []).length,
-        previewContent: content,
-        proposedContent: content,
-        existingPath,
-        generator,
+      return submitRef.current?.(buildInitTaskPrompt({ baseline }), {
+        internalInput: true,
+        initTask: { kind, baseline },
       });
-      setShowInitPrompt(true);
-      return;
     }
     if (
       submittingRef.current
@@ -1108,6 +1127,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     showSettings,
     workspace.path,
   ]);
+  handleCommandRef.current = handleCommand;
 
   const handleThemePreview = useCallback((cmd, value) => {
     if (cmd !== "/theme") return;
@@ -1130,6 +1150,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const approvedPlan = options.approvedPlan || null;
     const internalInput = Boolean(options.internalInput);
     const queuedItemId = options.queuedItemId || null;
+    const initTask = options.initTask || null;
     if (!retryProvider && !input.trim()) return;
     if (submittingRef.current) {
       if (!retryProvider && !queuedItemId) {
@@ -1182,6 +1203,26 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       analysisId: `analysis-${turnId}`,
     });
     responseBufferRef.current = createResponseBuffer(analysisScope);
+    let initEvidence = null;
+    let initPhase = "inspecting";
+    const initResponse = { content: "" };
+    const setInitPhase = status => {
+      if (initPhase !== status) {
+        initPhase = status;
+        setModeStatus({ mode: "init", status });
+      }
+    };
+    if (initTask) {
+      initEvidence = initTask.previousEvidence
+        || (initTask.baseline ? { ...initTask.baseline } : null)
+        || collectInitEvidence(workspace.path);
+      setInitPhase("inspecting");
+    }
+    const openInitPrompt = state => {
+      initStateRef.current = state;
+      setInitState(state);
+      setShowInitPrompt(true);
+    };
     const gitBefore = sessionStoreRef.current.captureGitState();
     const agentStateBefore = agentRef.current?.exportSessionState?.() || null;
     const activate = message => {
@@ -1316,6 +1357,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (!committed.response) return "";
       const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
       if (!content) return "";
+      if (initTask) {
+        initResponse.content = content;
+        setInitPhase("preparing");
+        finalCommitted = true;
+        return content;
+      }
       appendArchived({ id: committed.response.id, type: "answer", content });
       finalCommitted = true;
       return content;
@@ -1336,7 +1383,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       setContextUsage(usage);
     };
 
-    const agent = agentRef.current;
+    const previousAgent = agentRef.current;
+    let agent = agentRef.current;
+    if (initTask) {
+      agent = new Agent(
+        buildRegistry(workspace.path, mcpToolsRef.current).subset(INIT_TOOLS),
+        {
+          workspace: workspace.path,
+          sessionId: randomUUID(),
+          model: currentModel,
+          agent: "build",
+          autoApprove: false,
+          readOnly: true,
+        },
+      );
+      agentRef.current = agent;
+    }
     agent.setQuestionHandler(request => new Promise(resolve => {
       planningQuestionRef.current = request;
       questionResolverRef.current = {
@@ -1365,7 +1427,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }));
     try {
     updateUsage();
-    const agentInput = retryProvider
+    const agentInput = initTask
+      ? input
+      : retryProvider
       ? ""
       : input.trimStart().startsWith("!")
       ? input
@@ -1410,6 +1474,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (cancelledRunIdRef.current === analysisScope.runId) continue;
       if (!analysisEventIsCurrent(ev, analysisScope)) continue;
       if (ev.type === "thinking") {
+        if (initTask) {
+          if (initPhase === "reviewing") setInitPhase("generating");
+          resetStreaming();
+          continue;
+        }
         if (planningRun) setModeStatus({ mode: "plan", status: "investigating" });
         resetStreaming();
         finishReadBatch();
@@ -1418,6 +1487,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
 
       if (ev.type === "public-activity") {
+        if (initTask) continue;
         showPublicAnalysis(
           ev.toolCallId,
           agent.redactSerializableForDisplay(ev.publicActivity || {}),
@@ -1495,6 +1565,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (part.tool === "question") continue;
         structuredCallsRef.current.add(part.callId);
         if (part.tool === "think") {
+          if (initTask) continue;
           if (part.state.status === "pending" || part.state.status === "running") {
             showPublicAnalysis(
               part.callId,
@@ -1595,8 +1666,24 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "tool-call") {
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) continue;
         if (ev.tool === "question") continue;
+        if (initTask) {
+          if (initPhase === "inspecting") setInitPhase("reviewing");
+          if (ev.tool === "read" && ev.args?.path) {
+            initEvidence.inspectedFiles.push(String(ev.args.path));
+          }
+          if (ev.tool === "bash" && ev.args?.command) {
+            initEvidence.commands.push(String(ev.args.command).slice(0, 200));
+          }
+          if (ev.tool === "glob" && ev.args?.pattern) {
+            initEvidence.patterns.push(String(ev.args.pattern));
+          }
+        }
         resetStreaming();
         if (ev.tool === "think") {
+          if (initTask) {
+            finishReadBatch();
+            continue;
+          }
           finishReadBatch();
           showPublicAnalysis(
             ev.callId,
@@ -1651,10 +1738,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "tool-result") {
         updateUsage();
         if (ev.tool === "think") {
-          if (messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
+          if (!initTask && messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
           continue;
         }
-        if (messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
+        if (!initTask && messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
         if (ev.callId && structuredCallsRef.current.has(ev.callId)) {
           if (ev.tool === "read") {
             recordReadResult(ev.callId, agent.redactForDisplay(ev.result), Boolean(ev.failed));
@@ -1731,12 +1818,19 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
         }
         if (safeContent && !thinkTimeout) {
-          appendArchived({
-            id: nextId(),
-            type: ev.recoverable ? "provider-error" : ev.type,
-            content: safeContent,
-          });
-          if (ev.type === "answer") finalCommitted = true;
+          if (initTask) {
+            initResponse.content = safeContent;
+            setInitPhase("preparing");
+            finalCommitted = true;
+            if (ev.type === "answer") finishedNormally = true;
+          } else {
+            appendArchived({
+              id: nextId(),
+              type: ev.recoverable ? "provider-error" : ev.type,
+              content: safeContent,
+            });
+            if (ev.type === "answer") finalCommitted = true;
+          }
         }
         continue;
       }
@@ -1769,7 +1863,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
     } finally {
       updateUsage();
-      agentSessionRef.current = agent.exportSessionState?.() || null;
+      agentSessionRef.current = initTask
+        ? (previousAgent?.exportSessionState?.() || null)
+        : (agent.exportSessionState?.() || null);
       if (
         planningRun
         && finishedNormally
@@ -1807,6 +1903,90 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       submittingRef.current = false;
       setRunning(false);
       setWorkspaceFiles(listWorkspaceFiles(workspace.path));
+      if (initTask) {
+        agentRef.current = previousAgent;
+        setModeStatus(null);
+        const initCancelled = cancelledRunIdRef.current === runId;
+        if (initCancelled) {
+          initStateRef.current = null;
+          setInitState(null);
+          initRegenerateRef.current = null;
+        } else if (!initResponse.content) {
+          const initGenerationId = initTask.generationId || ++initGenerationRef.current;
+          const failedState = errorText => openInitPrompt({
+            mode: "failed",
+            workspaceRoot: initEvidence?.workspaceRoot || workspace.path,
+            inspectedCount: initEvidence?.inspectedFiles?.length || 0,
+            sectionCount: 0,
+            wordCount: 0,
+            previewContent: initResponse.content,
+            proposedContent: "",
+            existingPath: null,
+            warnings: [],
+            error: errorText,
+            generationId: initGenerationId,
+            evidence: initEvidence,
+          });
+          if (!initResponse.content) {
+            failedState(fatalError || "The model returned no content.");
+          } else {
+            const prepared = prepareInitPreview({ content: initResponse.content, evidence: initEvidence });
+            if (!prepared.ok) {
+              failedState(prepared.error);
+            } else if (initTask.kind === "preview") {
+              appendArchived({
+                id: nextId(),
+                type: "answer",
+                content: `# AGENTS.md Preview\n\n${prepared.markdown}`,
+              });
+              if (prepared.warnings.length) {
+                appendArchived({
+                  id: nextId(),
+                  type: "answer",
+                  content: prepared.warnings.map(warning => `! ${warning}`).join("\n"),
+                });
+              }
+            } else {
+              const existing = prepared.existing;
+              const mode = existing
+                ? (initTask.kind === "force" ? "replaceConfirm" : "update")
+                : "create";
+              let proposedContent = prepared.markdown;
+              let mergedExisting = false;
+              if (mode === "update") {
+                const merged = mergeExistingContent(existing, prepared.markdown);
+                if (merged === existing) {
+                  mergedExisting = true;
+                } else {
+                  proposedContent = merged;
+                }
+              }
+              if (mergedExisting) {
+                appendArchived({
+                  id: nextId(),
+                  type: "answer",
+                  content: "AGENTS.md is already up to date.",
+                });
+              } else {
+                openInitPrompt({
+                  mode,
+                  workspaceRoot: prepared.workspaceRoot,
+                  inspectedCount: [...new Set(initEvidence?.inspectedFiles || [])].length,
+                  sectionCount: prepared.sectionCount,
+                  wordCount: prepared.wordCount,
+                  previewContent: prepared.markdown,
+                  proposedContent,
+                  existingContent: existing || undefined,
+                  existingPath: prepared.existingPath,
+                  warnings: prepared.warnings,
+                  generationId: initGenerationId,
+                  evidence: initEvidence,
+                });
+              }
+            }
+          }
+        }
+      }
       const runResult = recoverableFailure || handedOffForQueue ? null : terminalRunResult({
         cancelled: cancelledRunIdRef.current === runId,
         completionGaps: agent._executionPolicy?.completionGaps?.() || [],
@@ -1814,7 +1994,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finalCommitted,
         finishedNormally,
       });
-      if (runResult?.status === "failed" && runResult.unresolvedIssues.length) {
+      if (!initTask && runResult?.status === "failed" && runResult.unresolvedIssues.length) {
         appendArchived({
           id: nextId(),
           type: "summary",
@@ -1823,7 +2003,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         });
       }
       const session = currentSessionRef.current;
-      if (session?.id === sessionBefore?.id) {
+      if (!initTask && session?.id === sessionBefore?.id) {
         if (retryProvider) {
           currentSessionRef.current = sessionStoreRef.current.save({
             ...session,
@@ -1868,6 +2048,32 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     }
   }, [appendArchived]);
   submitRef.current = submit;
+
+  const handlePromptSubmit = useCallback((input, options) => {
+    const pendingRegenerate = initRegenerateRef.current;
+    if (pendingRegenerate && initAwaitingInstructionRef.current) {
+      initAwaitingInstructionRef.current = false;
+      initRegenerateRef.current = null;
+      const generationId = ++initGenerationRef.current;
+      return submitRef.current?.(buildInitTaskPrompt({
+        previousEvidence: pendingRegenerate.evidence,
+        previousMarkdown: pendingRegenerate.markdown,
+        customInstruction: input,
+      }), {
+        internalInput: true,
+        initTask: {
+          kind: pendingRegenerate.mode === "update" || pendingRegenerate.mode === "replaceConfirm"
+            ? "update"
+            : "default",
+          previousEvidence: pendingRegenerate.evidence,
+          previousMarkdown: pendingRegenerate.markdown,
+          customInstruction: input,
+          generationId,
+        },
+      });
+    }
+    return submit(input, options);
+  }, [submit]);
 
   const replaceAgentProfile = useCallback((name, state = null) => {
     const previous = state || agentRef.current?.exportSessionState?.() || null;
@@ -2141,15 +2347,18 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setSettingsSection(null);
   }, []);
 
-  const handleInitGenerate = useCallback(() => {
-    if (!initState) return;
+  const handleInitWrite = useCallback(() => {
+    const state = initStateRef.current;
+    if (!state || state.mode === "failed" || submittingRef.current) return;
     setShowInitPrompt(false);
     try {
-      initState.generator.writeAtomic(initState.proposedContent, initState.existingPath);
+      const content = state.proposedContent;
+      if (state.generator) state.generator.writeAtomic(content, state.existingPath);
+      else writeAtomicFile(content, state.existingPath);
       appendArchived({
         id: nextId(),
         type: "answer",
-        content: `AGENTS.md generated at \`${initState.existingPath}\``,
+        content: `AGENTS.md generated at \`${state.existingPath}\``,
       });
     } catch (error) {
       appendArchived({
@@ -2158,18 +2367,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         content: `AGENTS.md could not be generated.`,
       });
     }
+    initStateRef.current = null;
     setInitState(null);
-  }, [initState, appendArchived]);
+  }, [appendArchived]);
 
   const handleInitUpdate = useCallback(() => {
-    if (!initState) return;
+    const state = initStateRef.current;
+    if (!state || state.mode === "failed" || submittingRef.current) return;
     setShowInitPrompt(false);
     try {
-      initState.generator.writeAtomic(initState.proposedContent, initState.existingPath);
+      const content = state.proposedContent;
+      if (state.generator) state.generator.writeAtomic(content, state.existingPath);
+      else writeAtomicFile(content, state.existingPath);
       appendArchived({
         id: nextId(),
         type: "answer",
-        content: `AGENTS.md updated at \`${initState.existingPath}\``,
+        content: `AGENTS.md updated at \`${state.existingPath}\``,
       });
     } catch (error) {
       appendArchived({
@@ -2178,18 +2391,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         content: `AGENTS.md could not be updated.`,
       });
     }
+    initStateRef.current = null;
     setInitState(null);
-  }, [initState, appendArchived]);
+  }, [appendArchived]);
 
   const handleInitReplace = useCallback(() => {
-    if (!initState) return;
+    const state = initStateRef.current;
+    if (!state || state.mode === "failed" || submittingRef.current) return;
     setShowInitPrompt(false);
     try {
-      initState.generator.writeAtomic(initState.previewContent, initState.existingPath);
+      const content = state.previewContent;
+      if (state.generator) state.generator.writeAtomic(content, state.existingPath);
+      else writeAtomicFile(content, state.existingPath);
       appendArchived({
         id: nextId(),
         type: "answer",
-        content: `AGENTS.md replaced at \`${initState.existingPath}\``,
+        content: `AGENTS.md replaced at \`${state.existingPath}\``,
       });
     } catch (error) {
       appendArchived({
@@ -2198,20 +2415,71 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         content: `AGENTS.md could not be replaced.`,
       });
     }
+    initStateRef.current = null;
     setInitState(null);
-  }, [initState, appendArchived]);
+  }, [appendArchived]);
 
-  const handleInitPreview = useCallback(() => {
-    if (!initState) return;
+  const handleInitRegenerate = useCallback(() => {
+    const state = initStateRef.current;
+    if (!state || submittingRef.current) return;
+    setShowInitPrompt(false);
+    const generationId = ++initGenerationRef.current;
+    const previousEvidence = state.evidence || null;
+    const previousMarkdown = state.previewContent || null;
+    submitRef.current?.(buildInitTaskPrompt({
+      previousEvidence,
+      previousMarkdown,
+    }), {
+      internalInput: true,
+      initTask: {
+        kind: state.mode === "update" || state.mode === "replaceConfirm" ? "update" : "default",
+        previousEvidence,
+        previousMarkdown,
+        generationId,
+      },
+    });
+  }, []);
+
+  const handleInitCustomInstruction = useCallback(() => {
+    const state = initStateRef.current;
+    if (!state || state.mode === "failed" || submittingRef.current) return;
+    initRegenerateRef.current = {
+      evidence: state.evidence || null,
+      markdown: state.previewContent || null,
+      mode: state.mode,
+    };
+    setShowInitPrompt(false);
+    initStateRef.current = null;
+    setInitState(null);
+    initAwaitingInstructionRef.current = true;
     appendArchived({
       id: nextId(),
       type: "answer",
-      content: `# AGENTS.md Preview\n\n${initState.previewContent}`,
+      content: "Type your custom instruction and press Enter to regenerate AGENTS.md.",
     });
-  }, [initState, appendArchived]);
+  }, [appendArchived]);
+
+  const handleInitBasic = useCallback(() => {
+    const state = initStateRef.current;
+    if (!state) return;
+    setShowInitPrompt(false);
+    initStateRef.current = null;
+    setInitState(null);
+    runBasicInit();
+  }, [runBasicInit]);
+
+  const handleInitChangeModel = useCallback(() => {
+    const state = initStateRef.current;
+    if (!state) return;
+    setShowInitPrompt(false);
+    initStateRef.current = null;
+    setInitState(null);
+    handleCommandRef.current?.("/model", "");
+  }, []);
 
   const handleInitCancel = useCallback(() => {
     setShowInitPrompt(false);
+    initStateRef.current = null;
     setInitState(null);
   }, []);
 
@@ -2292,12 +2560,19 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             workspaceRoot: initState.workspaceRoot,
             sectionCount: initState.sectionCount,
             inspectedCount: initState.inspectedCount,
+            wordCount: initState.wordCount,
             previewContent: initState.previewContent,
             proposedContent: initState.proposedContent,
-            onGenerate: handleInitGenerate,
+            existingContent: initState.existingContent,
+            warnings: initState.warnings,
+            error: initState.error,
+            onWrite: handleInitWrite,
             onUpdate: handleInitUpdate,
             onReplace: handleInitReplace,
-            onPreview: handleInitPreview,
+            onRegenerate: handleInitRegenerate,
+            onCustomInstruction: handleInitCustomInstruction,
+            onBasic: handleInitBasic,
+            onChangeModel: handleInitChangeModel,
             onCancel: handleInitCancel,
           })
         : showSettings
@@ -2320,12 +2595,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
             ),
             activityScope: activeScopeRef.current,
             promptProps: {
-              onSubmit: pendingQuestion ? answerQuestion : submit,
+              onSubmit: pendingQuestion ? answerQuestion : handlePromptSubmit,
               onCommand: handleCommand,
               onClear: clearDisplay,
               onAbort: handleAbort,
               commands: COMMANDS,
-              inputActive: !messageQueueRef.current.exiting && sessionManagerSessions === null,
+              inputActive: !messageQueueRef.current.exiting
+                && sessionManagerSessions === null
+                && !showInitPrompt,
               canAbort: running && !pendingQuestion,
               activeModel: currentModel,
               questionOptions: pendingQuestion?.options || [],

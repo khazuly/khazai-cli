@@ -66,6 +66,7 @@ export class Agent {
     this._loopRecoveryExhausted = false;
     this._questionHandler = opts.questionHandler || null;
     this._permissionHandler = opts.permissionHandler || null;
+    this._readOnly = Boolean(opts.readOnly);
     this._permissionService = opts.permissionService || new PermissionService(this._workspace, this._config, {
       agentPermission: this._agentProfile.permission,
       auto: opts.autoApprove,

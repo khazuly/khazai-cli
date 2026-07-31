@@ -18,7 +18,10 @@ export function createToolExecutor(agent, scope) {
     timeoutMs: agent._config.toolTimeout,
     signal: executionScope?.controller?.signal || agent._abortController?.signal,
     taskContext: agent._executionPolicy,
-    readOnly: agent._agentProfile?.name === "plan",
+    readOnly: agent._readOnly || agent._agentProfile?.name === "plan",
+    readOnlyMessage: agent._readOnly
+      ? "Repository initialization is read-only. This tool would modify the workspace."
+      : undefined,
     runId: executionScope?.runId,
     turnId: executionScope?.turnId,
     taskEpoch: executionScope?.taskEpoch,

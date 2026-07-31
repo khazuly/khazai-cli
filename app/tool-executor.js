@@ -147,6 +147,7 @@ export class ToolExecutor {
     signal = null,
     taskContext = null,
     readOnly = false,
+    readOnlyMessage = null,
     runId = null,
     turnId = null,
     taskEpoch = null,
@@ -172,6 +173,7 @@ export class ToolExecutor {
     this.signal = signal;
     this.taskContext = taskContext;
     this.readOnly = Boolean(readOnly);
+    this.readOnlyMessage = readOnlyMessage || "Plan Mode is read-only. This tool would modify the workspace.";
     this.runId = runId;
     this.turnId = turnId;
     this.taskEpoch = taskEpoch;
@@ -299,7 +301,7 @@ export class ToolExecutor {
       return;
     }
     if (this.readOnly && !planToolIsReadOnly(call, tool)) {
-      yield* this._reject(part, call, "Plan Mode is read-only. This tool would modify the workspace.", "blocked");
+      yield* this._reject(part, call, this.readOnlyMessage, "blocked");
       return;
     }
 

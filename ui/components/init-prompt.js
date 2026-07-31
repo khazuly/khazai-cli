@@ -1,13 +1,17 @@
-import { createElement as h, useState, useRef, useCallback } from "react";
+import { createElement as h, useState, useRef, useCallback, useMemo } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { useTheme } from "../theme.js";
+import { diffLines } from "../../lib/init-task.js";
 
 const MODES = {
   create: {
-    title: "Generate AGENTS.md?",
+    title: "AGENTS.md Preview",
     options: [
-      { label: "Generate AGENTS.md (Recommended)", value: "generate" },
-      { label: "Preview full content", value: "preview" },
+      { label: "Write AGENTS.md (Recommended)", value: "write" },
+      { label: "Review full content", value: "preview" },
+      { label: "Regenerate", value: "regenerate" },
+      { label: "Add custom instruction", value: "custom" },
+      { label: "Generate basic template without AI", value: "basic" },
       { label: "Cancel", value: "cancel" },
     ],
   },
@@ -15,15 +19,25 @@ const MODES = {
     title: "AGENTS.md already exists",
     options: [
       { label: "Update while preserving custom rules (Recommended)", value: "update" },
-      { label: "Replace the entire file", value: "replace" },
-      { label: "Preview proposed changes", value: "preview" },
+      { label: "Replace the file", value: "replace" },
+      { label: "Review proposed diff", value: "diff" },
+      { label: "Regenerate", value: "regenerate" },
+      { label: "Add custom instruction", value: "custom" },
       { label: "Cancel", value: "cancel" },
     ],
   },
   replaceConfirm: {
     title: "Replace entire AGENTS.md?",
     options: [
+      { label: "Cancel", value: "cancel" },
       { label: "Yes, replace everything", value: "replace" },
+    ],
+  },
+  failed: {
+    title: "AGENTS.md generation failed",
+    options: [
+      { label: "Retry", value: "retry" },
+      { label: "Change model", value: "model" },
       { label: "Cancel", value: "cancel" },
     ],
   },
@@ -49,13 +63,13 @@ function wrapText(value, width) {
   return lines.length ? lines : [""];
 }
 
-function scrollPreview(text, offset, height) {
-  const lines = text.split("\n");
-  if (lines.length <= height) return { visibleLines: lines, totalLines: lines.length, atTop: true, atBottom: true };
+function scrollPreview(lines, offset, height) {
+  if (lines.length <= height) {
+    return { visibleLines: lines, totalLines: lines.length, offset: 0, atTop: true, atBottom: true };
+  }
   const clampedOffset = Math.max(0, Math.min(offset, lines.length - height));
-  const visible = lines.slice(clampedOffset, clampedOffset + height);
   return {
-    visibleLines: visible,
+    visibleLines: lines.slice(clampedOffset, clampedOffset + height),
     totalLines: lines.length,
     offset: clampedOffset,
     atTop: clampedOffset === 0,
@@ -63,17 +77,57 @@ function scrollPreview(text, offset, height) {
   };
 }
 
+function ScrollableView({ title, lines, columns, theme, hint }) {
+  const [offset, setOffset] = useState(0);
+  const height = Math.max(3, Math.min(15, (columns?.rows || 24) - 12));
+  const view = scrollPreview(lines, offset, height);
+  return h(Box, {
+    flexDirection: "column",
+    borderStyle: "single",
+    borderColor: theme.border,
+    paddingX: 2,
+    paddingY: 1,
+    marginTop: 1,
+    width: columns?.columns || 80,
+  },
+    h(Text, { bold: true, color: theme.primary }, title),
+    h(Box, { flexDirection: "column", marginTop: 1, marginBottom: 1 },
+      ...view.visibleLines.map((line, index) =>
+        h(Text, {
+          key: `${view.offset + index}-${line.type || "line"}`,
+          color: line.type === "add"
+            ? theme.success
+            : line.type === "remove"
+              ? theme.error
+              : theme.text,
+          wrap: "wrap",
+        }, `${line.type === "add" ? "+ " : line.type === "remove" ? "- " : "  "}${line.text}`),
+      ),
+    ),
+    h(Text, { color: theme.muted, dimColor: true, wrap: "wrap" },
+      `L ${view.offset + 1}-${Math.min(view.offset + height, view.totalLines)} / ${view.totalLines} · ↑↓ scroll · Esc close`,
+    ),
+  );
+}
+
 export function InitPrompt({
   mode,
   workspaceRoot,
-  sectionCount,
   inspectedCount,
+  sectionCount,
+  wordCount,
   previewContent,
   proposedContent,
-  onGenerate,
+  existingContent,
+  warnings = [],
+  error = "",
+  onWrite,
   onUpdate,
   onReplace,
-  onPreview,
+  onRegenerate,
+  onCustomInstruction,
+  onBasic,
+  onChangeModel,
   onCancel,
 }) {
   const theme = useTheme();
@@ -83,41 +137,43 @@ export function InitPrompt({
 
   const config = MODES[mode] || MODES.create;
   const [selected, setSelected] = useState(0);
-  const [showFullPreview, setShowFullPreview] = useState(false);
-  const [previewOffset, setPreviewOffset] = useState(0);
-  const [replaceStep, setReplaceStep] = useState(false);
+  const [view, setView] = useState(null); // "content" | "diff"
   const confirmed = useRef(false);
 
   const content = proposedContent || previewContent || "";
-  const previewHeight = Math.max(3, Math.min(15, (stdout?.rows || 24) - 10));
-  const previewInfo = scrollPreview(content, previewOffset, previewHeight);
+  const diffRows = useMemo(
+    () => mode === "update" ? diffLines(existingContent || "", content) : [],
+    [mode, existingContent, content],
+  );
+
+  const runOption = useCallback((value, allowRepeat = false) => {
+    if (confirmed.current && !allowRepeat) return;
+    if (!allowRepeat) confirmed.current = true;
+    if (value === "write") onWrite?.();
+    else if (value === "update") onUpdate?.();
+    else if (value === "replace") onReplace?.();
+    else if (value === "regenerate") onRegenerate?.();
+    else if (value === "custom") onCustomInstruction?.();
+    else if (value === "basic") onBasic?.();
+    else if (value === "model") onChangeModel?.();
+    else onCancel?.();
+  }, [onWrite, onUpdate, onReplace, onRegenerate, onCustomInstruction, onBasic, onChangeModel, onCancel]);
 
   const handleConfirm = useCallback(() => {
-    if (confirmed.current) return;
-    confirmed.current = true;
     const option = config.options[selected];
     if (!option) return;
-    if (mode === "replaceConfirm") {
-      if (option.value === "replace") onReplace?.();
-      else onCancel?.();
+    if (option.value === "preview") {
+      setView("content");
+      confirmed.current = false;
       return;
     }
-    if (option.value === "generate") onGenerate?.();
-    else if (option.value === "update") onUpdate?.();
-    else if (option.value === "replace") {
-      if (replaceStep) {
-        onReplace?.();
-      } else {
-        setReplaceStep(true);
-        confirmed.current = false;
-      }
-    } else if (option.value === "preview") {
-      setShowFullPreview(true);
+    if (option.value === "diff") {
+      setView("diff");
       confirmed.current = false;
-    } else {
-      onCancel?.();
+      return;
     }
-  }, [selected, config, mode, replaceStep, onGenerate, onUpdate, onReplace, onPreview, onCancel]);
+    runOption(option.value);
+  }, [config, selected, runOption]);
 
   const handleCancel = useCallback(() => {
     if (confirmed.current) return;
@@ -127,26 +183,10 @@ export function InitPrompt({
 
   useInput((input, key) => {
     if (confirmed.current) return;
-    if (showFullPreview) {
+    if (view) {
       if (key.escape || input === "q") {
-        setShowFullPreview(false);
+        setView(null);
         confirmed.current = false;
-        return;
-      }
-      if (key.upArrow || key.pageUp) {
-        setPreviewOffset(prev => Math.max(0, prev - (key.pageUp ? previewHeight : 1)));
-        return;
-      }
-      if (key.downArrow || key.pageDown) {
-        setPreviewOffset(prev => prev + (key.pageDown ? previewHeight : 1));
-        return;
-      }
-      if (key.home) {
-        setPreviewOffset(0);
-        return;
-      }
-      if (key.end) {
-        setPreviewOffset(content.split("\n").length);
         return;
       }
       return;
@@ -169,33 +209,26 @@ export function InitPrompt({
     }
   });
 
-  if (showFullPreview) {
-    return h(Box, {
-      flexDirection: "column",
-      borderStyle: "single",
-      borderColor: theme.border,
-      paddingX: 2,
-      paddingY: 1,
-      marginTop: 1,
-      width: columns,
-    },
-      h(Text, { bold: true, color: theme.primary }, "AGENTS.md Preview"),
-      h(Box, { flexDirection: "column", marginTop: 1, marginBottom: 1 },
-        ...previewInfo.visibleLines.map((line, i) =>
-          h(Text, {
-            key: `${previewInfo.offset + i}`,
-            color: theme.text,
-            wrap: "wrap",
-          }, line)
-        ),
-      ),
-      h(Text, { color: theme.muted, dimColor: true, wrap: "wrap" },
-        `L ${previewInfo.offset + 1}-${Math.min(previewInfo.offset + previewHeight, previewInfo.totalLines)} / ${previewInfo.totalLines} · ↑↓ scroll · Esc close`,
-      ),
-    );
+  if (view === "content") {
+    return h(ScrollableView, {
+      title: "AGENTS.md — full content",
+      lines: content.split("\n").map(text => ({ type: null, text })),
+      columns: stdout,
+      theme,
+    });
+  }
+
+  if (view === "diff") {
+    return h(ScrollableView, {
+      title: "AGENTS.md — proposed diff",
+      lines: diffRows,
+      columns: stdout,
+      theme,
+    });
   }
 
   const pathLines = wrapText(workspaceRoot, contentWidth);
+  const lengthText = wordCount > 0 ? `${wordCount} words` : `${sectionCount} sections`;
 
   return h(Box, {
     flexDirection: "column",
@@ -208,41 +241,55 @@ export function InitPrompt({
   },
     h(Text, { bold: true, color: theme.primary }, config.title),
 
+    mode === "failed"
+      ? h(Box, { flexDirection: "column", marginTop: 1 },
+          h(Text, { color: theme.error, bold: true }, "[×] AGENTS.md generation failed."),
+          error ? h(Text, { color: theme.muted, wrap: "wrap", marginTop: 1 }, error) : null,
+        )
+      : h(Box, { flexDirection: "column" },
+          h(Text, " "),
+          h(Box, { flexDirection: "column" },
+            h(Text, { bold: true, color: theme.metadata }, "Path"),
+            ...pathLines.map((line, index) => h(Text, {
+              key: `path-${index}`,
+              color: theme.toolTarget,
+              wrap: "wrap",
+            }, line)),
+          ),
+          h(Text, " "),
+          h(Box, { flexDirection: "column" },
+            h(Box, { marginBottom: 1 },
+              h(Box, { width: 12, flexShrink: 0 }, h(Text, { color: theme.muted }, "Inspected")),
+              h(Text, { color: theme.text }, `${inspectedCount} files`),
+            ),
+            h(Box, { marginBottom: 1 },
+              h(Box, { width: 12, flexShrink: 0 }, h(Text, { color: theme.muted }, "Length")),
+              h(Text, { color: theme.text }, lengthText),
+            ),
+            h(Box, { marginBottom: 1 },
+              h(Box, { width: 12, flexShrink: 0 }, h(Text, { color: theme.muted }, "Sections")),
+              h(Text, { color: theme.text }, String(sectionCount)),
+            ),
+          ),
+          warnings.length > 0
+            ? h(Box, { flexDirection: "column", marginTop: 1 },
+                ...warnings.map(warning =>
+                  h(Text, { key: warning, color: theme.warning, wrap: "wrap" }, `! ${warning}`)),
+              )
+            : null,
+        ),
+
     h(Text, " "),
 
     h(Box, { flexDirection: "column" },
-      h(Text, { bold: true, color: theme.metadata }, "Path"),
-      ...pathLines.map((line, i) => h(Text, {
-        key: `path-${i}`,
-        color: theme.toolTarget,
-        wrap: "wrap",
-      }, line)),
-    ),
-
-    h(Text, " "),
-
-    h(Box, { flexDirection: "column" },
-      h(Box, { marginBottom: 1 },
-        h(Box, { width: 12, flexShrink: 0 }, h(Text, { color: theme.muted }, "Sections")),
-        h(Text, { color: theme.text }, String(sectionCount)),
-      ),
-      h(Box, { marginBottom: 1 },
-        h(Box, { width: 12, flexShrink: 0 }, h(Text, { color: theme.muted }, "Source")),
-        h(Text, { color: theme.text }, `${inspectedCount} inspected files`),
-      ),
-    ),
-
-    h(Text, " "),
-
-    h(Box, { flexDirection: "column" },
-      ...config.options.map((opt, index) =>
+      ...config.options.map((option, index) =>
         h(Text, {
-          key: opt.label,
+          key: option.label,
           color: index === selected ? theme.primary : theme.muted,
           bold: index === selected,
           dimColor: index !== selected,
           wrap: "wrap",
-        }, index === selected ? "› " : "  ", opt.label),
+        }, index === selected ? "› " : "  ", option.label),
       ),
     ),
 

@@ -101,6 +101,15 @@ export function ActivityBar({
         ? "Reviewing implementation"
         : "Investigating";
     activityText = `Plan Mode · ${phase}${queue}`;
+  } else if (modeStatus?.mode === "init") {
+    const phase = modeStatus.status === "reviewing"
+      ? "Reviewing project conventions"
+      : modeStatus.status === "generating"
+        ? "Generating AGENTS.md"
+        : modeStatus.status === "preparing"
+          ? "Preparing preview"
+          : "Inspecting repository structure";
+    activityText = `${phase}${queue}`;
   } else if (modeStatus?.mode === "build") {
     const phase = modeStatus.status === "verifying"
       ? "Running verification"

@@ -92,7 +92,11 @@ export const COMMANDS = [
   ] },
 
 
-  { name: "/init", description: "Generate AGENTS.md for the workspace", category: "workspace", aliases: [], visible: true, group: "settings" },
+  { name: "/init", description: "Inspect with the active model and generate AGENTS.md", category: "workspace", aliases: [], visible: true, group: "settings", sub: [
+    { name: "preview", description: "Generate and preview without writing" },
+    { name: "update", description: "Update an existing file while preserving custom rules" },
+    { name: "basic", description: "Generate a basic template without AI" },
+  ] },
   { name: "/help", description: "Show command reference", category: "help", aliases: [], visible: true, group: "settings" },
   { name: "/exit", description: "Exit KhazAI", category: "help", aliases: ["/quit"], visible: true, group: "settings" },
 ];

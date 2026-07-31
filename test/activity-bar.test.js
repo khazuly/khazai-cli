@@ -49,6 +49,45 @@ test("specific activity suppresses only the generic Working fallback", async () 
   assert.match(frame, /big-cock/);
 });
 
+test("init mode shows only the four high-level activity phases", async () => {
+  const inspecting = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "init", status: "inspecting" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(inspecting, /Inspecting repository structure/);
+  assert.doesNotMatch(inspecting, /Working/);
+
+  const reviewing = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "init", status: "reviewing" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(reviewing, /Reviewing project conventions/);
+
+  const generating = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "init", status: "generating" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(generating, /Generating AGENTS\.md/);
+
+  const preparing = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "init", status: "preparing" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(preparing, /Preparing preview/);
+});
+
 test("idle, queued, compaction, and unknown context layouts remain intact", async () => {
   const idle = await renderComponent(h(SessionFooter, {
     model: "big-cock",
