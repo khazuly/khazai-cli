@@ -1,9 +1,10 @@
 import { createElement as h } from "react";
 import { Text, Box, useStdout } from "ink";
 import { useTheme } from "../theme.js";
+import { zenModels } from "../../config/khazai-free-models.js";
 
 export const MODEL_LABELS = {
-  "big-cock": "Big Cock",
+  ...Object.fromEntries(zenModels().map(model => [model.alias, model.displayName])),
   "auto-free": "Auto (free)",
 };
 

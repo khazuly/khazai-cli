@@ -82,6 +82,18 @@ const MODELS = [
       toolChoice: false, reasoningEffort: false,
     },
   },
+  {
+    alias: "auto-free",
+    displayName: "KhazAI Auto Free",
+    upstreamModel: null,
+    routing: true,
+    description: "Automatic routing across healthy free models",
+    capabilities: {
+      streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
+      temperature: true, topP: false, maxOutputTokens: true, parallelTools: false,
+      toolChoice: false, reasoningEffort: false,
+    },
+  },
 ];
 
 function validAlias(value) {
@@ -106,6 +118,8 @@ export function zenModels(config = {}) {
       transportAdapter: "openai-compatible",
       tier: "free",
       free: true,
+      visible: true,
+      aliases: [],
       enabled: publicConfig.disabled?.includes?.(model.upstreamModel) !== true,
       capabilities: { ...model.capabilities, ...capabilityOverrides },
     };
@@ -132,7 +146,7 @@ export function canonicalModelKey(value, config = {}) {
 
 export function legacyModelKeys(value, config = {}) {
   const model = resolveZenModel(value, config);
-  if (!model) return [];
+  if (!model || !model.upstreamModel) return [];
   return [
     `opencode-zen/${model.upstreamModel}`,
     `opencode/${model.upstreamModel}`,
@@ -157,6 +171,7 @@ export function publicModelName(value, config = {}) {
 export function sanitizePublicBranding(value, config = {}) {
   let output = String(value ?? "");
   for (const model of zenModels(config)) {
+    if (!model.upstreamModel) continue;
     output = output.replace(
       new RegExp(
         `(?:opencode(?:-zen)?/|khazai-free/)?${model.upstreamModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
@@ -192,5 +207,5 @@ export function zenModelOptions(config = {}) {
 }
 
 export function zenUpstreamIds() {
-  return MODELS.map(model => model.upstreamModel);
+  return MODELS.map(model => model.upstreamModel).filter(Boolean);
 }

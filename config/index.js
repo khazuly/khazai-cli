@@ -3,12 +3,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULTS } from "./defaults.js";
 import { isKnownTheme } from "../ui/theme.js";
+import { zenModels } from "./khazai-free-models.js";
 import {
   GLOBAL_CONFIG_PATH,
   readConfigFile,
   subscribeConfig,
   updateConfigFile,
 } from "./store.js";
+import { migrateModelSettings } from "./model-settings.js";
 
 const CONFIG_PATH = GLOBAL_CONFIG_PATH;
 const PROJECT_FILES = [".khazai-ai.json", ".khazai-airc"];
@@ -125,7 +127,7 @@ export function loadConfig(workspace = process.cwd()) {
   config.model = normalizeModel(config.model);
   config.theme = committedTheme;
   delete config.syntaxTheme;
-  return config;
+  return migrateModelSettings(config);
 }
 
 export function saveModel(model) {
@@ -196,8 +198,12 @@ export { subscribeConfig };
 
 export function configuredModels() {
   const config = loadConfig();
+  const aliases = zenModels(config)
+    .map(model => model.alias)
+    .filter(alias => alias !== MODEL && alias !== AUTO_FREE_MODEL);
   return [
     MODEL,
+    ...aliases,
     AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>
       (value.models || []).map(model => `${provider}/${model}`)),

@@ -3,8 +3,23 @@ import {
   readConfigFile,
   updateConfigFile,
 } from "./store.js";
+import { canonicalModelKey, resolveZenModel } from "./khazai-free-models.js";
 
 const PROVIDER_CAPABILITIES = {
+  "khazai-free": {
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsMaxTokens: true,
+    supportsStreaming: true,
+    supportsReasoningEffort: false,
+    supportsParallelTools: false,
+    supportsToolCalling: true,
+    supportsToolChoice: false,
+    supportsStreamOptions: false,
+    outputLimit: 32_000,
+    temperatureRange: [0, 2],
+    topPRange: [0, 1],
+  },
   opencode: {
     supportsTemperature: true,
     supportsTopP: true,
@@ -70,9 +85,10 @@ function resolveProviderId(model) {
   if (["big-cock", "cock"].includes(lower)) return "opencode";
   if (lower === "auto-free") return "auto-free";
   if (lower.startsWith("codex/")) return "codex";
+  if (lower.startsWith("khazai-free/")) return "khazai-free";
   const separator = lower.indexOf("/");
   if (separator > 0) return lower.slice(0, separator);
-  return "opencode";
+  return resolveZenModel(lower) ? "khazai-free" : "opencode";
 }
 
 export function providerIdFromModel(model) {
@@ -143,6 +159,12 @@ export function providerDefaults(providerId) {
     };
   }
   if (providerId === "opencode") {
+    return {
+      maxOutputTokens: 32_000,
+      requestTimeoutMs: 120_000,
+    };
+  }
+  if (providerId === "khazai-free") {
     return {
       maxOutputTokens: 32_000,
       requestTimeoutMs: 120_000,
@@ -475,4 +497,26 @@ export function isRecommendedValue(key, value) {
   if (key === "temperature" && value === 0.7) return true;
   if (key === "topP" && value === 1.0) return true;
   return false;
+}
+
+export function migrateModelSettings(config = {}) {
+  const migrated = { ...config };
+  const canonicalKey = key => canonicalModelKey(key, migrated);
+
+  const modelSettings = {};
+  for (const [key, value] of Object.entries(config.modelSettings || {})) {
+    const canonical = canonicalKey(key);
+    modelSettings[canonical] = { ...(modelSettings[canonical] || {}), ...(value || {}) };
+  }
+  migrated.modelSettings = modelSettings;
+
+  const models = {};
+  for (const [key, value] of Object.entries(config.models || {})) {
+    const canonical = canonicalKey(key);
+    models[canonical] = { ...(models[canonical] || {}), ...(value || {}) };
+  }
+  migrated.models = models;
+
+  if (config.model) migrated.model = canonicalKey(config.model);
+  return migrated;
 }

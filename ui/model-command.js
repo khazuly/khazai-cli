@@ -7,24 +7,29 @@ import {
   zenModels,
 } from "../config/khazai-free-models.js";
 import {
+  modelStatusList as zenModelStatusList,
   refreshZenAvailability,
-  selectableZenModels,
-  zenModelStatus,
+  statusLabel,
 } from "../lib/khazai-free-model-catalog.js";
 
 function supported(value) {
   return value ? "Supported" : "Not supported";
 }
 
-export async function selectableModels({ freeOnly = false, force = false } = {}) {
+export async function modelStatusList({ force = false } = {}) {
   const config = loadConfig();
   await refreshZenAvailability({ force });
-  const free = selectableZenModels(config).map(model => model.alias);
+  return zenModelStatusList(config);
+}
+
+export async function selectableModels({ freeOnly = false, force = false } = {}) {
+  const config = loadConfig();
+  const list = await modelStatusList({ force });
+  const free = list.map(model => model.alias);
   if (freeOnly) return free;
   const zenAliases = new Set(zenModels(config).map(model => model.alias));
   return [
     ...free,
-    "auto-free",
     ...configuredModels().filter(model => model !== "auto-free" && !zenAliases.has(model)),
   ];
 }
@@ -32,20 +37,22 @@ export async function selectableModels({ freeOnly = false, force = false } = {})
 export async function modelDetails(alias) {
   const config = loadConfig();
   await refreshZenAvailability();
-  const model = zenModelStatus(alias, config);
+  const model = zenModelStatusList(config).find(entry => entry.alias === String(alias).toLowerCase());
   if (!model) return null;
-  const capabilities = resolveProviderCapabilities(model.alias, { zenModel: model });
+  const capabilities = resolveProviderCapabilities(model.alias, {
+    capabilities: model.capabilities,
+  });
   const context = Number(model.capabilities.contextLimit) > 0
     ? Number(model.capabilities.contextLimit).toLocaleString("en-US")
     : "Unknown";
   return [
-    `Model        ${model.displayName}`,
-    `Provider     ${KHAZAI_FREE_PROVIDER_NAME}`,
-    "Tier         Free",
-    `Status       ${model.status.charAt(0).toUpperCase()}${model.status.slice(1)}`,
-    `Tools        ${supported(capabilities.supportsToolCalling)}`,
-    `Reasoning    ${supported(model.capabilities.reasoning)}`,
-    `Context      ${context}`,
+    `Model       ${model.displayName}`,
+    `Provider    ${KHAZAI_FREE_PROVIDER_NAME}`,
+    "Tier        Free",
+    `Status      ${model.statusLabel}`,
+    `Tools       ${supported(capabilities.supportsToolCalling)}`,
+    `Reasoning   ${supported(model.capabilities.reasoning)}`,
+    `Context     ${context}`,
   ].join("\n");
 }
 
@@ -54,7 +61,8 @@ export async function modelUnavailable(alias) {
   const model = resolveZenModel(alias, config);
   if (!model) return false;
   await refreshZenAvailability();
-  const status = zenModelStatus(model.alias, config)?.status;
+  const status = zenModelStatusList(config)
+    .find(entry => entry.alias === model.alias)?.status;
   return ["disabled", "unavailable"].includes(status);
 }
 
@@ -74,4 +82,9 @@ export function modelAliases({ debug = false } = {}) {
 export function modelSelectionDescription(alias) {
   const model = resolveZenModel(alias, loadConfig());
   return model?.description || alias;
+}
+
+export function formatModelStatusList(list) {
+  const lines = list.map(model => `- ${model.alias.padEnd(11)}${statusLabel(model.status)}`);
+  return [KHAZAI_FREE_MODEL_CATEGORY, "", ...lines].join("\n");
 }

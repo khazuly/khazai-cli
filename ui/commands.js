@@ -2,6 +2,12 @@ import { THEME_NAMES, THEME_DESCRIPTIONS } from "./theme.js";
 
 const MODELS = [
   { name: "big-cock", description: "Big Cock (default)" },
+  { name: "boboiboy", description: "Advanced reasoning and coding" },
+  { name: "komodo", description: "Fast coding assistant" },
+  { name: "ombak", description: "Balanced coding model" },
+  { name: "petir", description: "Lightweight and fast" },
+  { name: "kutub", description: "Compact coding model" },
+  { name: "mecha", description: "Tool-capable reasoning model" },
   { name: "auto-free", description: "Auto (free)" },
 ];
 
@@ -67,7 +73,12 @@ export const COMMANDS = [
   { name: "/retry", description: "Retry the latest failed model continuation", category: "core", aliases: [], visible: false, group: "session" },
   { name: "/queue", description: "Show or clear queued messages", category: "core", aliases: [], visible: false, group: "session" },
   { name: "/export", description: "Export session to Markdown", category: "workspace", aliases: [], visible: false, group: "session" },
-  { name: "/model", description: "Select the active model", category: "core", aliases: ["/models"], visible: true, group: "view", sub: MODELS },
+  { name: "/model", description: "Select the active model", category: "core", aliases: ["/models"], visible: true, group: "view", sub: [
+    ...MODELS,
+    { name: "free", description: "List all KhazAI free models" },
+    { name: "refresh", description: "Refresh model availability" },
+    { name: "details", description: "Show details for a KhazAI free model" },
+  ] },
   { name: "/agent", description: "Change agent mode", category: "core", aliases: [], visible: true, group: "workspace" },
   { name: "/setting", description: "Configure model behavior", category: "core", aliases: [], visible: true, group: "view", sub: [
     { name: "show", description: "Display effective settings for the active model" },

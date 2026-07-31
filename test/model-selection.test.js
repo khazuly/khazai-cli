@@ -6,19 +6,34 @@ import { chat, resolveModelDescriptor } from "../lib/llm.js";
 import { COMMANDS, MODELS } from "../ui/commands.js";
 import { MODEL_LABELS } from "../ui/components/banner.js";
 
-test("Big Cock remains the default and legacy model shortcuts migrate safely", () => {
+test("Big Cock remains the default and all KhazAI free aliases are registered", () => {
   assert.equal(DEFAULTS.model, "big-cock");
   assert.equal(normalizeModel("gpt"), "big-cock");
   assert.equal(normalizeModel("local/qwen"), "local/qwen");
   assert.deepEqual(MODELS, [
     { name: "big-cock", description: "Big Cock (default)" },
+    { name: "boboiboy", description: "Advanced reasoning and coding" },
+    { name: "komodo", description: "Fast coding assistant" },
+    { name: "ombak", description: "Balanced coding model" },
+    { name: "petir", description: "Lightweight and fast" },
+    { name: "kutub", description: "Compact coding model" },
+    { name: "mecha", description: "Tool-capable reasoning model" },
     { name: "auto-free", description: "Auto (free)" },
   ]);
-  assert.deepEqual(COMMANDS.find(command => command.name === "/model")?.sub, MODELS);
+  assert.deepEqual(
+    COMMANDS.find(command => command.name === "/model")?.sub.slice(0, MODELS.length),
+    MODELS,
+  );
   assert.equal(COMMANDS.some(command => command.name === "/think"), false);
   assert.equal(COMMANDS.some(command => command.name === "/reasoning"), true);
   assert.deepEqual(MODEL_LABELS, {
     "big-cock": "Big Cock",
+    "boboiboy": "Boboiboy",
+    "komodo": "Komodo",
+    "ombak": "Ombak",
+    "petir": "Petir",
+    "kutub": "Kutub",
+    "mecha": "Mecha",
     "auto-free": "Auto (free)",
   });
 });
@@ -69,7 +84,7 @@ test("Auto free resolves to the configured gateway without a user-facing provide
     requested: "auto-free",
     providerID: "auto-free",
     modelID: "kilo-auto/free",
-    exactID: "auto-free/kilo-auto/free",
+    exactID: "auto-free",
     definition: {
       baseURL: "https://api.kilo.ai/api/gateway",
       env: "KILO_API_KEY",
@@ -134,14 +149,28 @@ test("default transport matches the OpenCode Zen Big Pickle request contract", a
   }
 });
 
-test("Auto Free retries anonymously when an authenticated BYOK route fails", async () => {
+test("Auto Free routes through free aliases and retries anonymously when an authenticated BYOK route fails", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.KILO_API_KEY;
+  const originalOpenCodeKey = process.env.OPENCODE_API_KEY;
+  delete process.env.OPENCODE_API_KEY;
   const headers = [];
+  const kiloHeaders = [];
+  let zenCalls = 0;
   process.env.KILO_API_KEY = "kilo-account-key";
-  globalThis.fetch = async (_url, options) => {
+  globalThis.fetch = async (url, options) => {
     headers.push(options.headers);
-    if (headers.length === 1) {
+    if (!String(url).includes("api.kilo.ai")) {
+      zenCalls++;
+      return {
+        ok: false,
+        status: 520,
+        statusText: "Unknown Error",
+        async text() { return '{"error":{"metadata":{"is_byok":true}}}'; },
+      };
+    }
+    kiloHeaders.push(options.headers);
+    if (kiloHeaders.length === 1) {
       return {
         ok: false,
         status: 520,
@@ -157,13 +186,16 @@ test("Auto Free retries anonymously when an authenticated BYOK route fails", asy
   };
   try {
     assert.equal(await chat([{ role: "user", content: "test" }], { model: "auto-free" }), "fallback ok");
-    assert.equal(headers.length, 2);
-    assert.equal(headers[0].Authorization, "Bearer kilo-account-key");
-    assert.equal("Authorization" in headers[1], false);
+    assert.ok(zenCalls >= 3, "free aliases are tried before the gateway fallback");
+    assert.equal(kiloHeaders.length, 2);
+    assert.equal(kiloHeaders[0].Authorization, "Bearer kilo-account-key");
+    assert.equal("Authorization" in kiloHeaders[1], false);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.KILO_API_KEY;
     else process.env.KILO_API_KEY = originalKey;
+    if (originalOpenCodeKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = originalOpenCodeKey;
   }
 });
 

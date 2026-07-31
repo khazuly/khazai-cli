@@ -83,10 +83,11 @@ import {
   resetResponseBuffer,
   terminalRunResult,
 } from "./session-runtime.js";
+import { stealthModelDisplayName } from "../config/khazai-free-models.js";
 export { streamViewportText } from "./stream-viewport.js";
 
 const MODEL_LABELS = { "auto-free": "Auto (free)" };
-const displayModel = model => MODEL_LABELS[model] || model;
+const displayModel = model => MODEL_LABELS[model] || stealthModelDisplayName(model) || model;
 
 function buildRegistry(workspace, mcpTools = []) {
   const r = new Registry();
@@ -683,7 +684,73 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       appendArchived({ id: nextId(), type: "answer", content: `Model changed to ${displayModel(selected)}.` });
     };
     if (cmd === "/model" || cmd === "/models") {
-      await chooseModel(arg);
+      const { formatModelStatusList, modelDetails, modelStatusList } = await import("./model-command.js");
+      const parts = String(arg || "").trim().split(/\s+/).filter(Boolean);
+      const sub = (parts[0] || "").toLowerCase();
+      if (sub === "free") {
+        const list = await modelStatusList();
+        appendArchived({ id: nextId(), type: "answer", content: formatModelStatusList(list) });
+        return;
+      }
+      if (sub === "refresh") {
+        const list = await modelStatusList({ force: true });
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: `Model availability refreshed.\n\n${formatModelStatusList(list)}`,
+        });
+        return;
+      }
+      if (sub === "details") {
+        if (!parts[1]) {
+          appendArchived({ id: nextId(), type: "error", content: "Usage: /model details <alias>" });
+          return;
+        }
+        const details = await modelDetails(parts[1]);
+        if (!details) {
+          appendArchived({ id: nextId(), type: "error", content: `Model "${parts[1]}" is not a KhazAI free model.` });
+          return;
+        }
+        appendArchived({ id: nextId(), type: "answer", content: details });
+        return;
+      }
+      if (parts.length) {
+        const alias = parts.join(" ");
+        const list = await modelStatusList();
+        const entry = list.find(model => model.alias === alias.toLowerCase());
+        if (!entry) {
+          await chooseModel(alias);
+          return;
+        }
+        await chooseModel(entry.alias);
+        if (entry.status !== "available") {
+          appendArchived({
+            id: nextId(),
+            type: "answer",
+            content: `${entry.alias} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
+          });
+        }
+        return;
+      }
+      const list = await modelStatusList();
+      const choices = list.map(model => ({
+        label: `${model.alias.padEnd(11)}${model.statusLabel}`,
+        value: model.alias,
+      }));
+      const selected = await requestValue("KhazAI Free Models", choices.map(choice => choice.label), {
+        kind: "mcp",
+        values: choices,
+      });
+      if (!selected) return;
+      const entry = list.find(model => model.alias === selected);
+      await chooseModel(selected);
+      if (entry && entry.status !== "available") {
+        appendArchived({
+          id: nextId(),
+          type: "answer",
+          content: `${entry.alias} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
+        });
+      }
       return;
     }
     if (cmd === "/reasoning") {
