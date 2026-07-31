@@ -4,16 +4,20 @@ import { useTheme } from "../theme.js";
 import { PrefixRow } from "./surface.js";
 
 export function planItemPresentation(status) {
-  if (status === "done") return { indicator: "[✓]", colorRole: "success" };
-  if (status === "running") return { indicator: "[•]", colorRole: "secondary" };
-  if (status === "failed") return { indicator: "[×]", colorRole: "error" };
+  if (["done", "completed"].includes(status)) return { indicator: "[✓]", colorRole: "success" };
+  if (["running", "active"].includes(status)) return { indicator: "[•]", colorRole: "secondary" };
+  if (["failed", "blocked"].includes(status)) return { indicator: "[×]", colorRole: "error" };
   return { indicator: "[ ]", colorRole: "muted" };
+}
+
+export function completedPlanCount(plan) {
+  return (Array.isArray(plan) ? plan : []).filter(item => ["done", "completed"].includes(item.status)).length;
 }
 
 export function PlanList({ plan }) {
   const theme = useTheme();
   if (!plan || plan.length === 0) return null;
-  const finished = plan.filter(item => ["done", "failed", "skipped"].includes(item.status)).length;
+  const finished = completedPlanCount(plan);
 
   return h(Box, { flexDirection: "column", marginBottom: 1 },
     h(Box, {},

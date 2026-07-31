@@ -61,13 +61,12 @@ export class LoopMethods {
       this._usageTracker.resetTurn();
     }
     if (!retryProvider && Array.isArray(scope.approvedPlan?.steps)) {
-      this._plan = scope.approvedPlan.steps.map(description => ({
-        description: String(description),
-        status: "pending",
-      }));
-      this._planIndex = 0;
-      this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
-      yield scoped({ type: "plan", items: this._plan.map(item => ({ ...item })) });
+      const plan = this._definePlan(
+        scope.approvedPlan.steps.map(description => ({ content: String(description), status: "pending" })),
+        run,
+        scope.approvedPlan.planId,
+      );
+      yield scoped({ type: "plan", items: plan.map(item => ({ ...item })) });
     }
     yield scoped({ type: "context-usage", usage: this.contextUsage() });
     const initialUsage = this.contextUsage();
@@ -565,7 +564,7 @@ export class LoopMethods {
         }],
       });
       yield scoped({ type: "context-usage", usage: this.contextUsage() });
-      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem(run);
+      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem(tool, run);
       let result;
       let part;
       let finishReason = "tool-calls";
@@ -585,14 +584,8 @@ export class LoopMethods {
       if (!part) continue;
       if (tool.name === "todowrite" && part.state.status === "completed") {
         const todos = Array.isArray(part.state.metadata?.todos) ? part.state.metadata.todos : [];
-        this._plan = todos.map(todo => ({
-          description: todo.content,
-          status: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending",
-        }));
-        const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
-        this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
-        this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
-        yield scoped({ type: "plan", items: this._plan.map(item => ({ ...item })) });
+        const plan = this._definePlan(todos, run);
+        if (plan) yield scoped({ type: "plan", items: plan.map(item => ({ ...item })) });
       }
       const protectedResult = this._secretStore.protect(result, runId, turnId);
       result = this._secretStore.redact(protectedResult);
@@ -682,7 +675,13 @@ export class LoopMethods {
       for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
         yield scoped({ type: "tool-part", part: lifecyclePart });
       }
-      yield* this._finishPlanItem(planTracker, part.state.status === "completed" && !resultFailed(result), run);
+      yield* this._finishPlanItem(
+        planTracker,
+        tool,
+        result,
+        part.state.status === "completed" && !resultFailed(result),
+        run,
+      );
     }
     this._finishLatency();
     if (finalizeRun()) {

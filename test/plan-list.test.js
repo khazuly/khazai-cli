@@ -1,5 +1,5 @@
 import { strict as assert } from "assert";
-import { planItemPresentation } from "../ui/components/plan-list.js";
+import { completedPlanCount, planItemPresentation } from "../ui/components/plan-list.js";
 
 function formatPlanItem(item) {
   const { indicator, colorRole } = planItemPresentation(item.status);
@@ -74,5 +74,8 @@ console.log("✓ Test 7: No old labels (done/now/next/failed/skip) in formatted 
 const roles = [doneFormatted, runningFormatted, pendingFormatted, failedFormatted].map(item => item.colorRole);
 assert.ok(roles.every(role => typeof role === "string"), "All plan colors should use semantic theme roles");
 console.log("✓ Test 8: All plan colors use semantic theme roles");
+
+assert.equal(completedPlanCount(items), 1, "Only evidenced completed items should count toward Plan progress");
+console.log("✓ Test 9: Failed and skipped items do not increase Plan completion");
 
 console.log("\n=== All plan-list render tests passed ===");

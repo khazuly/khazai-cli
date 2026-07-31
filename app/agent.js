@@ -11,6 +11,7 @@ import { workspaceMetadata } from "./agent/helpers/task.js";
 import { taskState } from "./agent/helpers/parser.js";
 import { StateMethods } from "./agent/state.js";
 import { ToolMethods } from "./agent/tools.js";
+import { PlanMethods } from "./agent/plan.js";
 import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
 import { SecretStore } from "./secret-store.js";
@@ -48,6 +49,7 @@ export class Agent {
     this._taskEpoch = 0;
     this._activeScope = null;
     this._plan = null;
+    this._planId = null;
     this._planIndex = 0;
     this._lastToolIsRead = false;
     this._depsInstalled = false;
@@ -302,7 +304,7 @@ export class Agent {
   }
 }
 
-for (const source of [StateMethods, ToolMethods, LoopMethods]) {
+for (const source of [StateMethods, ToolMethods, PlanMethods, LoopMethods]) {
   const descriptors = Object.getOwnPropertyDescriptors(source.prototype);
   delete descriptors.constructor;
   Object.defineProperties(Agent.prototype, descriptors);

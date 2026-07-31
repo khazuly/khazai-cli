@@ -84,6 +84,7 @@ export class StateMethods {
     this._currentRequest = "";
     this._activeScope = null;
     this._plan = null;
+    this._planId = null;
     this._planIndex = 0;
     this._pendingBatchCalls = [];
     this._toolCallHistory = [];

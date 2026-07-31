@@ -85,25 +85,6 @@ export class ToolMethods {
     });
   }
 
-  *_startPlanItem(scope = this._activeRun) {
-    const plan = this._plan;
-    const index = this._planIndex;
-    if (!plan || index >= plan.length) return null;
-    plan[index].status = "running";
-    if (this._activeScope?.taskEpoch === scope?.taskEpoch) this._activeScope.currentPlan = plan.map(item => ({ ...item }));
-    yield this._scopedToolEvent({ type: "plan-update", index, status: "running" }, scope);
-    return { plan, index };
-  }
-
-  *_finishPlanItem(tracker, succeeded, scope = this._activeRun) {
-    if (!tracker || this._plan !== tracker.plan) return;
-    const { plan, index } = tracker;
-    plan[index].status = succeeded ? "done" : "failed";
-    if (this._activeScope?.taskEpoch === scope?.taskEpoch) this._activeScope.currentPlan = plan.map(item => ({ ...item }));
-    yield this._scopedToolEvent({ type: "plan-update", index, status: plan[index].status }, scope);
-    if (succeeded) this._planIndex = index + 1;
-  }
-
   async *_runSequentialBatch(tools) {
     const executionScope = this._activeRun;
     if (!this._isActiveRun(executionScope)) return true;
@@ -136,7 +117,7 @@ export class ToolMethods {
       if (!this._isActiveRun(executionScope)) return true;
       const planTracker = !registeredTool || ["todowrite", "think"].includes(call.name)
         ? null
-        : yield* this._startPlanItem(executionScope);
+        : yield* this._startPlanItem(call, executionScope);
       let callFailed = false;
       let completedPart = null;
       for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
@@ -171,16 +152,16 @@ export class ToolMethods {
       if (!this._isActiveRun(executionScope)) return true;
       if (call.name === "todowrite" && completedPart?.state.status === "completed") {
         const todos = Array.isArray(completedPart.state.metadata?.todos) ? completedPart.state.metadata.todos : [];
-        this._plan = todos.map(todo => ({
-          description: todo.content,
-          status: todo.status === "completed" ? "done" : todo.status === "in_progress" ? "running" : "pending",
-        }));
-        const nextPlanIndex = this._plan.findIndex(item => item.status !== "done");
-        this._planIndex = nextPlanIndex < 0 ? this._plan.length : nextPlanIndex;
-        this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
-        yield this._scopedToolEvent({ type: "plan", items: this._plan.map(item => ({ ...item })) }, executionScope);
+        const plan = this._definePlan(todos, executionScope);
+        if (plan) yield this._scopedToolEvent({ type: "plan", items: plan.map(item => ({ ...item })) }, executionScope);
       }
-      yield* this._finishPlanItem(planTracker, !callFailed, executionScope);
+      yield* this._finishPlanItem(
+        planTracker,
+        call,
+        completedPart?.state.output || this._lastToolResult,
+        !callFailed,
+        executionScope,
+      );
     }
     for (const part of this._lifecycle.finishStep(failed ? "tool-error" : "tool-calls")) {
       yield this._scopedToolEvent({ type: "tool-part", part }, executionScope);

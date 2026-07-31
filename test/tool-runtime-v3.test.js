@@ -444,14 +444,18 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
   const events = [];
   for await (const event of agent.loop("update the plan")) events.push(event);
   const plan = events.find(event => event.type === "plan");
-  assert.deepEqual(plan.items, [
-    { description: "Inspect files", status: "done" },
-    { description: "Run tests", status: "running" },
+  assert.deepEqual(plan.items.map(({ description, status }) => ({ description, status })), [
+    { description: "Inspect files", status: "pending" },
+    { description: "Run tests", status: "pending" },
   ]);
   assert.deepEqual(events.filter(event => event.type === "plan-update").map(({ type, index, status }) => (
     { type, index, status }
   )), [
-    { type: "plan-update", index: 1, status: "running" },
-    { type: "plan-update", index: 1, status: "done" },
+    { type: "plan-update", index: 0, status: "running" },
+    { type: "plan-update", index: 0, status: "done" },
+  ]);
+  assert.deepEqual(agent.planningContext().plan.map(({ description, status }) => ({ description, status })), [
+    { description: "Inspect files", status: "done" },
+    { description: "Run tests", status: "pending" },
   ]);
 });

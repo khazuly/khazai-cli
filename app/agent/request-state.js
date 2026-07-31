@@ -115,6 +115,7 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._acceptedCreationOffer = null;
   agent._totalWrites = 0;
   agent._plan = null;
+  agent._planId = null;
   agent._planIndex = 0;
   agent._lastToolResult = null;
   agent._toolCallHistory = [];
