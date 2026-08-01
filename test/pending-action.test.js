@@ -23,7 +23,7 @@ test("legacy pending state is discarded and a new request goes directly to the p
     workspace: "/tmp/pending-replace-test",
     chat: async (messages, options) => {
       providerMessages = messages;
-      const response = "Repository ini menggunakan ESM.";
+      const response = "This repository uses ESM.";
       options.onToken?.(response);
       return response;
     },
@@ -35,9 +35,9 @@ test("legacy pending state is discarded and a new request goes directly to the p
     pendingAction: { status: "awaiting_confirmation", goal: "fix old.js", nextStep: "edit old.js" },
   });
 
-  await collect(agent, "jelaskan package.json");
+  await collect(agent, "explain package.json");
   assert.equal(agent._pendingAction, null);
-  assert.match(JSON.stringify(providerMessages), /jelaskan package\.json/);
+  assert.match(JSON.stringify(providerMessages), /explain package\.json/);
   assert.doesNotMatch(JSON.stringify(providerMessages), /edit old\.js/);
 });
 
@@ -73,7 +73,7 @@ test("session-state export drops legacy steering and credential continuation fie
 });
 
 test("a credential does not trigger a hidden pending Git operation", async () => {
-  const token = "ghp_123456789012345678901234567890123456";
+  const token = "ghp_example_token_for_redaction_test";
   const agent = new Agent(new Registry(), {
     workspace: "/tmp/pending-git",
     chat: scripted(["Configure authentication before pushing."]),

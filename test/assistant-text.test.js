@@ -10,22 +10,22 @@ import { formatInteractiveQuestion, normalizeStreamText } from "../ui/session.js
 
 test("assistant prose removes emoji and their presentation sequences", () => {
   const input = [
-    "📌 Informasi utama",
-    "⚠️ Penting",
+    "📌 Key information",
+    "⚠️ Important",
     "🔑 Pairing code",
     "Developer 👨🏽‍💻 ready",
-    "Status 🇮🇩 selesai",
-    "Keycap 1️⃣ dipilih",
+    "Status 🇬🇧 complete",
+    "Keycap 1️⃣ selected",
   ].join("\n");
 
   const output = removeEmoji(input);
   assert.equal(output, [
-    "Informasi utama",
-    "Penting",
+    "Key information",
+    "Important",
     "Pairing code",
     "Developer ready",
-    "Status selesai",
-    "Keycap dipilih",
+    "Status complete",
+    "Keycap selected",
   ].join("\n"));
   assert.doesNotMatch(output, /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u200D\uFE0F]/u);
 });

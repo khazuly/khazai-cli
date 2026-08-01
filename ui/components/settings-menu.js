@@ -16,108 +16,21 @@ import {
   settingIsAutoFreeOnly,
   formatSettingValue,
   suggestedContextLimits,
-  isRecommendedValue,
   providerDefaults,
   providerIdFromModel,
 } from "../../config/model-settings.js";
-
-const VIEWPORT_SIZE = 6;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-function SettingRow({ marker, label, value, valueColor, selected, dimValue }) {
-  const theme = useTheme();
-  return h(Box, { width: "100%" },
-
-    marker !== undefined
-      ? h(Box, { width: 2, flexShrink: 0 },
-          h(Text, { color: selected ? theme.primary : theme.text }, marker),
-        )
-      : null,
-
-    h(Box, { flexGrow: 1, minWidth: 0 },
-      h(Text, {
-        color: selected ? theme.primary : theme.text,
-        bold: selected,
-      }, label),
-    ),
-
-    value !== undefined && value !== null
-      ? h(Box, { marginLeft: 2, flexShrink: 0 },
-          h(Text, {
-            color: valueColor || theme.secondary,
-            dimColor: dimValue,
-          }, String(value)),
-        )
-      : null,
-  );
-}
-
-
-
-function clampIndex(index, count) {
-  if (count === 0) return -1;
-  return Math.max(0, Math.min(count - 1, index));
-}
-
-
-
-function useScrollable(items) {
-  const [selectedIndex, setSelectedIndex] = useState(items.length ? 0 : -1);
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const selectedRef = useRef(selectedIndex);
-  const scrollRef = useRef(scrollOffset);
-  const itemCount = items.length;
-
-  const select = useCallback(requested => {
-    const next = clampIndex(requested, itemCount);
-    selectedRef.current = next;
-    setSelectedIndex(next);
-    setScrollOffset(prev => {
-      let off = prev;
-      if (next < 0) off = 0;
-      else if (next < off) off = next;
-      if (next >= off + VIEWPORT_SIZE) off = next - VIEWPORT_SIZE + 1;
-      return Math.min(off, Math.max(0, itemCount - VIEWPORT_SIZE));
-    });
-  }, [itemCount]);
-
-  return {
-    selectedIndex,
-    scrollOffset,
-    selectedItem: items[selectedIndex] || null,
-    visibleItems: items.slice(scrollOffset, scrollOffset + VIEWPORT_SIZE),
-    select,
-  };
-}
-
-
-
+import { SettingRow, useScrollable, VIEWPORT_SIZE } from "./settings-list.js";
 function MainMenu({ model, onOpenSection, onClose }) {
   const theme = useTheme();
   const isAutoFree = String(model).toLowerCase() === "auto-free";
-
   const sectionIds = isAutoFree
     ? ["generation", "reasoning", "context", "reliability", "tools", "routing", "reset"]
     : ["generation", "reasoning", "context", "reliability", "tools", "reset"];
-
   const items = sectionIds.map(id => {
     if (id === "reset") return { id, label: "Reset settings" };
     const def = SETTING_SECTIONS[id] || AUTO_FREE_SECTIONS[id];
     return { id, label: def?.label || id };
   });
-
   const scroll = useScrollable(items);
 
   useInput((ch, key) => {
@@ -167,8 +80,6 @@ function MainMenu({ model, onOpenSection, onClose }) {
       "↑↓ Select · Enter Open · Esc Close"),
   );
 }
-
-
 
 function SectionView({ model, sectionId, onBack, onEditSetting, onResetSection }) {
   const theme = useTheme();
@@ -241,8 +152,6 @@ function SectionView({ model, sectionId, onBack, onEditSetting, onResetSection }
   );
 }
 
-
-
 function ResetView({ model, sectionId, onBack, onResetSection, onConfirm, onCancel }) {
   const theme = useTheme();
   const isAutoFree = String(model).toLowerCase() === "auto-free";
@@ -298,12 +207,9 @@ function ResetView({ model, sectionId, onBack, onResetSection, onConfirm, onCanc
   );
 }
 
-
-
 function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
   const theme = useTheme();
   const caps = resolveProviderCapabilities(model);
-
 
   const buildOptions = () => {
     const key = setting.key;
@@ -355,7 +261,6 @@ function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
         value: opt,
       }));
     }
-
 
     return [
       { label: `Current: ${formatSettingValue(key, currentValue, model)}`, value: currentValue, info: true },
@@ -485,20 +390,8 @@ function ValueEditor({ model, setting, currentValue, onSave, onBack }) {
   );
 }
 
-
-
-
-
-
-
-
-
-
-
-
 export function SettingsMenu({ model, initialSection, onClose, onSettingChange }) {
   const isAutoFree = String(model).toLowerCase() === "auto-free";
-
 
   const initReset = initialSection === "reset";
   const initSection = initReset || (initialSection && (SETTING_SECTIONS[initialSection] || AUTO_FREE_SECTIONS[initialSection]))

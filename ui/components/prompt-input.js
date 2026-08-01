@@ -36,7 +36,6 @@ export function PromptInput({
   canAbort = false,
   question = "",
   questionContext = "",
-  onTogglePlan,
 }) {
   const promptActive = inputActive;
   const { stdout } = useStdout();
@@ -160,10 +159,6 @@ export function PromptInput({
     if (pasteStartRef.current.timer) clearTimeout(pasteStartRef.current.timer);
   }, []);
   useInput((ch, key) => {
-    if (key.ctrl && ch === "p") {
-      onTogglePlan?.();
-      return;
-    }
     if (questionOptions.length > 0) {
       if (key.upArrow) {
         setOptionIdx(index => optionIdxRef.current = index > 0 ? index - 1 : questionOptions.length - 1);

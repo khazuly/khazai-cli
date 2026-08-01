@@ -1,13 +1,13 @@
-import { cleanInteractiveText } from "../../lib/interactive-text.js";
 import { redactSecrets } from "../../lib/secrets.js";
-import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
-import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
+import { publicToolArgs } from "./helpers/task.js";
+import { extractProseBeforeTool, validateToolArguments, joinProseContinuation } from "./helpers/parser.js";
 import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
-import { createPublicActivityChannel } from "../public-activity.js";
 import { requiredMcpServer, usedMcpServer } from "./mcp-policy.js";
+import { runScheduledCompaction } from "./loop-compaction.js";
+import { requestProviderTurn } from "./loop-provider.js";
+import { executeAgentTool } from "./loop-tool.js";
 export class LoopMethods {
   async *loop(input, signal, scope = {}) {
     await this._registryReady;
@@ -76,7 +76,7 @@ export class LoopMethods {
         planId: scope.approvedPlan.planId,
         currentStepId: this._currentStepId,
         revision: this._planRevision,
-        planStatus: this._planStatus,
+        status: this._planStatus,
       });
     }
     yield scoped({ type: "context-usage", usage: this.contextUsage() });
@@ -137,73 +137,8 @@ export class LoopMethods {
       yield scoped({ type: "thinking", turn: this._turn, phase });
       if (!isRunActive()) return;
       if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
-        const compactionId = this._compaction.compactionId;
-        const compactionStart = performance.now();
-        const originalMessages = this._messages;
-        const originalSummary = this._summary;
-        const originalRequestStartIndex = this._requestStartIndex;
-        const revisionAtSchedule = this._historyRevision;
-        const transition = status => {
-          if (!isRunActive() || this._compaction.compactionId !== compactionId) return null;
-          if (Date.now() - this._compaction.startedAt > 30_000) return null;
-          this._compaction.status = status;
-          return scoped({
-            type: "compaction-state",
-            status,
-            compactionId,
-            startedAt: this._compaction.startedAt,
-            usage: this.contextUsage(),
-          });
-        };
-        let failed = false;
-        for (const status of ["preparing", "summarizing"]) {
-          const event = transition(status);
-          if (!event) { failed = true; break; }
-          yield event;
-        }
-        const compacted = failed ? null : this._buildCompactedMessages(true);
-        if (!compacted) failed = true;
-        const committing = failed ? null : transition("committing");
-        if (committing) {
-          yield committing;
-          if (
-            isRunActive()
-            && this._compaction.compactionId === compactionId
-            && this._historyRevision === revisionAtSchedule
-          ) {
-            this._messages = compacted.messages;
-            this._summary = compacted.summary;
-            this._requestStartIndex = compacted.requestStartIndex;
-            this._usageTracker.bumpHistoryRevision();
-            this._historyRevision = this._usageTracker.historyRevision;
-          } else {
-            failed = true;
-          }
-        } else if (!failed) failed = true;
-        const recounting = failed ? null : transition("recounting");
-        if (recounting) yield recounting;
-        if (failed || !isRunActive() || this._compaction.compactionId !== compactionId) {
-          this._messages = originalMessages;
-          this._summary = originalSummary;
-          this._requestStartIndex = originalRequestStartIndex;
-          this._compaction.status = "failed";
-          yield scoped({ type: "compaction-state", status: "failed", compactionId });
-          this._clearCompaction();
-          yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
-          if (finalizeRun()) return;
-        }
-        this._compaction.status = "completed";
-        this._compaction.stableTokens = null;
-        this._markLatencyDuration("compactionMs", compactionStart);
-        this._latency.compactionLabel = "Compacted";
-        this._recordProgress();
-        yield scoped({
-          type: "compaction-state",
-          status: "completed",
-          compactionId,
-          usage: this.contextUsage(),
-        });
-        this._clearCompaction();
+        const compacted = yield* runScheduledCompaction.call(this, run, { isRunActive, scoped, finalizeRun });
+        if (!compacted) return;
       }
       const prepStart = performance.now();
       const requestModel = this._model;
@@ -236,10 +171,6 @@ export class LoopMethods {
       if (!isRunActive()) return;
       const maxAttempts = this._chatHandlesRetries ? 1 : 2;
       if (!isRunActive()) return;
-      // Context preflight: project the exact normalized payload for the
-      // resolved route. If it exceeds the configured threshold, schedule
-      // compaction at this safe boundary instead of sending an oversized
-      // request and waiting for provider rejection.
       const compactionCheckStart = performance.now();
       let projected = null;
       if (this._compaction.status !== "scheduled" && !this._compactionThresholdCrossed) {
@@ -280,196 +211,18 @@ export class LoopMethods {
       } else {
         this._markLatencyDuration("compactionCheckMs", compactionCheckStart);
       }
-      let reply;
-      let streamMode = "pending", streamTail = "";
-      let streamStarted = false;
-      let streamVisibleLength = 0;
-      let finalError = null;
-      let nativeToolStream = false;
-      let typedProviderStream = false;
-      const deferProse = Boolean(pendingProse);
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const providerRequestId = randomUUID();
-        let chatErr;
-        let receivedAnyToken = false;
-        const publicActivity = createPublicActivityChannel(run, value => this.redactSerializableForDisplay(value));
-        const eventQueue = [];
-        let eventResolve = null;
-        const queueEvent = event => {
-          if (!event || !isRunActive()) return;
-          if (eventResolve) {
-            const resolveEvent = eventResolve;
-            eventResolve = null;
-            resolveEvent(event);
-          } else {
-            eventQueue.push(event);
-          }
-        };
-        const compatibilityGuard = createAssistantTextGuard();
-        const onToken = token => {
-          if (!isRunActive()) return;
-          this._markLatency("providerFirstDelta");
-          receivedAnyToken = true;
-          const text = compatibilityGuard.push(token);
-          if (text) queueEvent({ type: "text-delta", text, compatibility: true });
-        };
-        const onEvent = event => {
-          if (!isRunActive()) return;
-          if (event?.type === "first-byte") {
-            this._markLatency("providerFirstByte");
-            return;
-          }
-          if (event?.type === "usage") {
-            this._usageTracker.record({ ...event, requestId: providerRequestId }, run);
-            const reportedLimit = Number(event.contextLimit);
-            if (Number.isFinite(reportedLimit) && reportedLimit > 0) {
-              this._providerContextLimit = reportedLimit;
-            }
-            return;
-          }
-          if (event?.type === "provider-fallback") {
-            queueEvent(event);
-            return;
-          }
-          typedProviderStream = true;
-          if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
-            this._markLatency("providerFirstDelta");
-            receivedAnyToken = true;
-          }
-          if (event?.type === "text-delta" && event.text) queueEvent(event);
-          if (event?.type === "reasoning-delta" && event.text) queueEvent(event);
-          if (event?.type === "tool-call-delta") nativeToolStream = true;
-          for (const activity of publicActivity.accept(event)) queueEvent(activity);
-        };
-        if (!isRunActive()) return;
-        yield scoped({ type: "phase", label: "Uploading model request" });
-        this._markLatency("requestDispatched");
-        let temperature, topP, maxTokens;
-        try {
-          const mod = await import("../../config/model-settings.js");
-          const settings = mod.resolveEffectiveSettings(requestModel);
-          temperature = settings.temperature;
-          topP = settings.topP;
-          maxTokens = settings.maxOutputTokens;
-          const caps = mod.resolveProviderCapabilities(requestModel);
-          if (!caps.supportsTemperature) temperature = undefined;
-          if (!caps.supportsTopP) topP = undefined;
-          if (!caps.supportsMaxTokens) maxTokens = undefined;
-        } catch {}
-        const chatDone = this._chat(ctx, {
-          model: requestModel, onToken, onEvent,
-          signal: controller.signal,
-          timeoutMs: this._config.providerTimeout,
-          reasoningEffort: this._config.reasoningEffort,
-          temperature,
-          topP,
-          maxTokens,
-          tools: nativeTools, sessionId: this._sessionId, runId, turnId, taskEpoch,
-          requestId: providerRequestId,
-          isActive: () => isRunActive(),
-          bypassProviderHealth: retryProvider,
-          streamPhase: phase,
-          projectedTokens: Number.isFinite(Number(projected?.tokens)) ? projected.tokens : undefined,
-        })
-          .then(result => {
-            if (!isRunActive()) return;
-            if (typedProviderStream) {
-              reply = sanitizeAssistantIdentity(result);
-              return;
-            }
-            const completed = compatibilityGuard.finish(result);
-            if (completed.output) {
-              queueEvent({ type: "text-delta", text: completed.output, compatibility: true });
-            }
-            reply = completed.text;
-          })
-          .catch(error => {
-            if (isRunCurrent()) chatErr = error;
-          });
-        const waitForEvent = () => new Promise(resolveEvent => { eventResolve = resolveEvent; });
-        yield scoped({ type: "phase", label: "Waiting for model response" });
-        while (reply === undefined && chatErr === undefined) {
-          const event = eventQueue.length > 0
-            ? eventQueue.shift()
-            : await Promise.race([waitForEvent(), chatDone.then(() => undefined)]);
-          if (!isRunActive()) return;
-          if (event === undefined) continue;
-          if (event.type === "provider-fallback") {
-            yield scoped({
-              type: "answer",
-              content: `${requestModel} is unavailable. Continuing with ${event.model}.`,
-            });
-            continue;
-          }
-          if (event.type === "reasoning-delta") continue;
-          if (event.type === "public-activity") { yield scoped(event); continue; }
-          const token = event.text;
-          if (typedProviderStream && !event.compatibility) {
-            streamMode = "text";
-            streamStarted = true;
-            streamVisibleLength += token.length;
-            this._markLatency("uiFirstText");
-            yield scoped({ type: "stream", token });
-            continue;
-          }
-          streamTail += token;
-          const disposition = streamDisposition(streamTail);
-          if (disposition === "structured" || streamMode === "pending") streamMode = disposition;
-          if (streamMode === "text" && !deferProse && streamTail.length > LEGACY_PROTOCOL_HOLDBACK) {
-            const visible = streamTail.slice(0, -LEGACY_PROTOCOL_HOLDBACK);
-            streamTail = streamTail.slice(-LEGACY_PROTOCOL_HOLDBACK);
-            streamStarted = true;
-            streamVisibleLength += visible.length;
-            this._markLatency("uiFirstText");
-            yield scoped({ type: "stream", token: visible });
-          }
-        }
-        while (eventQueue.length > 0) {
-          const event = eventQueue.shift();
-          if (event.type === "reasoning-delta") continue;
-          if (event.type === "public-activity") { yield scoped(event); continue; }
-          const token = event.text;
-          if (typedProviderStream && !event.compatibility) {
-            streamMode = "text";
-            streamStarted = true;
-            streamVisibleLength += token.length;
-            this._markLatency("uiFirstText");
-            yield scoped({ type: "stream", token });
-            continue;
-          }
-          streamTail += token;
-          const disposition = streamDisposition(streamTail);
-          if (disposition === "structured" || streamMode === "pending") streamMode = disposition;
-          if (streamMode === "text" && !deferProse && streamTail.length > LEGACY_PROTOCOL_HOLDBACK) {
-            const visible = streamTail.slice(0, -LEGACY_PROTOCOL_HOLDBACK);
-            streamTail = streamTail.slice(-LEGACY_PROTOCOL_HOLDBACK);
-            streamStarted = true;
-            streamVisibleLength += visible.length;
-            this._markLatency("uiFirstText");
-            yield scoped({ type: "stream", token: visible });
-          }
-        }
-        await chatDone.catch(() => {});
-        if (!isRunActive()) return;
-        if (!chatErr) break;
-        finalError = chatErr;
-        if (streamStarted || receivedAnyToken || /request timed out|timeout|timed out/i.test(String(chatErr?.message || chatErr))) break;
-        if (attempt < maxAttempts - 1) {
-          if (!isRunActive()) break;
-          try {
-            await this._resetSession({ signal: controller.signal });
-            if (!isRunActive()) break;
-            reply = undefined;
-            streamTail = "";
-            streamMode = "pending";
-            streamVisibleLength = 0;
-            continue;
-          } catch (resetError) {
-            finalError = resetError;
-          }
-        }
-        break;
+      const providerTurn = yield* requestProviderTurn.call(this, {
+        ctx, nativeTools, requestModel, controller, run, pendingProse, maxAttempts, isRunActive,
+        isRunCurrent, scoped, runId, turnId, taskEpoch, retryProvider, phase, projected,
+      });
+      if (!providerTurn || !isRunActive()) {
+        finalizeRun();
+        return;
       }
+      let {
+        reply, streamMode, streamTail, streamStarted, streamVisibleLength, finalError,
+        nativeToolStream, typedProviderStream,
+      } = providerTurn;
       if (finalError && reply === undefined) {
         if (!isRunActive()) {
           finalizeRun();
@@ -494,7 +247,6 @@ export class LoopMethods {
           });
           continue;
         }
-        this._debugToolRecovery("transport_failure", message);
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
         }
@@ -508,7 +260,7 @@ export class LoopMethods {
           ? "Analysis timed out"
           : finalError?.failureClass || finalError?.status
             ? providerFailureContent(finalError, failedModel)
-            : `Provider error: ${redactSecrets(message)}`;
+            : `Provider error: ${this.redactForDisplay(redactSecrets(message))}`;
         if (finalizeRun()) yield scoped({ type: "error", content, recoverable });
         return;
       }
@@ -518,16 +270,16 @@ export class LoopMethods {
         this._emptyResponses++;
         if (this._emptyResponses < 3) {
           if (streamStarted && streamMode === "text") yield scoped({ type: "stream-discard" });
-          this._debugToolRecovery("empty_response", "Provider returned no usable content.");
           for (const lifecyclePart of this._lifecycle.finishStep("error")) {
             yield scoped({ type: "tool-part", part: lifecyclePart });
           }
+          let resetFailed = false;
           try {
-            await this._resetSession({ signal: controller.signal });
-            continue;
-          } catch (resetError) {
-            this._debugToolRecovery("empty_response_reset", resetError?.message || String(resetError));
+            if (this._resetSession) await this._resetSession({ signal: controller.signal });
+          } catch {
+            resetFailed = true;
           }
+          if (!resetFailed) continue;
         }
         for (const lifecyclePart of this._lifecycle.finishStep("error")) {
           yield scoped({ type: "tool-part", part: lifecyclePart });
@@ -570,7 +322,6 @@ export class LoopMethods {
       }
       if (parsed.error) {
         yield scoped({ type: "stream-discard" });
-        this._debugToolRecovery(parsed.kind || "malformed_json", parsed.error);
         const part = this._lifecycle.pending({
           callId: randomUUID(),
           tool: "invalid_tool_call",
@@ -685,144 +436,11 @@ export class LoopMethods {
         }],
       });
       yield scoped({ type: "context-usage", usage: this.contextUsage() });
-      const planTracker = auxiliaryTool ? null : yield* this._startPlanItem(tool, run);
-      let result;
-      let part;
-      let finishReason = "tool-calls";
-      for await (const event of this._toolExecutor(run).execute(tool, { agent: this._agentProfile?.name })) {
-        if (event.type === "execution-result") {
-          part = event.part;
-          result = event.result;
-          finishReason = event.finishReason;
-          tool.args = event.call.args;
-          tool.id = event.call.id;
-        } else if (event.type === "tool-result") {
-        } else {
-          yield event;
-        }
-      }
-      if (!isRunActive()) return;
-      if (!part) continue;
-      if (tool.name === "todowrite" && part.state.status === "completed") {
-        const todos = Array.isArray(part.state.metadata?.todos) ? part.state.metadata.todos : [];
-        const plan = this._definePlan(todos, run);
-        if (plan) yield scoped({
-          type: "plan",
-          items: plan.map(item => ({ ...item })),
-          planId: this._planId,
-          currentStepId: this._currentStepId,
-          revision: this._planRevision,
-          planStatus: this._planStatus,
-        });
-      }
-      const protectedResult = this._secretStore.protect(result, runId, turnId);
-      result = this._secretStore.redact(protectedResult);
-      this._rememberToolOutcome(tool, protectedResult, part.state.status === "error");
-      if (["web", "webfetch", "websearch", "repo"].includes(tool.name)) {
-        this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
-      }
-      const metadata = toolMetadata(tool, result);
-      const planDenied = part.metadata?.planDenied || part.state.metadata?.planDenied;
-      const resultMetadata = planDenied ? { ...metadata, hidden: true, planDenied: true } : metadata;
-      yield scoped({
-        type: "tool-result",
-        tool: tool.name,
-        result,
-        metadata: tool.name === "todowrite"
-          ? { ...resultMetadata, planItems: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [] }
-          : resultMetadata,
-        callId: part.callId,
-        failed: part.state.status === "error",
+      const toolOutcome = yield* executeAgentTool.call(this, {
+        tool, run, runId, turnId, auxiliaryTool, scoped, isRunActive, finalizeRun, emergencyThreshold,
       });
-      this._toolEvidence.push({
-        tool: tool.name,
-        args: { ...tool.args },
-        result,
-        failed: resultFailed(result),
-        metadata,
-      });
-      if (this._executionPolicy) {
-        this._executionPolicy.record(tool.name, tool.args, result, part.state.status === "error");
-      }
-      this._lastToolResult = result;
-      this._activeTask.lastToolResult = result.slice(0, 1500);
-      this._activeTask.pendingProblem = part.state.status === "error" ? result.slice(0, 500) : "";
-      this._lastToolIsRead = ["read", "glob", "grep"].includes(tool.name);
-      this._lastToolWasExecuted = true;
-      if (tool.name === "write") this._totalWrites++;
-      this._pushToolMessage(tool.name, part.callId, protectedResult);
-      yield scoped({ type: "context-usage", usage: this.contextUsage() });
-      if (["read", "glob", "grep"].includes(tool.name)) {
-        const sig = `${tool.name}:${JSON.stringify(tool.args)}`;
-        if (sig === this._progress.lastReadSignature || sig === this._progress.lastSearchSignature) {
-          if (tool.name === "read") this._progress.repeatedReads++;
-          else this._progress.repeatedSearches++;
-        } else {
-          if (tool.name === "read") {
-            this._progress.repeatedReads = 0;
-            this._progress.lastReadSignature = sig;
-          } else {
-            this._progress.repeatedSearches = 0;
-            this._progress.lastSearchSignature = sig;
-          }
-        }
-      } else {
-        this._progress.repeatedSearches = 0;
-        this._progress.repeatedReads = 0;
-      }
-      if (this._progress.repeatedSearches > 10 || this._progress.repeatedReads > 10) {
-        this._finishLatency();
-        if (finalizeRun()) {
-          yield scoped({ type: "error", content: "No progress: repeated identical searches without meaningful change." });
-        }
-        return;
-      }
-      const usage = this.contextUsage();
-      const projectedRatio = usage.contextLimitKnown
-        ? usage.projectedRequestTokens / usage.contextLimit
-        : null;
-      if (projectedRatio !== null && projectedRatio < this._config.compactThreshold) {
-        this._compactionThresholdCrossed = false;
-      }
-      if (
-        projectedRatio !== null
-        && projectedRatio >= emergencyThreshold
-        && !this._compactionThresholdCrossed
-        && this._scheduleCompaction(run, "emergency")
-      ) {
-        this._compactionThresholdCrossed = true;
-        yield scoped({
-          type: "compaction-state",
-          status: "scheduled",
-          compactionId: this._compaction.compactionId,
-          startedAt: this._compaction.startedAt,
-          usage: this.contextUsage(),
-        });
-      } else if (
-        projectedRatio !== null
-        && projectedRatio >= this._config.compactThreshold
-        && !this._compactionThresholdCrossed
-        && this._scheduleCompaction(run)
-      ) {
-        this._compactionThresholdCrossed = true;
-        yield scoped({
-          type: "compaction-state",
-          status: "scheduled",
-          compactionId: this._compaction.compactionId,
-          startedAt: this._compaction.startedAt,
-          usage: this.contextUsage(),
-        });
-      }
-      for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
-        yield scoped({ type: "tool-part", part: lifecyclePart });
-      }
-      yield* this._finishPlanItem(
-        planTracker,
-        tool,
-        result,
-        part.state.status === "completed" && !resultFailed(result),
-        run,
-      );
+      if (toolOutcome === "stop") return;
+      continue;
     }
     this._finishLatency();
     if (finalizeRun()) {

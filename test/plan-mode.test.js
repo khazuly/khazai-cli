@@ -416,8 +416,6 @@ test("approved Build runs start once with pending implementation steps", async (
   })) events.push(event);
   const plans = events.filter(event => event.type === "plan");
   assert.equal(plans.length, 1);
-  // The current execution step is always active: only the first step is
-  // active; nothing is completed without evidence.
   assert.deepEqual(plans[0].items.map(item => item.status), ["active", "pending"]);
   assert.equal(plans[0].items[0].evidenceIds.length, 0);
   assert.equal(plans[0].planId, "plan-1");

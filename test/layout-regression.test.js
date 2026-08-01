@@ -89,15 +89,15 @@ test("streaming chunks normalize carriage returns and repeated blank rows", () =
 
 test("markdown normalization dedents prose without changing fenced code", () => {
   const content = normalizeVerticalWhitespace([
-    "  Perubahan:",
-    "    - parser dimemoisasi",
+    "  Changes:",
+    "    - parser is memoized",
     "",
     "  ```js  ",
     "    const value = 1;  ",
     "  ```",
   ].join("\r\n"));
-  assert.match(content, /^Perubahan:/);
-  assert.match(content, /^  - parser dimemoisasi/m);
+  assert.match(content, /^Changes:/);
+  assert.match(content, /^  - parser is memoized/m);
   assert.match(content, /    const value = 1;  /);
 });
 
@@ -180,10 +180,10 @@ test("private streaming messages are never rendered", async () => {
   const frame = await renderFrame([{
     id: "stream-without-overflow-marker",
     type: "streaming",
-    content: "Implementasi Baileys dengan Pairing Code",
+    content: "Baileys implementation with Pairing Code",
   }], 40, 20);
 
-  assert.doesNotMatch(frame, /KhazAI|Implementasi Baileys/);
+  assert.doesNotMatch(frame, /KhazAI|Baileys implementation/);
 });
 
 test("partial Markdown remains hidden before response completion", async () => {
@@ -217,9 +217,9 @@ test("streaming preview reserves the final terminal column for wide characters",
 });
 
 test("stream normalization preserves spaces across provider chunks", () => {
-  const first = "Mau saya buat script";
-  const second = " automation untuk login?";
-  assert.equal(normalizeStreamText(first + second), "Mau saya buat script automation untuk login?");
+  const first = "Would you like me to create a script";
+  const second = " to automate login?";
+  assert.equal(normalizeStreamText(first + second), "Would you like me to create a script to automate login?");
 });
 
 test("incremental static commits stay compact when tool labels wrap", async () => {

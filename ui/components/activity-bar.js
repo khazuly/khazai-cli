@@ -125,29 +125,27 @@ export function ActivityBar({
     && !compacting
     && !modeStatus
     && !hasSpecificActivity;
-  const initGenerating = modeStatus?.mode === "init" && modeStatus.status === "generating";
-  const animating = compacting || genericWorking || initGenerating;
+  const animating = compacting || genericWorking;
   const scopeKey = [
     activityScope?.runId || "",
     activityScope?.turnId || "",
     activityScope?.taskEpoch ?? "",
   ].join(":");
-  const animationKey = `${scopeKey}:${compactionStatus}:${genericWorking ? "working" : "idle"}:${initGenerating ? "init-generating" : "idle"}`;
+  const animationKey = `${scopeKey}:${compactionStatus}:${genericWorking ? "working" : "idle"}`;
   scopeRef.current = animationKey;
 
   useEffect(() => {
     setFrame(0);
     if (!animating) return undefined;
     const expectedScope = animationKey;
-    const intervalMs = initGenerating ? 70 : 150;
     const timer = setInterval(() => {
       if (scopeRef.current !== expectedScope) return;
       setFrame(v => v + 1);
       if (compacting) setNow(Date.now());
-    }, intervalMs);
+    }, 150);
     timer.unref?.();
     return () => clearInterval(timer);
-  }, [animationKey, compacting, genericWorking, initGenerating, animating]);
+  }, [animationKey, compacting, genericWorking, animating]);
 
   if (!running && !waitingForAnswer) return null;
 
@@ -177,20 +175,6 @@ export function ActivityBar({
           ? "Preparing"
           : "Exploring";
     activityText = `Plan Mode · ${phase}${queue}`;
-  } else if (modeStatus?.mode === "init") {
-    if (initGenerating) {
-      activityContent = h(Box, null,
-        h(TextShimmer, { text: "Generating AGENTS.md", frame, intervalMs: 70 }),
-        queue ? h(Text, { color: theme.muted }, queue) : null,
-      );
-    } else {
-      const phase = modeStatus.status === "reviewing"
-        ? "Reviewing project conventions"
-        : modeStatus.status === "preparing"
-          ? "Preparing preview"
-          : "Inspecting repository structure";
-      activityText = `${phase}${queue}`;
-    }
   } else if (modeStatus?.mode === "build") {
     const phase = modeStatus.status === "verifying"
       ? "Running verification"

@@ -301,11 +301,7 @@ class McpConnection {
     if (!this.definition.enabled && !force) return [];
     if (this.state === "connected" && this.client && this.tools.length > 0) return this.tools;
     if (this.discoveryPromise) return this.discoveryPromise;
-    const started = performance.now();
     this.discoveryPromise = this.discoverFresh().finally(() => {
-      if (process.env.KHAZAI_DEBUG) {
-        console.error(`[khazai debug] MCP ${this.definition.id} discovery ${Math.round(performance.now() - started)}ms`);
-      }
       this.discoveryPromise = null;
     });
     return this.discoveryPromise;
@@ -341,7 +337,6 @@ class McpConnection {
       && !context.signal?.aborted
       && (!context.isActiveRun || context.isActiveRun(scope));
     this.activeRequests.add(requestId);
-    const started = performance.now();
     try {
       const result = await this.client.callTool(
         { name, arguments: object(args) },
@@ -357,9 +352,6 @@ class McpConnection {
       return `Error: MCP tool call failed: ${this.error}`;
     } finally {
       this.activeRequests.delete(requestId);
-      if (process.env.KHAZAI_DEBUG) {
-        console.error(`[khazai debug] MCP ${this.definition.id}/${name} execution ${Math.round(performance.now() - started)}ms`);
-      }
     }
   }
 

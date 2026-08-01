@@ -1,16 +1,7 @@
-import { execAsync } from "../../lib/exec-async.js";
-import { countTokens } from "../../lib/tokens.js";
-import { existsSync, readFileSync, statSync, writeFileSync, mkdtempSync, chmodSync, rmSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
-import { tmpdir } from "node:os";
-import { redactSecrets } from "../../lib/secrets.js";
-import { ToolExecutor } from "../tool-executor.js";
-import { normalizeIntentContract } from "../intent-resolver.js";
 import { randomUUID } from "node:crypto";
 import { planToolDefinitionAllowed } from "../plan-mode.js";
 import { planBatchCanRunConcurrently, runPlanExplorationBatch } from "./plan-exploration.js";
-import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
-import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
+import { publicToolArgs, toolMetadata } from "./helpers/task.js";
 
 export class ToolMethods {
   _protectForContext(value, scope = this._activeRun) {
@@ -165,7 +156,7 @@ export class ToolMethods {
           planId: this._planId,
           currentStepId: this._currentStepId,
           revision: this._planRevision,
-          planStatus: this._planStatus,
+          status: this._planStatus,
         }, executionScope);
       }
       if (bufferedPlanResult) {
@@ -226,13 +217,6 @@ export class ToolMethods {
     return this._compactMessages(false);
   }
 
-  /**
-   * Projects the normalized provider payload (messages + tool schemas) for
-   * the resolved route so the loop can compact at a safe boundary before
-   * dispatching instead of sending an oversized request first. Results are
-   * cached per history/model/tool-registry/capability revision so unchanged
-   * history is never re-normalized and re-serialized on every iteration.
-   */
   async _projectProviderPayload(ctx, tools, model) {
     const projectionKey = [
       this._lastFrameKey || this._contextCacheKey(),
@@ -265,11 +249,6 @@ export class ToolMethods {
     }
   }
 
-  /**
-   * Builds the provider tool list once per model/agent/tool-registry
-   * revision. Definition hooks run at most once per revision; the mapped
-   * native schema list is reused until the registry or model changes.
-   */
   async _toolSchemas(model, agent) {
     const mode = this.mode();
     const key = `${model}|${agent}|${mode}|${this._registry.revision}`;
@@ -379,144 +358,6 @@ export class ToolMethods {
     this._lastFrameEntry = null;
     this._contextCache.reset();
     return true;
-  }
-
-  async _getRemoteUrl() {
-    try {
-      const result = await execAsync("git remote get-url origin", {
-        cwd: this._workspace,
-        timeoutMs: 10_000,
-      });
-      return (result.stdout || "").trim() || null;
-    } catch {
-      return null;
-    }
-  }
-
-  async _runBash(command, workdir) {
-    try {
-      const result = await execAsync(command, {
-        cwd: workdir || this._workspace,
-        timeoutMs: 30_000,
-      });
-      return `Exit: 0\n${redactSecrets(result.stdout || result.stderr || "")}`;
-    } catch (error) {
-      return `Exit: 1\n${redactSecrets([error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n"))}`;
-    }
-  }
-
-  async _pushWithTemporaryCredential(command, token) {
-    const directory = mkdtempSync(join(tmpdir(), "khazai-git-askpass-"));
-    const askpass = join(directory, "askpass.sh");
-    try {
-      writeFileSync(askpass, "#!/bin/sh\nprintf '%s' \"$KHAZAI_GIT_TOKEN\"\n", { mode: 0o700 });
-      chmodSync(askpass, 0o700);
-      const result = await execAsync(command, {
-        cwd: this._workspace,
-        timeoutMs: 60_000,
-        env: { GIT_ASKPASS: askpass, GIT_TERMINAL_PROMPT: "0", KHAZAI_GIT_TOKEN: token },
-      });
-      return { ok: true, result: `Exit: 0\n${redactSecrets(result.stdout || result.stderr || "Push completed.")}` };
-    } catch (error) {
-      const detail = redactSecrets([error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n"));
-      const auth = /auth|credential|password|token|permission denied|401|403/i.test(detail);
-      return { ok: false, result: auth ? "Push failed because authentication was rejected." : "Push failed. Check the remote, branch, and connection, then try again." };
-    } finally {
-      try { rmSync(directory, { recursive: true, force: true }); } catch {}
-    }
-  }
-
-  async *_runShellShortcut(input) {
-    const executionScope = this._activeRun;
-    if (!this._isActiveRun(executionScope)) return;
-    const command = String(input || "").slice(1).trim();
-    if (!command) {
-      const answer = "Enter a command after !.";
-      this._appendMessage({ role: "user", content: input });
-      this._appendMessage({ role: "assistant", content: answer });
-      yield { type: "stream", token: answer };
-      yield { type: "stream-end" };
-      return;
-    }
-
-    const protectedInput = this._protectForContext(input);
-    this._taskContract = normalizeIntentContract({
-      intent: "change",
-      category: "SHELL_OPERATION",
-      operation: "shell",
-      requiredEvidence: ["shell"],
-      modifiesFiles: false,
-    }, protectedInput);
-    this._activeTask = taskState(this._taskContract, protectedInput);
-    this._currentRequest = protectedInput;
-    this._activeScope = {
-      sessionId: this._sessionId,
-      runId: executionScope.runId,
-      turnId: executionScope.turnId,
-      objective: protectedInput,
-      taskEpoch: executionScope.taskEpoch,
-      relevantFiles: [],
-      allowedTargets: [],
-      currentPlan: [],
-      changedFiles: [],
-    };
-    this._appendMessage({ role: "user", content: protectedInput });
-    this._requestStartIndex = this._messages.length - 1;
-    this._toolEvidence = [];
-    this._toolCallHistory = [];
-    this._completedToolResults.clear();
-    this._invalidateInspectionCache();
-
-    const snapshot = this._lifecycle.startStep();
-    if (snapshot) yield this._scopedToolEvent({ type: "tool-part", part: snapshot }, executionScope);
-    const call = {
-      id: randomUUID(),
-      name: "bash",
-      args: { command, workdir: this._workspace },
-    };
-    this._shellScheduler.reserve(call);
-    yield this._scopedToolEvent({ type: "tool-call", tool: call.name, args: { ...call.args }, callId: call.id }, executionScope);
-    if (!this._isActiveRun(executionScope)) return;
-    this._appendMessage({
-      role: "assistant",
-      content: null,
-      tool_calls: [{
-        id: call.id,
-        type: "function",
-        function: {
-          name: call.name,
-          arguments: JSON.stringify(this._protectDataForContext(publicToolArgs(call.args))),
-        },
-      }],
-    });
-    let result = "";
-    let failed = false;
-    let finishReason = "tool-calls";
-    for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
-      if (event.type === "execution-result") {
-        result = this._protectForContext(String(event.result || ""));
-        failed = Boolean(event.failed);
-        finishReason = event.finishReason;
-      } else {
-        yield event;
-      }
-    }
-    if (!this._isActiveRun(executionScope)) return;
-    this._pushToolMessage(call.name, call.id, result);
-    this._toolEvidence.push({ tool: "bash", args: call.args, result, failed, metadata: toolMetadata(call, result) });
-    this._lastToolResult = result;
-    this._activeTask.lastToolResult = result.slice(0, 1500);
-    for (const lifecyclePart of this._lifecycle.finishStep(finishReason)) {
-      yield this._scopedToolEvent({ type: "tool-part", part: lifecyclePart }, executionScope);
-    }
-    const exitCode = /^Exit:\s*(-?\d+)/im.exec(result)?.[1];
-    const answer = failed
-      ? `Command finished with exit code ${exitCode ?? "unknown"}.`
-      : `Command finished with exit code ${exitCode ?? "0"}.`;
-    this._appendMessage({ role: "assistant", content: answer });
-    this._finishLatency();
-    yield { type: "stream", token: answer };
-    yield { type: "stream-end" };
   }
 
   _buildContext() {

@@ -10,33 +10,6 @@ import { planToolIsReadOnly } from "./plan-mode.js";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_OUTPUT_LINES = 2_000;
 
-function schemaError(tool, args) {
-  if (!tool) return "Unknown tool.";
-  if (!args || typeof args !== "object" || Array.isArray(args)) return "Tool arguments must be an object.";
-  if (typeof tool.validate === "function") {
-    const result = tool.validate(args);
-    if (result === false) return "Tool arguments failed validation.";
-    if (result?.success === false) return result.error?.message || "Tool arguments failed validation.";
-  }
-  const schema = tool.parameters || {};
-  for (const name of schema.required || []) {
-    if (!Object.hasOwn(args, name)) return `Missing required argument "${name}".`;
-  }
-  for (const [name, value] of Object.entries(args)) {
-    const definition = schema.properties?.[name];
-    if (!definition) {
-      if (schema.additionalProperties === false && !name.startsWith("_")) return `Argument "${name}" is not allowed.`;
-      continue;
-    }
-    const expected = definition.type;
-    if (!expected || name.startsWith("_")) continue;
-    const actual = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
-    if (expected !== actual) return `Argument "${name}" must be ${expected}, received ${actual}.`;
-    if (definition.enum && !definition.enum.includes(value)) return `Argument "${name}" is not an allowed value.`;
-  }
-  return "";
-}
-
 function outputPath(sessionId, callId) {
   const directory = join(homedir(), ".local", "share", "khazai-ai", "tool-output", sessionId);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -93,42 +66,7 @@ function permissionTarget(call, request, workspace) {
   return { label: "Target", value: String(request.value || "") };
 }
 
-export function normalizeQuestionRequest(args = {}) {
-  const seen = new Set();
-  let recommendationUsed = false;
-  const options = (Array.isArray(args.options) ? args.options : []).flatMap((option, index) => {
-    const source = typeof option === "string" ? { label: option } : option || {};
-    const label = String(source.label || "").trim();
-    if (!label) return [];
-    const id = String(source.id || `option-${index + 1}`).trim();
-    if (seen.has(id)) return [];
-    seen.add(id);
-    const recommended = Boolean(source.recommended) && !recommendationUsed;
-    recommendationUsed ||= recommended;
-    return [{
-      id,
-      label,
-      description: String(source.description || "").trim(),
-      recommended,
-    }];
-  });
-  if (args.allowCustomAnswer && !seen.has("custom")) {
-    options.push({
-      id: "custom",
-      label: "Enter a custom answer",
-      description: "Return to the prompt input and provide a custom response.",
-      recommended: false,
-      custom: true,
-    });
-  }
-  return {
-    questionId: String(args.questionId || "").trim(),
-    question: String(args.question || "Please choose an option.").trim(),
-    context: String(args.context || "").trim(),
-    options,
-    allowCustomAnswer: Boolean(args.allowCustomAnswer),
-  };
-}
+export { normalizeQuestionRequest } from "./tool-question.js";
 
 export class ToolExecutor {
   constructor({

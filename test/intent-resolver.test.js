@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
 import { IntentResolver, fallbackIntentContract } from "../app/intent-resolver.js";
 
 function classifierReturning(contract, captured = []) {
@@ -10,7 +9,7 @@ function classifierReturning(contract, captured = []) {
   };
 }
 
-test("semantic resolver maps a non-English request to a canonical contract", async () => {
+test("semantic resolver maps a validation request to a canonical contract", async () => {
   const resolver = new IntentResolver({
     classify: classifierReturning({
       intent: "validate",
@@ -30,7 +29,7 @@ test("semantic resolver maps a non-English request to a canonical contract", asy
   });
 
   const contract = await resolver.resolve({
-    input: "coba jalankan hasil obfuscate ini",
+    input: "run this obfuscated result",
     model: "claude",
   });
 
@@ -41,7 +40,7 @@ test("semantic resolver maps a non-English request to a canonical contract", asy
   assert.deepEqual(contract.requiredEvidence, ["validation"]);
 });
 
-test("equivalent requests in different languages produce the same executable intent", async () => {
+test("equivalent request phrasings produce the same executable intent", async () => {
   const classify = classifierReturning({
     intent: "inspect",
     operation: "list_files",
@@ -50,11 +49,11 @@ test("equivalent requests in different languages produce the same executable int
   });
   const resolver = new IntentResolver({ classify });
   const english = await resolver.resolve({ input: "list the files here" });
-  const indonesian = await resolver.resolve({ input: "cek file yang ada di sini" });
+  const alternative = await resolver.resolve({ input: "inspect the files in this folder" });
 
-  assert.equal(english.intent, indonesian.intent);
-  assert.equal(english.operation, indonesian.operation);
-  assert.deepEqual(english.requiredEvidence, indonesian.requiredEvidence);
+  assert.equal(english.intent, alternative.intent);
+  assert.equal(english.operation, alternative.operation);
+  assert.deepEqual(english.requiredEvidence, alternative.requiredEvidence);
 });
 
 test("malformed classifier output falls back to a safe destructive contract for an explicit deletion", async () => {

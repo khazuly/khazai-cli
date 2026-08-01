@@ -1,5 +1,5 @@
 import { loadConfig } from "../config/index.js";
-import { chat, resetSession } from "../lib/llm.js";
+import { chat } from "../lib/llm.js";
 import { fallbackIntentContract } from "./intent-resolver.js";
 import { randomUUID } from "node:crypto";
 import { getAgentProfile } from "./agent-profiles.js";
@@ -10,7 +10,9 @@ import { SkillService } from "./skills.js";
 import { workspaceMetadata } from "./agent/helpers/task.js";
 import { taskState } from "./agent/helpers/parser.js";
 import { StateMethods } from "./agent/state.js";
+import { StatePromptMethods } from "./agent/state-prompt.js";
 import { ToolMethods } from "./agent/tools.js";
+import { RepositoryMethods } from "./agent/repository.js";
 import { PlanMethods } from "./agent/plan.js";
 import { LoopMethods } from "./agent/loop.js";
 import { ShellScheduler } from "./shell-scheduler.js";
@@ -21,6 +23,7 @@ import { ContextCache } from "./context-cache.js";
 import { resolveEffectiveSettings } from "../config/model-settings.js";
 import { configRevision } from "../config/store.js";
 import { performance } from "node:perf_hooks";
+import { sanitizePublicBranding, sanitizePublicSerializable } from "../config/khazai-free-models.js";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
@@ -128,7 +131,7 @@ export class Agent {
     this._pendingAction = null;
     this._chat = opts.chat || chat;
     this._chatHandlesRetries = opts.chatHandlesRetries ?? !opts.chat;
-    this._resetSession = opts.resetSession || resetSession;
+    this._resetSession = opts.resetSession || null;
     this._recoverableProviderRequest = null;
     this._usageTracker = new ContextUsageTracker(opts.sessionState?.contextUsage);
     this._contextCache = new ContextCache();
@@ -240,7 +243,6 @@ export class Agent {
     this._toolSchemaCache.clear();
     this._lastModeSwitchMs = performance.now() - started;
     this._modeState = { ...this._modeState, mode: profile.name, runId: null, turnId: null };
-    if (this._debug) console.error(`[khazai debug] mode switch ${profile.name} ${Math.round(this._lastModeSwitchMs * 10) / 10}ms`);
     return this.modeState();
   }
   planningContext() {
@@ -253,9 +255,18 @@ export class Agent {
   setAutoApprove(value) { this._permissionService.setAuto(value); }
   setAllowAll(value) { return this._permissionService.setAllowAll(value); }
   permissionState() { return this._permissionService.permissionState(); }
-  redactForDisplay(value) { return this._secretStore.redact(value); }
-  redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
+  redactForDisplay(value) {
+    return sanitizePublicBranding(this._secretStore.redact(value), this._config);
+  }
+  redactSerializableForDisplay(value) {
+    return sanitizePublicSerializable(this._secretStore.redactSerializable(value), this._config);
+  }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
+  reloadWorkspaceInstructions() {
+    this._instructionService.clearCache();
+    this._systemCache = null;
+    return this._instructionService.getSystemPromptBlock();
+  }
   _toolExecutor(scope) { return createToolExecutor(this, scope); }
   isCompacting() {
     return ["preparing", "summarizing", "committing", "recounting"].includes(this._compaction.status);
@@ -299,11 +310,6 @@ export class Agent {
     return true;
   }
 
-  /**
-   * Appends one canonical message and invalidates derived caches. All
-   * provider history is appended through this helper; nothing else touches
-   * `_messages` in production paths.
-   */
   _appendMessage(message) {
     this._messages.push(message);
     this._lastFrameEntry = null;
@@ -325,12 +331,6 @@ export class Agent {
     return { stored: text, concise, truncated: true, reference };
   }
 
-  /**
-   * Stores the full tool output outside active provider history and appends
-   * a concise structured result (excerpt + stored-output reference) to the
-   * canonical history. The full output stays available internally and in
-   * the persisted lifecycle parts shown by `/details`.
-   */
   _pushToolMessage(name, callId, content) {
     const { stored, concise, truncated, reference } = this._conciseToolContent(name, callId, content);
     if (truncated) {
@@ -362,11 +362,6 @@ export class Agent {
     ].join("|");
   }
 
-  /**
-   * Returns the cached provider frame for the current history revision.
-   * The returned entry contains `messages` (canonical, unresolved) plus
-   * cached token counts, payload size, and validation stats.
-   */
   _frame() {
     const effective = this._applyEffectiveSettings();
     const sys = this._buildSystem();
@@ -387,10 +382,6 @@ export class Agent {
     });
     this._lastFrameEntry = entry;
     this._lastFrameKey = key;
-    if (this._debug) {
-      const { frameBuilds, frameHits } = this._contextCache.stats;
-      console.error(`[khazai debug] context cache builds=${frameBuilds} hits=${frameHits} revision=${key.split("|")[0]}`);
-    }
     return entry;
   }
 
@@ -496,7 +487,7 @@ export class Agent {
   }
 }
 
-for (const source of [StateMethods, ToolMethods, PlanMethods, LoopMethods]) {
+for (const source of [StateMethods, StatePromptMethods, ToolMethods, RepositoryMethods, PlanMethods, LoopMethods]) {
   const descriptors = Object.getOwnPropertyDescriptors(source.prototype);
   delete descriptors.constructor;
   Object.defineProperties(Agent.prototype, descriptors);

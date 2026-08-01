@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { ContextUsageTracker, resolveContextLimit } from "../app/context-usage.js";
-import { loadConfig } from "../config/index.js";
 
 const SYSTEM_BASELINE_MIN = 400;
 const SYSTEM_BASELINE_MAX = 1500;
@@ -152,7 +151,6 @@ test("5. saving and resuming preserves context", async () => {
 test("6. real compaction reduces context", async () => {
   const agent = new Agent(new Registry(), agentOpts());
 
-  // Build substantial context
   for (let i = 0; i < 8; i++) {
     agent._messages.push({ role: "user", content: `Message ${i} ${"x".repeat(500)}` });
     agent._messages.push({ role: "assistant", content: `Response ${i} ${"y".repeat(500)}` });
@@ -243,19 +241,15 @@ test("10. stale recount callbacks cannot overwrite newer history", async () => {
 });
 
 test("11. compactThreshold uses ratio comparison (not percentage)", async () => {
-  const agent = new Agent(new Registry(), agentOpts());
-
-
-  agent._config.contextLimit = 10000;
-  agent._config.compactThreshold = 0.5;
+  const agent = new Agent(new Registry(), agentOpts({
+    config: { modelSettings: {}, models: {}, contextLimit: 10000, compactThreshold: 0.5 },
+  }));
 
   const usage = agent.contextUsage();
   assert.equal(usage.contextLimitKnown, true);
 
 
   const projectedRatio = usage.projectedRequestTokens / usage.contextLimit;
-  // compactThreshold is 0.5, if ratio < 0.5, compactIfNeeded returns false
-  if (projectedRatio < 0.5) {
-    assert.equal(agent.compactIfNeeded(), false, "Should not compact when ratio < threshold");
-  }
+  assert.ok(projectedRatio < 0.5, "Fixture must stay below the configured ratio threshold");
+  assert.equal(agent.compactIfNeeded(), false, "Should not compact when ratio < threshold");
 });

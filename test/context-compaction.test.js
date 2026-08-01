@@ -54,10 +54,18 @@ test("known context limits compact from projected request usage", () => {
     role: index % 2 === 0 ? "user" : "assistant",
     content: `message-${index} ${"x".repeat(180)}`,
   }));
-  const agent = agentWithState({ messages, summary: "" });
-  const usage = agent.contextUsage();
-  agent._config.contextLimit = usage.projectedRequestTokens;
-  agent._config.compactThreshold = 1;
+  const state = { messages, summary: "" };
+  const usage = agentWithState(state).contextUsage();
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-compact-known-")),
+    config: {
+      modelSettings: {},
+      models: {},
+      contextLimit: usage.projectedRequestTokens,
+      compactThreshold: 1,
+    },
+    sessionState: state,
+  });
   assert.equal(agent.contextUsage().contextLimitKnown, true);
   assert.equal(agent.compactIfNeeded(), true);
 });

@@ -9,6 +9,15 @@ const MODELS = [
   { name: "kutub", description: "Compact coding model" },
   { name: "mecha", description: "Tool-capable reasoning model" },
   { name: "auto-free", description: "Auto (free)" },
+  { name: "chatgpt", description: "GPT by KhazAI" },
+  { name: "claude", description: "Claude by KhazAI" },
+  { name: "gemini", description: "Gemini by KhazAI" },
+  { name: "grok", description: "Grok by KhazAI" },
+  { name: "deepseek", description: "DeepSeek by KhazAI" },
+  { name: "qwen", description: "Qwen by KhazAI" },
+  { name: "kimi", description: "Kimi by KhazAI" },
+  { name: "perplexity", description: "Perplexity by KhazAI" },
+  { name: "r1", description: "Deep reasoning by KhazAI" },
 ];
 
 const THEMES = THEME_NAMES.map(name => ({ name, description: THEME_DESCRIPTIONS[name] || name }));
@@ -75,6 +84,7 @@ export const COMMANDS = [
   { name: "/export", description: "Export session to Markdown", category: "workspace", aliases: [], visible: false, group: "session" },
   { name: "/model", description: "Select the active model", category: "core", aliases: ["/models"], visible: true, group: "view", sub: [
     ...MODELS,
+    { name: "list", description: "List all available models" },
     { name: "free", description: "List all KhazAI free models" },
     { name: "refresh", description: "Refresh model availability" },
     { name: "details", description: "Show details for a KhazAI free model" },
@@ -87,11 +97,6 @@ export const COMMANDS = [
   ] },
   { name: "/usage", description: "Show context and session token usage", category: "core", aliases: [], visible: true, group: "view" },
   { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", openSubmenu: true, sub: THEMES },
-  { name: "/plan", description: "Show or hide the Plan panel", category: "core", aliases: [], visible: true, group: "view", sub: [
-    { name: "show", description: "Expand the Plan panel" },
-    { name: "hide", description: "Collapse the Plan panel" },
-    { name: "toggle", description: "Toggle the Plan panel" },
-  ] },
   { name: "/mcp", description: "Manage MCP servers", category: "core", aliases: [], visible: true, group: "workspace", sub: MCP_COMMANDS },
   { name: "/connect", description: "Connect a provider", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/skills", description: "List workspace skills", category: "workspace", aliases: [], visible: false, group: "workspace" },
@@ -116,11 +121,7 @@ export const COMMANDS = [
   ] },
 
 
-  { name: "/init", description: "Inspect with the active model and generate AGENTS.md", category: "workspace", aliases: ["/ini"], visible: true, group: "settings", sub: [
-    { name: "preview", description: "Generate and preview without writing" },
-    { name: "update", description: "Update an existing file while preserving custom rules" },
-    { name: "basic", description: "Generate a basic template without AI" },
-  ] },
+  { name: "/init", description: "Create AGENTS.md using the active model", category: "workspace", aliases: ["/ini"], visible: true, group: "settings" },
   { name: "/help", description: "Show command reference", category: "help", aliases: [], visible: true, group: "settings" },
   { name: "/exit", description: "Exit KhazAI", category: "help", aliases: ["/quit"], visible: true, group: "settings" },
 ];

@@ -9,24 +9,6 @@ function tokensForLength(length) {
   return Math.max(1, Math.ceil(length / 4));
 }
 
-/**
- * Derived-context cache for one agent.
- *
- * Canonical history lives only in `agent._messages`. Everything derived
- * from it (per-message hashes, token estimates, validation results, the
- * provider frame, and provider payload projections) is cached here keyed
- * by a revision tuple:
- *
- *   { historyRevision, resolvedModel, tokenizerId, toolRegistryRevision,
- *     providerCapabilityRevision }
- *
- * Per-message derived data is stored in a WeakMap so unchanged messages are
- * counted, hashed, and serialized exactly once for their whole lifetime.
- * Appending one message only validates the new message and its boundary and
- * only computes the new message's meta; cached counts for unchanged
- * messages are preserved. The frame array is never deep-cloned unless a
- * message actually contains a secret placeholder.
- */
 export class ContextCache {
   constructor() {
     this._frames = new Map();
@@ -97,13 +79,6 @@ export class ContextCache {
     return { valid: true, issue: null };
   }
 
-  /**
-   * Builds (or reuses) the provider frame for one history revision.
-   *
-   * `rawMessages` is the canonical history; only `[INTERNAL STEERING]`
-   * messages are excluded. When the frame is a cache hit the returned entry
-   * is the same object; callers must not mutate it.
-   */
   buildFrame(key, {
     messages: rawMessages,
     requestStartIndex,
@@ -201,7 +176,6 @@ export class ContextCache {
 
     const entry = {
       key,
-      messageCount: rawMessages.length,
       lastMessage,
       messages: context,
       jsonTokens: tokensForLength(jsonLength),

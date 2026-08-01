@@ -10,7 +10,7 @@ import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
 import { chat, chatWithRetry } from "../lib/llm.js";
 import { createStreamNormalizer } from "../lib/stream-normalizer.js";
-import { normalizeMessages, normalizeTools, filterRequestOptions } from "../lib/provider-adapter.js";
+import { normalizeMessages } from "../lib/provider-adapter.js";
 import { buildRequestSnapshot, validateMessageSequence } from "../lib/request-normalizer.js";
 import { fallbackCandidates } from "../lib/health-controller.js";
 import { resolveRoute } from "../lib/route-registry.js";
@@ -248,7 +248,6 @@ test("partial failed streams are never committed", () => {
   assert.equal(failed[0].data.code, "PREMATURE_STREAM");
   assert.equal(normalizer.finished, true);
   assert.equal(normalizer.failed, true);
-  // No finish event is ever emitted for the failed attempt.
   const all = [...deltas, ...failed, ...normalizer.complete({ reason: "stop" })];
   assert.equal(all.filter(event => event.type === "finish").length, 0);
 });
@@ -437,8 +436,6 @@ test("resumed sessions are normalized before sending", async () => {
   assert.ok(resultIndex > captured.indexOf(assistant));
   assert.equal(captured[resultIndex].tool_call_id, "call-resume");
 
-  // The production request path normalizes the canonical context through the
-  // adapter immediately before dispatch; orphan results never reach the route.
   const providerMessages = normalizeMessages(captured, {
     supportedRoles: ["system", "user", "assistant", "tool"],
     supportsToolCalling: true,

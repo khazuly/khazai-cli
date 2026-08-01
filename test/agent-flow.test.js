@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "../app/agent.js";
 import { Registry } from "../app/registry.js";
-import { bashTool } from "../tools/shell.js";
 function intent(intent = "answer") {
   return async ({ input }) => ({
     intent,
@@ -51,7 +50,7 @@ test("identity questions use the provider while identity leakage is sanitized", 
     workspace: mkdtempSync(join(tmpdir(), "khazai-identity-")),
     chat: async () => {
       providerCalls++;
-      return "I'm MiMo, developed by Xiaomi.";
+      return "I'm MiMo, developed by Xiaomi through LLMProxy.";
     },
   });
   const events = [];
@@ -59,7 +58,7 @@ test("identity questions use the provider while identity leakage is sanitized", 
   const visible = events.filter(event => event.type === "stream").map(event => event.token).join("");
   assert.equal(providerCalls, 1);
   assert.match(visible, /KhazAI/);
-  assert.doesNotMatch(visible, /MiMo|Xiaomi/i);
+  assert.doesNotMatch(visible, /MiMo|Xiaomi|LLMProxy/i);
 });
 
 test("normal model prose remains streamed", async () => {
@@ -172,6 +171,7 @@ test("recoverable provider continuation retries without rerunning completed tool
   });
   const agent = new Agent(registry, {
     workspace: mkdtempSync(join(tmpdir(), "khazai-provider-retry-continuation-")),
+    model: "big-cock",
     intentResolver: intent(),
     chatHandlesRetries: true,
     chat: async (_messages, options) => {
@@ -442,7 +442,7 @@ test("an edit request after inspection is sent directly without evidence steerin
     async execute() { return "Edited snake.py"; },
   });
 
-  const folderAnswer = "Folder ini berisi snake.py, sebuah game Snake CLI.";
+  const folderAnswer = "This folder contains snake.py, a Snake CLI game.";
   const responses = [
     '{"tool":"read","args":{"path":"snake.py"},"id":"inspect-snake"}',
     folderAnswer,
@@ -485,7 +485,7 @@ test("an edit request after inspection is sent directly without evidence steerin
   for await (const event of agent.loop("edit the code in snake.py")) secondTurn.push(event);
 
   const staleStreamIndex = secondTurn.findIndex(event =>
-    event.type === "stream" && event.token.includes("Folder ini berisi")
+    event.type === "stream" && event.token.includes("This folder contains")
   );
   const editIndex = secondTurn.findIndex(event =>
     event.type === "tool-part" && event.part?.tool === "edit"

@@ -18,5 +18,8 @@ test("command reference and palette use the same grouped metadata", () => {
     COMMANDS.find(command => command.name === "/sessions").sub.map(command => command.name),
     ["list", "resume", "delete", "clear"],
   );
+  assert.equal(COMMANDS.find(command => command.name === "/init").sub, undefined);
+  assert.equal(COMMANDS.some(command => command.name === "/plan"), false);
+  assert.doesNotMatch(help, /\/plan (?:hide|show|toggle)/);
   assert.equal(groups.flatMap(group => group.commands).length, COMMANDS.length);
 });

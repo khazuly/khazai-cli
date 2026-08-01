@@ -45,7 +45,7 @@ test("Think streams only complete redacted public activity and keeps reasoning p
   const registry = new Registry();
   const think = builtinTools(workspace).find(tool => tool.name === "think");
   registry.register(think);
-  const secret = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  const secret = "ghp_example_token_for_redaction_test";
   let request = 0;
   const agent = new Agent(registry, {
     workspace,
@@ -163,7 +163,6 @@ test("tool results return to the provider as native assistant and tool roles", a
   });
 
   for await (const _event of agent.loop("Read sample.txt")) {
-    // Consume the complete turn.
   }
 
   const history = requests[1];

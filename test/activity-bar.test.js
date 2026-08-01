@@ -50,65 +50,6 @@ test("specific activity suppresses only the generic Working fallback", async () 
   assert.match(frame, /big-cock/);
 });
 
-test("init mode shows only the four high-level activity phases", async () => {
-  const inspecting = await renderComponent(h(SessionFooter, {
-    running: true,
-    modeStatus: { mode: "init", status: "inspecting" },
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.match(inspecting, /Inspecting repository structure/);
-  assert.doesNotMatch(inspecting, /Working/);
-
-  const reviewing = await renderComponent(h(SessionFooter, {
-    running: true,
-    modeStatus: { mode: "init", status: "reviewing" },
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.match(reviewing, /Reviewing project conventions/);
-
-  const generating = await renderComponent(h(SessionFooter, {
-    running: true,
-    modeStatus: { mode: "init", status: "generating" },
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.match(generating, /Generating AGENTS\.md/);
-
-  const preparing = await renderComponent(h(SessionFooter, {
-    running: true,
-    modeStatus: { mode: "init", status: "preparing" },
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.match(preparing, /Preparing preview/);
-});
-
-test("the AGENTS.md shimmer stops as soon as generation finalizes", async () => {
-  const idle = await renderComponent(h(SessionFooter, {
-    running: true,
-    modeStatus: null,
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.doesNotMatch(idle, /Generating AGENTS\.md/);
-
-  const waiting = await renderComponent(h(SessionFooter, {
-    running: false,
-    modeStatus: null,
-    model: "big-cock",
-    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
-    promptProps,
-  }), 72, 12);
-  assert.doesNotMatch(waiting, /Generating AGENTS\.md/);
-});
-
 test("one hundred animation frames still produce only one ActivityBar row", async () => {
   for (let frame = 0; frame < 100; frame++) {
     const mask = workingShimmerMask(frame, "Working");
@@ -119,16 +60,16 @@ test("one hundred animation frames still produce only one ActivityBar row", asyn
   const stdin = new TerminalInput();
   const instance = render(h(SessionFooter, {
     running: true,
-    modeStatus: { mode: "init", status: "generating" },
+    modeStatus: null,
     model: "big-cock",
     contextUsage: { currentContextTokens: 14, contextLimit: 100 },
     promptProps,
   }), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
   await new Promise(resolve => setTimeout(resolve, 420));
   const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).filter(frame => frame.trim());
-  assert.ok(frames.length >= 4, `expected several shimmer frames, got ${frames.length}`);
+  assert.ok(frames.length >= 2, `expected several shimmer frames, got ${frames.length}`);
   for (const frame of frames) {
-    assert.equal((frame.match(/Generating AGENTS\.md/g) || []).length, 1, frame);
+    assert.equal((frame.match(/Working/g) || []).length, 1, frame);
     assert.equal((frame.match(/Esc cancel/g) || []).length, 1, frame);
   }
   instance.unmount();

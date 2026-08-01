@@ -14,7 +14,7 @@ import {
   planCounts,
   validatePlanState,
 } from "../app/agent/plan.js";
-import { applyPlanUpdateState } from "../ui/session.js";
+import { applyPlanUpdateState, planPanelAfterFinal } from "../ui/session.js";
 
 const scope = {
   runId: "run-current",
@@ -30,10 +30,6 @@ function trackerFor(items, stepId, toolCallId) {
   return { plan: items, stepId, toolCallId, ...scope };
 }
 
-/**
- * Mirrors the execution controller: associate the tool, settle it, then
- * advance to the next eligible step when the current step completed.
- */
 function runTool(items, tool, result = "Exit: 0\n1 test passed", succeeded = true, activeScope = scope) {
   const tracker = associatePlanStep(items, tool, activeScope);
   const settled = settlePlanStep(tracker, tool, result, succeeded, activeScope);
@@ -70,14 +66,11 @@ test("model completion flags cannot complete Plan items", () => {
 
 test("Step 2 is active while Step 7 remains pending", () => {
   const items = plan(INIT_STEPS.map(description => ({ content: description, status: "pending" })));
-  // Fresh definition: only the first step is active.
   assert.deepEqual(items.map(item => item.status), [
     "active", "pending", "pending", "pending", "pending", "pending", "pending",
   ]);
   assert.deepEqual(items.map(item => item.evidenceIds), [[], [], [], [], [], [], []]);
 
-  // Step 1 completes on exploration evidence; step 2 becomes active and
-  // step 7 stays pending because implementation/verification never ran.
   runTool(items, { id: "read-1", name: "read", args: { path: "app/init.js" } }, "source", true);
   assert.deepEqual(items.map(item => item.status), [
     "completed", "active", "pending", "pending", "pending", "pending", "pending",
@@ -131,8 +124,6 @@ test("inspection Shell commands cannot complete verification", () => {
   const items = plan([{ content: "Run typecheck, lint, build, and tests", status: "pending" }]);
   for (const command of ["ls -la", "grep -r init app", "head -40 app/init.js", "cat package.json"]) {
     const bash = { id: `bash-${command}`, name: "bash", args: { command } };
-    // An unrelated successful shell command may not even associate with the
-    // verification step, and it must never complete it.
     const tracker = associatePlanStep(items, bash, scope);
     const settled = settlePlanStep(tracker, bash, "Exit: 0\n", true, scope);
     assert.equal(settled, null);
@@ -150,16 +141,12 @@ test("a future step cannot complete before dependencies", () => {
     { content: "Implement the fix", status: "pending" },
     { content: "Run tests", status: "pending" },
   ]);
-  // Direct transition validation: pending -> completed is rejected.
   assert.equal(canTransition(items[2], "completed", { valid: true, stepId: items[2].id }), false);
 
-  // The tool for step 3 cannot activate it while step 1 is the active step.
   const edit = { id: "edit-early", name: "edit", args: { path: "app.js" } };
   assert.equal(associatePlanStep(items, edit, scope), null);
   assert.deepEqual(items.map(item => item.status), ["active", "pending", "pending"]);
 
-  // Even if a future step were active, incomplete dependencies block its
-  // completion.
   items[2].status = "active";
   items[2].activeToolCallId = "bash-early";
   const bash = { id: "bash-early", name: "bash", args: { command: "npm test" } };
@@ -174,8 +161,6 @@ test("a future step cannot complete before dependencies", () => {
   assert.equal(items[2].status, "active");
   assert.equal(items[2].evidenceIds.length, 0);
 
-  // Restore ordered execution: step 1 completes, step 2 becomes active, and
-  // step 3 stays pending until its dependencies complete.
   items[2].status = "pending";
   items[2].activeToolCallId = null;
   runTool(items, { id: "read-1", name: "read", args: {} }, "source", true);
@@ -193,14 +178,11 @@ test("only the tool associated with a step may provide its evidence", () => {
   assert.deepEqual(items.map(item => item.status), ["completed", "active"]);
   items[1].activeToolCallId = "edit-2";
 
-  // A read cannot associate with the active implementation step, so it can
-  // never provide its evidence.
   const read = { id: "read-2", name: "read", args: { path: "app.js" } };
   assert.equal(associatePlanStep(items, read, scope), null);
   assert.equal(items[1].status, "active");
   assert.equal(items[1].evidenceIds.length, 0);
 
-  // Only the associated edit (matching activeToolCallId) may complete it.
   const edit = { id: "edit-2", name: "edit", args: { path: "app/init.js" } };
   const tracker = associatePlanStep(items, edit, scope);
   assert.equal(tracker?.stepId, items[1].id);
@@ -222,7 +204,6 @@ test("stale callbacks cannot alter the current Plan", () => {
   assert.equal(settlePlanStep(tracker, edit, "updated", true, staleScope), null);
   assert.equal(items[0].status, "active");
 
-  // A completed step cannot be flipped back to active by a stale callback.
   runTool(items, edit, "updated", true);
   assert.equal(items[0].status, "completed");
   assert.equal(canTransition(items[0], "active"), false);
@@ -236,19 +217,18 @@ test("Plan reaches N/N only after every step has matching successful evidence", 
   const edit = { id: "edit", name: "edit", args: {} };
   const test = { id: "test", name: "bash", args: { command: "npm test" } };
 
-  runTool(items, read, "source", true); // 1. Explore
-  runTool(items, read, "source", true); // 2. Design (exploration evidence)
-  runTool(items, edit, "updated", true); // 3. Refactor generator
-  runTool(items, edit, "updated", true); // 4. Refactor preview UI
-  runTool(items, edit, "updated", true); // 5. Wire /init commands
-  runTool(items, edit, "updated", true); // 6. Add tests
-  runTool(items, test, "Exit: 0\n7 passed, 0 failed", true); // 7. Verification
+  runTool(items, read, "source", true);
+  runTool(items, read, "source", true);
+  runTool(items, edit, "updated", true);
+  runTool(items, edit, "updated", true);
+  runTool(items, edit, "updated", true);
+  runTool(items, edit, "updated", true);
+  runTool(items, test, "Exit: 0\n7 passed, 0 failed", true);
 
   assert.deepEqual(items.map(item => item.status), [
     "completed", "completed", "completed", "completed", "completed", "completed", "completed",
   ]);
   assert.equal(items.every(item => item.evidenceIds.length === 1), true);
-  // The counter counts completed steps only.
   assert.equal(items.filter(item => item.status === "completed").length, 7);
 });
 
@@ -284,7 +264,7 @@ function applyPlanUpdates(initial, updates) {
   const items = initial.map(item => ({ ...item }));
   for (const update of updates) {
     for (const item of items) {
-      if (item.stepId === update.stepId || item.id === update.stepId) item.status = update.status;
+      if (item.stepId === update.stepId || item.id === update.stepId) item.status = update.stepStatus;
     }
   }
   return items;
@@ -343,12 +323,10 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   assert.equal(plan.items.length, 7);
   assert.equal(plan.currentStepId, plan.items[0].id);
 
-  // After the first exploration tool completes, Step 2 is active, Step 7 is
-  // still pending, and the counter counts only completed steps: 1/7.
   const updates = events.filter(event => event.type === "plan-update");
   const afterFirst = applyPlanUpdates(plan.items, updates.filter(u => (
     u.stepId === plan.items[0].id
-    || (u.stepId === plan.items[1].id && u.status === "active")
+    || (u.stepId === plan.items[1].id && u.stepStatus === "active")
   )));
   assert.deepEqual(afterFirst.map(item => item.status), [
     "completed", "active", "pending", "pending", "pending", "pending", "pending",
@@ -357,7 +335,6 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   assert.equal(completedCount, 1, "Plan counter must count completed steps only");
   assert.equal(afterFirst[6].status, "pending", "Step 7 must stay pending");
 
-  // Every plan-update carries the guards needed to reject stale callbacks.
   const revisions = new Set();
   for (const update of updates) {
     assert.equal(typeof update.planId, "string");
@@ -375,7 +352,6 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   assert.ok(updates.length > 1, "plan-update events must carry monotonic revisions");
   assert.ok([...revisions].every((revision, index, all) => index === 0 || revision >= all[index - 1]));
 
-  // Only real implementation and verification evidence reach 7/7.
   const finalPlan = events.filter(event => event.type === "plan").at(-1).items;
   const finalStates = applyPlanUpdates(finalPlan, updates);
   assert.deepEqual(finalStates.map(item => item.status), [
@@ -384,19 +360,17 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   assert.equal(finalStates.every(item => item.evidenceIds.length === 1), true);
   assert.equal(finalStates.filter(item => item.status === "completed").length, 7);
 
-  // The final atomic update reports 7 completed and clears the current step.
   const finalUpdate = updates.at(-1);
   assert.equal(finalUpdate.counts.completed, 7);
   assert.equal(finalUpdate.counts.active, 0);
   assert.equal(finalUpdate.counts.pending, 0);
   assert.equal(finalUpdate.currentStepId, null);
-  assert.equal(finalUpdate.planStatus, "completed");
+  assert.equal(finalUpdate.status, "completed");
   assert.deepEqual(finalUpdate.items.map(item => item.status), [
     "completed", "completed", "completed", "completed", "completed", "completed", "completed",
   ]);
 
-  // A stale Step 2 callback arriving after completion cannot regress the plan.
-  const staleStep2 = updates.find(update => update.status === "active" && update.items[0]?.status === "active");
+  const staleStep2 = updates.find(update => update.stepStatus === "active" && update.items[0]?.status === "active");
   const replayState = applyPlanUpdateState({
     planId: finalUpdate.planId,
     revision: finalUpdate.revision,
@@ -404,11 +378,11 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
     turnId: finalUpdate.turnId,
     taskEpoch: finalUpdate.taskEpoch,
     currentStepId: finalUpdate.currentStepId,
-    planStatus: finalUpdate.planStatus,
+    status: finalUpdate.status,
     steps: finalUpdate.items,
   }, { ...staleStep2, runId: finalUpdate.runId, turnId: finalUpdate.turnId, taskEpoch: finalUpdate.taskEpoch });
   assert.equal(replayState.currentStepId, null);
-  assert.equal(replayState.planStatus, "completed");
+  assert.equal(replayState.status, "completed");
   assert.equal(replayState.steps.filter(item => item.status === "completed").length, 7);
   assert.equal(replayState.steps.some(item => item.status === "active"), false);
 });
@@ -418,7 +392,7 @@ test("plan invariants reject stale currentStepId and invalid states", () => {
     planId: "p1",
     revision: 9,
     currentStepId: null,
-    planStatus: "completed",
+    status: "completed",
     steps: [1, 2, 3].map(n => ({ id: `s${n}`, order: n, title: `Step ${n}`, status: "completed" })),
   };
   assert.equal(validatePlanState(completed).ok, true);
@@ -467,30 +441,32 @@ test("plan-update application is atomic and revision-guarded", () => {
     turnId: "turn-1",
     taskEpoch: 1,
     currentStepId: null,
-    planStatus: "completed",
+    status: "completed",
     steps: [1, 2, 3].map(n => ({ id: `s${n}`, status: "completed" })),
   };
-  const stale = { ...base, revision: 2, currentStepId: "s2", planStatus: "active", items: base.steps.map(step => ({ ...step, status: "active" })) };
+  const stale = { ...base, revision: 2, currentStepId: "s2", status: "active", items: base.steps.map(step => ({ ...step, status: "active" })) };
   assert.equal(applyPlanUpdateState(base, stale), base, "older revision must be rejected");
 
   const wrongPlan = { ...base, planId: "other", revision: 6, currentStepId: "s1", items: base.steps };
   assert.equal(applyPlanUpdateState(base, wrongPlan), base, "mismatched planId must be rejected");
 
-  const invalid = { ...base, revision: 6, currentStepId: "s1", items: base.steps.map(step => ({ ...step, status: "completed" })) };
-  assert.equal(applyPlanUpdateState(base, invalid), base, "invalid state must be rejected");
+  const corrected = applyPlanUpdateState(base, { ...base, revision: 6, currentStepId: "s1", items: base.steps.map(step => ({ ...step, status: "completed" })) });
+  assert.equal(corrected.status, "completed");
+  assert.equal(corrected.currentStepId, null);
 
   const next = applyPlanUpdateState(base, {
     ...base,
     revision: 6,
     currentStepId: "s1",
-    planStatus: "active",
+    status: "active",
     items: [{ id: "s1", status: "active" }, { id: "s2", status: "completed" }, { id: "s3", status: "pending" }],
   });
   assert.equal(next.revision, 6);
   assert.equal(next.currentStepId, "s1");
   assert.deepEqual(planCounts(next.steps), { completed: 1, active: 1, pending: 1, failed: 0, total: 3 });
 
-  const crossRun = applyPlanUpdateState(base, { ...base, runId: "run-2", turnId: "turn-2", taskEpoch: 2, revision: 1, currentStepId: "s1", planStatus: "active", items: [{ id: "s1", status: "active" }, { id: "s2", status: "completed" }, { id: "s3", status: "completed" }] });
-  assert.equal(crossRun.revision, 1, "a fresh run resets the revision baseline");
-  assert.equal(crossRun.currentStepId, "s1");
+  const crossRun = applyPlanUpdateState(base, { ...base, runId: "run-2", turnId: "turn-2", taskEpoch: 2, revision: 6, currentStepId: "s1", status: "active", items: [{ id: "s1", status: "active" }, { id: "s2", status: "completed" }, { id: "s3", status: "completed" }] });
+  assert.equal(crossRun, base, "a callback from another run must be rejected");
+  assert.equal(planPanelAfterFinal(corrected, { runId: "run-1", turnId: "turn-1", taskEpoch: 1 }, true), null);
+  assert.equal(planPanelAfterFinal(next, { runId: "run-1", turnId: "turn-1", taskEpoch: 1 }, true), "p1");
 });

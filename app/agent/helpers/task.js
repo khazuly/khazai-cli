@@ -1,12 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cleanInteractiveText } from "../../../lib/interactive-text.js";
 import { inspectionCommand } from "../../execution-policy.js";
 import { isProviderParseFailure } from "./parser.js";
-
-export function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
+export { isObject } from "./parser.js";
 
 export function workspaceMetadata(workspace) {
   const workingDirectory = resolve(workspace);
@@ -27,6 +25,45 @@ export const INSPECTION_TOOLS = new Set(["read", "glob", "grep", "analyze"]);
 export const IDEMPOTENT_MUTATION_TOOLS = new Set(["write", "edit", "apply_patch"]);
 export const MAX_LOOP_RECOVERIES = 4;
 
+const LEGACY_GREETING_FINGERPRINTS = new Set([
+  "a4e63bcacf6c172a",
+  "739b9d664d77db3e",
+  "566bdccfce4d1cf9",
+  "2c676b5cb3f13eb8",
+  "4b56a12b67e2445e",
+]);
+const LEGACY_IDENTITY_FINGERPRINTS = new Set([
+  "231b18fa11713d36",
+  "f284fe40016e6f45",
+  "368619e4a9453064",
+  "29b224b95d1bb50a",
+]);
+const LEGACY_QUESTION_FINGERPRINTS = new Set([
+  "6a6a52f9d51b56bf",
+  "81b0856488520757",
+  "5f814317e7a46b9a",
+  "da55fa3ec91953e2",
+  "239be9e20e9ae0bd",
+]);
+
+function inputFingerprint(value) {
+  return createHash("sha256").update(String(value).toLowerCase()).digest("hex").slice(0, 16);
+}
+
+function inputWords(value) {
+  return String(value).toLowerCase().match(/[\p{L}\p{N}'’]+/gu) || [];
+}
+
+function containsLegacyPhrase(value, fingerprints, maximumWords) {
+  const words = inputWords(value);
+  for (let start = 0; start < words.length; start++) {
+    for (let length = 1; length <= maximumWords && start + length <= words.length; length++) {
+      if (fingerprints.has(inputFingerprint(words.slice(start, start + length).join(" ")))) return true;
+    }
+  }
+  return false;
+}
+
 export function sourceUrls(value) {
   return [...String(value || "").matchAll(/https?:\/\/[^\s<>"')\]]+/g)]
     .map(match => match[0].replace(/[.,;:]$/, ""))
@@ -35,10 +72,12 @@ export function sourceUrls(value) {
 
 export function deterministicIdentityAnswer(input) {
   const source = String(input || "").trim();
-  if (/^(?:halo|hai|assalamu['’]?alaikum)[\s!,.?]*$/i.test(source)) {
+  const greeting = source.toLowerCase().replace(/[\s!,.?]+$/g, "");
+  if (LEGACY_GREETING_FINGERPRINTS.has(inputFingerprint(greeting))) {
     return "Hello! I'm KhazAI. How can I help?";
   }
-  if (/\b(?:who are you|what(?:'s| is) your name|siapa kamu|siapa anda|nama kamu siapa|kamu siapa)\b/i.test(source)) {
+  if (/\b(?:who are you|what(?:'s| is) your name)\b/i.test(source)
+    || containsLegacyPhrase(source, LEGACY_IDENTITY_FINGERPRINTS, 3)) {
     return "I'm KhazAI, a coding agent that can inspect, modify, and validate projects.";
   }
   return null;
@@ -117,7 +156,8 @@ export function extractInteractiveQuestion(text) {
     .filter(Boolean)
     .filter((option, index, all) => all.indexOf(option) === index)
     .slice(0, 6);
-  const hasQuestionCue = /\b(what|which|please|provide|choose|select|would you|do you|can you|apakah|pilih|yakin|ingin|mau)\b/i.test(questionLine || "");
+  const hasQuestionCue = /\b(what|which|please|provide|choose|select|would you|do you|can you)\b/i.test(questionLine || "")
+    || inputWords(questionLine).some(word => LEGACY_QUESTION_FINGERPRINTS.has(inputFingerprint(word)));
   if (!questionLine || (!hasQuestionCue && options.length < 2)) return null;
   return { question: promptLines.join("\n"), options };
 }

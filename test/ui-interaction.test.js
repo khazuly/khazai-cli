@@ -194,7 +194,7 @@ test("interactive options use keyboard selection instead of free-text input", as
     onCommand() {},
     commands: [],
     disabled: false,
-    questionOptions: ["Ya, hapus file ini", "Tidak, batalkan"],
+    questionOptions: ["Yes, delete this file", "No, cancel"],
     onSelectOption: option => selected.push(option),
   }), {
     stdout,
@@ -211,10 +211,10 @@ test("interactive options use keyboard selection instead of free-text input", as
   await new Promise(resolve => setTimeout(resolve, 30));
 
   const output = stripAnsi(stdout.frames.join("")).replace(/\r/g, "");
-  assert.match(output, /1\. Ya, hapus file ini/);
-  assert.match(output, /2\. Tidak, batalkan/);
+  assert.match(output, /1\. Yes, delete this file/);
+  assert.match(output, /2\. No, cancel/);
   assert.match(output, /↑↓ Select · PgUp\/PgDn · Enter Confirm/);
-  assert.deepEqual(selected, ["Tidak, batalkan"]);
+  assert.deepEqual(selected, ["No, cancel"]);
 
   instance.unmount();
   instance.cleanup();
@@ -247,7 +247,7 @@ test("long pasted prompts are compressed without changing submitted content", as
   const stdout = new TerminalOutput(60, 18);
   const stdin = new TerminalInput();
   const submitted = [];
-  const prefix = "Hasil compile jelek: ";
+  const prefix = "The compile result is poor: ";
   const pasted = "x".repeat(240);
   const instance = render(h(PromptInput, {
     onSubmit: value => submitted.push(value), onCommand() {}, commands: [], disabled: false,
@@ -264,11 +264,11 @@ test("long pasted prompts are compressed without changing submitted content", as
   await new Promise(resolve => setTimeout(resolve, 50));
   stdin.push(pasted.slice(160));
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.match(stripAnsi(stdout.frames.join("")), /Hasil compile jelek: \[Pasted 240 chars\]/);
+  assert.match(stripAnsi(stdout.frames.join("")), /The compile result is poor: \[Pasted 240 chars\]/);
   stdin.push("\u001b[D");
   stdin.push("\u001b[C");
   await new Promise(resolve => setTimeout(resolve, 30));
-  assert.match(stripAnsi(stdout.frames.at(-1)), /Hasil compile jelek: \[Pasted 240 chars\]/);
+  assert.match(stripAnsi(stdout.frames.at(-1)), /The compile result is poor: \[Pasted 240 chars\]/);
   stdin.push("\x7f");
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.doesNotMatch(stripAnsi(stdout.frames.at(-1)), /Pasted 240 chars/);
@@ -291,7 +291,7 @@ test("typed multiline prompts stay expanded", async () => {
   }), {
     stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false,
   });
-  for (const character of "baris pertama\nbaris kedua ".repeat(12)) {
+  for (const character of "first line\nsecond line ".repeat(12)) {
     stdin.push(character);
     await new Promise(resolve => setTimeout(resolve, 4));
   }
@@ -309,13 +309,13 @@ test("interactive session options stay on one terminal row", async () => {
     commands: [],
     disabled: false,
     questionOptions: [
-      "coba cek endpoint login facebook · auto-free · 3452283c",
-      "coba cek file yang ada di folder ini · auto-free · ba133fbd",
+      "inspect the Facebook login endpoint · auto-free · 3452283c",
+      "inspect the files in this folder · auto-free · ba133fbd",
     ],
     onSelectOption() {},
   }), 44, 14);
 
-  assert.match(frame, /> 1\. coba cek endpoint login facebook/);
+  assert.match(frame, /> 1\. inspect the Facebook login endpoint/);
   assert.doesNotMatch(frame, /3452283c/);
   for (const line of frame.split("\n")) {
     assert.ok(line.length <= 44, `session option exceeds terminal width: ${line}`);

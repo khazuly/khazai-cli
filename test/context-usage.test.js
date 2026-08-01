@@ -58,11 +58,22 @@ test("compaction lifecycle keeps stable usage until atomic recount", async () =>
     role: index % 2 === 0 ? "user" : "assistant",
     content: `historical-${index} ${"x".repeat(900)}`,
   }));
+  const state = { messages, summary: "" };
+  const baseline = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-context-baseline-")),
+    config: { modelSettings: {}, models: {}, contextLimit: null },
+    sessionState: state,
+  }).contextUsage();
   let requests = 0;
   const agent = new Agent(new Registry(), {
     workspace: mkdtempSync(join(tmpdir(), "khazai-context-lifecycle-")),
-    config: { modelSettings: {}, models: {}, contextLimit: null },
-    sessionState: { messages, summary: "" },
+    config: {
+      modelSettings: {},
+      models: {},
+      contextLimit: Math.ceil(baseline.projectedRequestTokens / 0.8),
+      compactThreshold: 0.8,
+    },
+    sessionState: state,
     intentResolver: async () => ({
       intent: "answer",
       category: "ANSWER",
@@ -76,9 +87,6 @@ test("compaction lifecycle keeps stable usage until atomic recount", async () =>
       return "Done.";
     },
   });
-  const initial = agent.contextUsage();
-  agent._config.contextLimit = Math.ceil(initial.projectedRequestTokens / 0.8);
-  agent._config.compactThreshold = 0.8;
   const events = [];
   for await (const event of agent.loop("Summarize the current state")) events.push(event);
   const lifecycle = events.filter(event => event.type === "compaction-state");
