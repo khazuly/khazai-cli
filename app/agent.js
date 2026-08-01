@@ -35,6 +35,7 @@ export class Agent {
       this._workspace,
       opts.agent || this._config.defaultAgent || "build",
     );
+    this._baseRegistry = registry;
     this._registry = registry.subset?.(this._agentProfile.tools || ["*"]) || registry;
     this._registryReady = typeof registry.load === "function"
       ? registry.load(this._workspace).then(() => {
@@ -50,6 +51,13 @@ export class Agent {
     this._aborted = false;
     this._activeRun = null;
     this._taskEpoch = 0;
+    this._modeState = {
+      mode: this._agentProfile.name === "plan" ? "plan" : "build",
+      sessionId: this._sessionId,
+      runId: null,
+      turnId: null,
+      taskEpoch: 0,
+    };
     this._activeScope = null;
     this._plan = null;
     this._planId = null;
@@ -84,7 +92,7 @@ export class Agent {
       parts: opts.sessionState?.parts,
       onPart: opts.partHandler,
     });
-    this._instructionService = new InstructionService(this._workspace);
+    this._instructionService = new InstructionService(this._workspace, this._workspaceMetadata.worktree);
     this._skillService = new SkillService(this._workspace);
     this._systemCache = null;
     this._currentRequest = "";
@@ -221,6 +229,20 @@ export class Agent {
   setQuestionHandler(handler) { this._questionHandler = handler; }
   setPermissionHandler(handler) { this._permissionHandler = handler; }
   mode() { return this._agentProfile?.name === "plan" ? "plan" : "build"; }
+  modeState() { return { ...this._modeState }; }
+  setMode(mode) {
+    const started = performance.now();
+    const profile = getAgentProfile(this._workspace, mode === "plan" ? "plan" : "build");
+    this._agentProfile = profile;
+    this._registry = this._baseRegistry.subset?.(profile.tools || ["*"]) || this._baseRegistry;
+    this._permissionService.setAgentPermission(profile.permission);
+    this._systemCache = null;
+    this._toolSchemaCache.clear();
+    this._lastModeSwitchMs = performance.now() - started;
+    this._modeState = { ...this._modeState, mode: profile.name, runId: null, turnId: null };
+    if (this._debug) console.error(`[khazai debug] mode switch ${profile.name} ${Math.round(this._lastModeSwitchMs * 10) / 10}ms`);
+    return this.modeState();
+  }
   planningContext() {
     return {
       objective: this._currentRequest,
@@ -382,7 +404,8 @@ export class Agent {
     const metrics = this._lastRequestMetrics || {};
     const number = value => Math.max(0, Number(value) || 0);
     const localPreparationMs = Math.round(
-      number(metrics.historyPreparationMs)
+      number(metrics.instructionLoadingMs)
+      + number(metrics.historyPreparationMs)
       + number(metrics.messageValidationMs)
       + number(metrics.tokenCountingMs)
       + number(metrics.compactionCheckMs)
@@ -394,6 +417,7 @@ export class Agent {
       contextLimit: usage.contextLimit,
       messageCount: metrics.messageCount || 0,
       payloadBytes: metrics.serializedPayloadBytes || 0,
+      instructionLoadingMs: metrics.instructionLoadingMs || 0,
       historyPreparationMs: metrics.historyPreparationMs || 0,
       messageValidationMs: metrics.messageValidationMs || 0,
       tokenCountingMs: metrics.tokenCountingMs || 0,
@@ -413,6 +437,7 @@ export class Agent {
 
   async replaceRegistry(registry) {
     if (typeof registry.load === "function") await registry.load(this._workspace);
+    this._baseRegistry = registry;
     this._registry = registry.subset?.(this._agentProfile.tools || ["*"]) || registry;
     this._registryReady = Promise.resolve();
     this._toolSchemaCache.clear();

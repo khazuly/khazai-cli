@@ -7,6 +7,8 @@ import { redactSecrets } from "../../lib/secrets.js";
 import { ToolExecutor } from "../tool-executor.js";
 import { normalizeIntentContract } from "../intent-resolver.js";
 import { randomUUID } from "node:crypto";
+import { planToolDefinitionAllowed } from "../plan-mode.js";
+import { planBatchCanRunConcurrently, runPlanExplorationBatch } from "./plan-exploration.js";
 import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, taskState, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 
@@ -102,6 +104,18 @@ export class ToolMethods {
       })),
     });
     yield this._scopedToolEvent({ type: "context-usage", usage: this.contextUsage() }, executionScope);
+    if (planBatchCanRunConcurrently(this, calls)) {
+      for (const call of calls) {
+        yield this._scopedToolEvent({
+          type: "tool-call",
+          tool: call.name,
+          args: { ...call.args },
+          callId: call.id,
+        }, executionScope);
+      }
+      yield* runPlanExplorationBatch(this, calls, executionScope);
+      return true;
+    }
     let failed = false;
     for (const call of calls) {
       if (!this._isActiveRun(executionScope)) return true;
@@ -257,11 +271,13 @@ export class ToolMethods {
    * native schema list is reused until the registry or model changes.
    */
   async _toolSchemas(model, agent) {
-    const key = `${model}|${agent}|${this._registry.revision}`;
+    const mode = this.mode();
+    const key = `${model}|${agent}|${mode}|${this._registry.revision}`;
     const cached = this._toolSchemaCache.get(key);
     if (cached) return cached;
     const schemaStart = performance.now();
-    const definitions = await this._registry.definitions({ model, agent, directory: this._workspace });
+    const available = await this._registry.definitions({ model, agent, mode, directory: this._workspace });
+    const definitions = mode === "plan" ? available.filter(planToolDefinitionAllowed) : available;
     const nativeTools = definitions.map(tool => ({
       type: "function",
       function: {

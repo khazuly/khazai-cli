@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig } from "../config/index.js";
 import { getCredential } from "../lib/auth.js";
 import { redactSecrets } from "../lib/secrets.js";
@@ -213,8 +214,9 @@ export function normalizeMcpResult(result, secrets = []) {
 }
 
 class McpConnection {
-  constructor(definition) {
+  constructor(definition, onToolsChanged) {
     this.definition = definition;
+    this.onToolsChanged = onToolsChanged;
     this.state = definition.enabled ? "idle" : "disabled";
     this.error = "";
     this.tools = [];
@@ -224,9 +226,11 @@ class McpConnection {
     this.resources = [];
     this.prompts = [];
     this.capabilities = {};
+    this.instructions = "";
     this.generation = 0;
     this.requestSequence = 0;
     this.activeRequests = new Set();
+    this.discoveryPromise = null;
   }
 
   createTransport() {
@@ -256,32 +260,63 @@ class McpConnection {
   }
 
   async open() {
+    if (this.client && this.transport) return;
     this.state = "connecting";
     this.transport = this.createTransport();
     this.client = new Client({ name: "khazai-ai", version: "0.3.0" }, { capabilities: {} });
     await this.client.connect(this.transport, { timeout: this.definition.discoveryTimeout });
     this.capabilities = this.client.getServerCapabilities?.() || {};
+    this.instructions = this.client.getInstructions?.() || "";
+    const generation = this.generation;
+    this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      if (generation !== this.generation || !this.client) return;
+      try {
+        await this.loadTools();
+        this.onToolsChanged?.();
+      } catch (error) {
+        this.state = "error";
+        this.error = cleanError(error, [...this.definition.secrets]);
+      }
+    });
+  }
+
+  async loadTools() {
+    const tools = [];
+    let cursor;
+    do {
+      const result = await this.client.listTools(cursor ? { cursor } : undefined, {
+        timeout: this.definition.discoveryTimeout,
+      });
+      tools.push(...result.tools);
+      cursor = result.nextCursor;
+    } while (cursor);
+    this.tools = tools.filter(tool => toolEnabled(this.definition, tool.name));
+    if (this.tools.length === 0) throw new Error("MCP server exposed no enabled tools.");
+    this.state = "connected";
+    this.error = "";
+    return this.tools;
   }
 
   async discover(force = false) {
     if (!this.definition.enabled && !force) return [];
+    if (this.state === "connected" && this.client && this.tools.length > 0) return this.tools;
+    if (this.discoveryPromise) return this.discoveryPromise;
+    const started = performance.now();
+    this.discoveryPromise = this.discoverFresh().finally(() => {
+      if (process.env.KHAZAI_DEBUG) {
+        console.error(`[khazai debug] MCP ${this.definition.id} discovery ${Math.round(performance.now() - started)}ms`);
+      }
+      this.discoveryPromise = null;
+    });
+    return this.discoveryPromise;
+  }
+
+  async discoverFresh() {
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         await this.open();
-        const tools = [];
-        let cursor;
-        do {
-          const result = await this.client.listTools(cursor ? { cursor } : undefined, {
-            timeout: this.definition.discoveryTimeout,
-          });
-          tools.push(...result.tools);
-          cursor = result.nextCursor;
-        } while (cursor);
-        this.tools = tools.filter(tool => toolEnabled(this.definition, tool.name));
-        this.state = "connected";
-        this.error = "";
-        return this.tools;
+        return await this.loadTools();
       } catch (error) {
         lastError = error;
         await this.close();
@@ -306,6 +341,7 @@ class McpConnection {
       && !context.signal?.aborted
       && (!context.isActiveRun || context.isActiveRun(scope));
     this.activeRequests.add(requestId);
+    const started = performance.now();
     try {
       const result = await this.client.callTool(
         { name, arguments: object(args) },
@@ -321,6 +357,9 @@ class McpConnection {
       return `Error: MCP tool call failed: ${this.error}`;
     } finally {
       this.activeRequests.delete(requestId);
+      if (process.env.KHAZAI_DEBUG) {
+        console.error(`[khazai debug] MCP ${this.definition.id}/${name} execution ${Math.round(performance.now() - started)}ms`);
+      }
     }
   }
 
@@ -351,6 +390,7 @@ class McpConnection {
     this.resources = [];
     this.prompts = [];
     this.capabilities = {};
+    this.instructions = "";
     try {
       if (transport?.sessionId) await transport.terminateSession();
     } catch {}
@@ -368,6 +408,8 @@ export class McpManager {
     this.connections = [];
     this.invalid = [];
     this.nativeTools = [];
+    this.revision = 0;
+    this.listeners = new Set();
   }
 
   async refresh() {
@@ -375,7 +417,11 @@ export class McpManager {
     if (this.reloadConfig) this.config = loadConfig(this.workspace);
     const { definitions, errors } = resolveMcpDefinitions(this.workspace, this.config);
     this.invalid = errors;
-    this.connections = definitions.map(definition => new McpConnection(definition));
+    this.connections = definitions.map(definition => new McpConnection(definition, () => {
+      this.revision += 1;
+      const tools = this.rebuildTools();
+      for (const listener of this.listeners) Promise.resolve(listener(tools, this.revision)).catch(() => {});
+    }));
     await Promise.all(this.connections.map(connection => connection.discover()));
 
     return this.rebuildTools();
@@ -400,6 +446,9 @@ export class McpManager {
           server: connection.definition.id,
           tool: tool.name,
           readOnly: tool.annotations?.readOnlyHint === true,
+          instructions: connection.instructions
+            ? `${connection.definition.id}: ${connection.instructions}`
+            : "",
         },
       };
     }));
@@ -407,6 +456,10 @@ export class McpManager {
   }
 
   tools() { return [...this.nativeTools]; }
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
   status() { return [...this.invalid, ...this.connections.map(connection => connection.status())]; }
 
   async shutdown() {

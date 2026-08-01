@@ -86,7 +86,7 @@ export const COMMANDS = [
     { name: "reset", description: "Reset all settings to provider defaults" },
   ] },
   { name: "/usage", description: "Show context and session token usage", category: "core", aliases: [], visible: true, group: "view" },
-  { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", sub: THEMES },
+  { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", openSubmenu: true, sub: THEMES },
   { name: "/plan", description: "Show or hide the Plan panel", category: "core", aliases: [], visible: true, group: "view", sub: [
     { name: "show", description: "Expand the Plan panel" },
     { name: "hide", description: "Collapse the Plan panel" },

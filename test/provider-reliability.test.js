@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chat, chatWithRetry } from "../lib/llm.js";
 import { OpenAICompatibleProvider } from "../lib/providers.js";
+import { normalizeTools } from "../lib/provider-adapter.js";
 import {
   classifyProviderFailure,
   providerDiagnostic,
@@ -27,6 +28,20 @@ function errorResponse(status, detail) {
     async text() { return detail; },
   };
 }
+
+test("provider tool schemas reuse the transformed result for one registry revision", () => {
+  const tools = [{
+    type: "function",
+    function: {
+      name: "read",
+      description: "Read a file.",
+      parameters: { type: "object", properties: { path: { type: "string" } } },
+    },
+  }];
+  const first = normalizeTools(tools, { supportsToolCalling: true });
+  const second = normalizeTools(tools, { supportsToolCalling: true });
+  assert.equal(first, second);
+});
 
 const validTool = {
   type: "function",

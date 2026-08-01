@@ -24,6 +24,15 @@ const COMMON = `# Working style
 - When referring to code, use \`path/to/file:line\`.
 - Use GitHub-flavored Markdown when it improves clarity. Do not use emojis unless asked.`;
 
+const PLAN = `# Plan mode
+- Read, search, analyze, and create a concise implementation plan.
+- Never modify the workspace.
+- Inspect only files relevant to the task.
+- Ask a question only when a missing decision materially changes implementation.
+- Do not expose chain-of-thought, evidence bookkeeping, safety analysis, or internal blocking decisions.
+- When the plan is ready, record its ordered steps with TodoWrite once and return the final plan.
+- Finish with the goal, confirmed architecture or cause, affected files or components, ordered implementation steps, verification, and material risks.`;
+
 const FAMILIES = {
   default: `# Default model behavior
 - Use native tool calls when tools are available.
@@ -64,4 +73,8 @@ export function promptFamily(model) {
 
 export function getProviderPrompt(model) {
   return [BRAND, COMMON, FAMILIES[promptFamily(model)]].join("\n\n");
+}
+
+export function getPlanPrompt(model) {
+  return [BRAND, PLAN, FAMILIES[promptFamily(model)]].join("\n\n");
 }

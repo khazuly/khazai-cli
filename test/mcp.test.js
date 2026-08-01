@@ -10,6 +10,7 @@ import {
   normalizeMcpResult,
   resolveMcpDefinitions,
 } from "../app/mcp.js";
+import { Agent } from "../app/agent.js";
 import { getAgentProfile } from "../app/agent-profiles.js";
 import { PermissionService } from "../app/permission.js";
 import { Registry } from "../app/registry.js";
@@ -55,8 +56,22 @@ test("MCP stdio discovery exposes native filtered tools and cleans up its proces
   assert.throws(() => process.kill(pid, 0));
 });
 
+test("MCP never reports connected without an enabled tool definition", async () => {
+  const manager = new McpManager(mkdtempSync(join(tmpdir(), "khazai-mcp-empty-")), config({
+    tools: { "*": false },
+  }));
+  try {
+    assert.deepEqual(await manager.refresh(), []);
+    assert.equal(manager.status()[0].state, "error");
+    assert.match(manager.status()[0].error, /no enabled tools/i);
+  } finally {
+    await manager.shutdown();
+  }
+});
+
 test("MCP Streamable HTTP discovery and calls use configured headers", async () => {
   let observedHeader = "";
+  let toolListCalls = 0;
   const server = createServer((request, response) => {
     const chunks = [];
     request.on("data", chunk => chunks.push(chunk));
@@ -80,6 +95,7 @@ test("MCP Streamable HTTP discovery and calls use configured headers", async () 
           serverInfo: { name: "http-test", version: "1.0.0" },
         };
       } else if (message.method === "tools/list") {
+        toolListCalls++;
         result = {
           tools: [{
             name: "ping",
@@ -107,11 +123,79 @@ test("MCP Streamable HTTP discovery and calls use configured headers", async () 
   try {
     const [tool] = await manager.refresh();
     assert.equal(tool.name, "mcp__remote__ping");
+    assert.equal((await manager.connections[0].discover())[0].name, "ping");
+    assert.equal(toolListCalls, 1);
     assert.equal(await tool.execute({}), "pong");
     assert.equal(observedHeader, "Bearer test-mcp-header-value");
   } finally {
     await manager.shutdown();
     await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("MCP tools and instructions reach the provider and continue exactly once", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-mcp-agent-"));
+  const manager = new McpManager(workspace, config());
+  try {
+    const [mcpTool] = await manager.refresh();
+    const registry = new Registry().register(mcpTool);
+    let requests = 0;
+    let finalMessages = [];
+    const agent = new Agent(registry, {
+      workspace,
+      chat: async (messages, options) => {
+        requests++;
+        assert.equal(options.tools.filter(tool => tool.function.name === mcpTool.name).length, 1);
+        assert.match(messages[0].content, /Use echo when the user explicitly requests/);
+        if (requests === 1) {
+          return "I can answer without the MCP server.";
+        }
+        if (requests === 2) {
+          assert.match(messages.find(message => /MCP CORRECTION/.test(String(message.content)))?.content || "", /Use the required MCP tool before answering/);
+          return JSON.stringify({ tool: mcpTool.name, args: { value: "live" }, id: "mcp-call-1" });
+        }
+        finalMessages = messages;
+        return "MCP result received.";
+      },
+    });
+    const events = [];
+    for await (const event of agent.loop("Use the local MCP echo tool")) events.push(event);
+    assert.equal(requests, 3);
+    const results = finalMessages.filter(message => message.role === "tool" && message.tool_call_id === "mcp-call-1");
+    assert.equal(results.length, 1, JSON.stringify(finalMessages));
+    assert.match(results[0].content, /echo:live/);
+    assert.equal(
+      events.filter(event => event.type === "tool-result" && event.tool === mcpTool.name).length,
+      1,
+      JSON.stringify(events.map(event => [event.type, event.tool, event.content])),
+    );
+    assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /MCP result received/);
+  } finally {
+    await manager.shutdown();
+  }
+});
+
+test("MCP tool-list notifications refresh one live connection without respawning it", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-mcp-list-change-"));
+  const marker = join(workspace, "lists.log");
+  const manager = new McpManager(workspace, config({ env: { KHAZAI_MCP_LIST_MARKER: marker } }));
+  let notifiedTools = [];
+  const unsubscribe = manager.subscribe(tools => { notifiedTools = tools; });
+  try {
+    const [tool] = await manager.refresh();
+    const pid = manager.status()[0].pid;
+    await tool.execute({ mode: "change-tools" });
+    const started = Date.now();
+    while (!manager.tools().some(entry => entry.name === "mcp__local__changed")) {
+      if (Date.now() - started > 2_000) assert.fail("MCP tool cache did not refresh");
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(manager.status()[0].pid, pid);
+    assert.ok(notifiedTools.some(entry => entry.name === "mcp__local__changed"));
+    assert.equal(readFileSync(marker, "utf-8"), "listed\nlisted\n");
+  } finally {
+    unsubscribe();
+    await manager.shutdown();
   }
 });
 

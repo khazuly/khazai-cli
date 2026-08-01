@@ -2,7 +2,7 @@ import { countTokens } from "../../lib/tokens.js";
 import { resolveModelDescriptor } from "../../lib/llm.js";
 import { redactSecrets } from "../../lib/secrets.js";
 import { sanitizeAssistantIdentity } from "../../lib/assistant-text.js";
-import { getProviderPrompt } from "../prompts.js";
+import { getPlanPrompt, getProviderPrompt } from "../prompts.js";
 import { ExecutionPolicy } from "../execution-policy.js";
 import { resolve } from "node:path";
 import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, MAX_LOOP_RECOVERIES, sourceUrls, deterministicIdentityAnswer, extractPlan, normalizePlan, requiresPlan, fallbackPlan, extractInteractiveQuestion, toolSignature, publicToolArgs, repeatedToolCycle, cachedToolAnswer, requestMode, declaredSymbols, preservesImplementationStructure, prospectiveFileContent, shouldDeferToolCandidateProse, wantsFileCount, simpleFileListRequest, fileCountFromToolResult, resultFailed, isSteeringOutcome, legacyGuardOutcome, guardErrorOutcome, patchReview, toolMetadata, requestedSampleExtensions, needsFileMutation, needsDeletionMutation, clearWorkspaceRequest, isDeletionCommand, needsExecutionValidation, isValidationCommand, expectedPlanTools, mutationSatisfiesPlanItem, toolMatchesPlanItem, isInspectionCommand, mutatesWorkspace, streamDisposition } from "./helpers/task.js";
@@ -18,7 +18,13 @@ export class StateMethods {
   _finishLatency() {
     if (!this._latency) return;
     this._markLatency("completed");
+    if (this.mode() === "plan") {
+      this._latency.explorationMs = this._latency.completed - this._latency.inputReceived;
+    }
     const metrics = {
+      modeSwitchMs: this._latency.modeSwitchMs ?? null,
+      explorationMs: this._latency.explorationMs ?? null,
+      instructionLoadingMs: this._latency.instructionLoadingMs ?? null,
       historyPreparationMs: this._latency.historyPreparationMs ?? null,
       messageValidationMs: this._latency.messageValidationMs ?? null,
       tokenCountingMs: this._latency.tokenCountingMs ?? null,
@@ -46,6 +52,9 @@ export class StateMethods {
       const start = this._latency.inputReceived;
       const metric = value => value === undefined || value === null ? null : Math.round((value - start) * 10) / 10;
       console.error(`[khazai debug] latency ${JSON.stringify({
+        modeSwitchMs: metrics.modeSwitchMs,
+        explorationMs: metrics.explorationMs,
+        instructionLoadingMs: metrics.instructionLoadingMs,
         historyPreparationMs: metrics.historyPreparationMs,
         messageValidationMs: metrics.messageValidationMs,
         tokenCountingMs: metrics.tokenCountingMs,
@@ -216,10 +225,13 @@ export class StateMethods {
 
   _toolLoopRecovery(tool) {
     const signature = toolSignature(tool, this._workspace);
+    if (this.mode() === "plan" && this._inspectionCache.has(signature)) {
+      return { result: this._inspectionCache.get(signature), cached: true, failed: false };
+    }
     const repeatedFailures = this._toolCallHistory
       .filter(entry => entry.signature === signature && entry.failed)
       .length;
-    const failureLimit = this._registry.resolveName?.(tool.name) ? 2 : 1;
+    const failureLimit = this.mode() === "plan" ? 1 : this._registry.resolveName?.(tool.name) ? 2 : 1;
     if (repeatedFailures >= failureLimit) return { exhausted: true };
     return null;
   }
@@ -236,6 +248,10 @@ export class StateMethods {
       const recovery = this._toolLoopRecovery(tool);
       if (!recovery) {
         executable.push(tool);
+        continue;
+      }
+      if (recovery.result) {
+        this._recordShellReuse(tool, recovery);
         continue;
       }
       if (recovery.exhausted) {
@@ -317,6 +333,9 @@ export class StateMethods {
 
   _buildSystem() {
     const revision = this._instructionService.revision();
+    const mcpInstructions = [...new Set(this._registry.list()
+      .map(tool => tool.mcp?.instructions)
+      .filter(Boolean))];
     const hasSkillTool = Boolean(this._registry.get("skill"));
     const skillRevision = hasSkillTool ? this._skillService.revision() : "";
     let descriptor;
@@ -333,11 +352,11 @@ export class StateMethods {
       profileInstructions: this._agentProfile?.instructions || "",
       analysis: this._lastAnalysis || "",
       revision,
+      toolRevision: this._registry.revision,
       skillRevision,
       date,
     });
     if (this._systemCache?.key === cacheKey) return this._systemCache.value;
-    this._instructionService.clearCache();
     const instructionBlock = this._instructionService.getSystemPromptBlock();
     const skills = hasSkillTool
       ? this._skillService.list().filter(skill => (
@@ -358,8 +377,19 @@ export class StateMethods {
       "",
     ].join("\n");
 
-    const parts = [getProviderPrompt(descriptor.exactID), envInfo];
+    const modePrompt = this.mode() === "plan"
+      ? getPlanPrompt(descriptor.exactID)
+      : getProviderPrompt(descriptor.exactID);
+    const parts = [modePrompt, envInfo];
     if (instructionBlock) parts.push(instructionBlock, "");
+    if (mcpInstructions.length) {
+      parts.push(
+        "MCP SERVER INSTRUCTIONS:",
+        "Use an MCP tool when the user or workspace instructions explicitly require its server. Never claim MCP results that were not retrieved.",
+        ...mcpInstructions,
+        "",
+      );
+    }
     if (this._agentProfile?.instructions) {
       parts.push("ACTIVE AGENT PROFILE:", this._agentProfile.instructions, "");
     }

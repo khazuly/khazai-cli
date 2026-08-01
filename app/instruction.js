@@ -1,130 +1,119 @@
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 
-const INSTRUCTION_FILES = [
-  "CLAUDE.md",
-  "CONTEXT.md",
-];
+const OPTIONAL_FILES = ["CLAUDE.md", "CONTEXT.md"];
+const OPTIONAL_LIMIT = 3000;
+const workspaceCache = new Map();
 
-const GLOBAL_INSTRUCTION_FILES = [];
+function canonical(path) {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
 
-const MAX_INSTRUCTION_CHARS = 3000;
+function inside(path, root) {
+  const value = relative(root, path);
+  return value === "" || (!value.startsWith("..") && !isAbsolute(value));
+}
+
+function nearest(filename, start, root) {
+  let current = inside(start, root) ? start : root;
+  while (true) {
+    const path = join(current, filename);
+    try {
+      if (statSync(path).isFile()) return path;
+    } catch {}
+    if (current === root) return null;
+    const parent = dirname(current);
+    if (parent === current || !inside(parent, root)) return null;
+    current = parent;
+  }
+}
+
+function fileState(path) {
+  if (!path) return { path: null, signature: "missing", content: "", hash: "", warning: "" };
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch (error) {
+    return { path, signature: `${path}:unreadable`, content: "", hash: "", warning: `Could not read workspace instructions at ${path}: ${error.message}` };
+  }
+  const signature = `${path}:${stat.mtimeMs}:${stat.size}`;
+  try {
+    const content = readFileSync(path, "utf-8");
+    const hash = createHash("sha256").update(content).digest("hex");
+    return { path, signature, content, hash, warning: "" };
+  } catch (error) {
+    return { path, signature, content: "", hash: "", warning: `Could not read workspace instructions at ${path}: ${error.message}` };
+  }
+}
+
+function cachedFile(path, previous) {
+  if (!path) return fileState(null);
+  try {
+    const stat = statSync(path);
+    const signature = `${path}:${stat.mtimeMs}:${stat.size}`;
+    if (previous?.signature === signature) return previous;
+  } catch {}
+  return fileState(path);
+}
 
 export class InstructionService {
-  constructor(workspace) {
-    this.workspace = workspace;
-    this.cache = new Map();
+  constructor(workspace, root = workspace) {
+    this.workspace = canonical(workspace);
+    this.root = canonical(root);
+    this.key = `${this.root}\0${this.workspace}`;
+    this.reportedWarning = "";
+    this.lastLoadMs = 0;
   }
 
-  findUp(filename, startDir) {
-    let current = startDir;
-    while (current && current !== dirname(current)) {
-      const filepath = join(current, filename);
-      if (existsSafe(filepath)) {
-        return filepath;
-      }
-      current = dirname(current);
-    }
-    return null;
-  }
-
-  loadGlobalInstructions() {
-    const globalDir = join(homedir(), ".config", "khazai-ai");
-    const results = [];
-
-    for (const filename of GLOBAL_INSTRUCTION_FILES) {
-      const filepath = join(globalDir, filename);
-      if (existsSafe(filepath)) {
-        const content = readFileSafe(filepath);
-        if (content) {
-          results.push({ filepath, content });
-        }
-      }
-    }
-
-    return results;
-  }
-
-  loadProjectInstructions() {
-    const results = [];
-
-    for (const filename of INSTRUCTION_FILES) {
-      const filepath = this.findUp(filename, this.workspace);
-      if (filepath && !results.some(r => r.filepath === filepath)) {
-        const content = readFileSafe(filepath);
-        if (content) {
-          results.push({ filepath, content });
-        }
-      }
-    }
-
-    return results;
-  }
-
-  loadAllInstructions() {
-    const cacheKey = this.workspace;
-    if (this.cache.has(cacheKey)) {
-      return this.cache.get(cacheKey);
-    }
-
-    const global = this.loadGlobalInstructions();
-    const project = this.loadProjectInstructions();
-    const all = [...global, ...project];
-
-    this.cache.set(cacheKey, all);
-    return all;
+  snapshot() {
+    const started = performance.now();
+    const previous = workspaceCache.get(this.key) || { files: new Map() };
+    const paths = [
+      nearest("AGENTS.md", this.workspace, this.root),
+      ...OPTIONAL_FILES.map(name => nearest(name, this.workspace, this.root)),
+    ].filter((path, index, all) => path && all.indexOf(path) === index);
+    const files = new Map(paths.map(path => [path, cachedFile(path, previous.files.get(path))]));
+    const entries = [...files.values()];
+    const revision = entries.length
+      ? entries.map(entry => `${entry.signature}:${entry.hash}`).join("|")
+      : `${this.root}:missing`;
+    const value = { files, entries, revision, warnings: entries.map(entry => entry.warning).filter(Boolean) };
+    workspaceCache.set(this.key, value);
+    this.lastLoadMs = performance.now() - started;
+    return value;
   }
 
   revision() {
-    const paths = [
-      ...GLOBAL_INSTRUCTION_FILES.map(filename => join(homedir(), ".config", "khazai-ai", filename)),
-      ...INSTRUCTION_FILES.map(filename => this.findUp(filename, this.workspace)).filter(Boolean),
-    ];
-    return paths.map(filepath => {
-      try {
-        const stat = statSync(filepath);
-        return `${filepath}:${stat.size}:${stat.mtimeMs}`;
-      } catch {
-        return `${filepath}:missing`;
-      }
-    }).join("|");
+    return this.snapshot().revision;
   }
 
   getSystemPromptBlock() {
-    const instructions = this.loadAllInstructions();
-    if (instructions.length === 0) return "";
-
-    const lines = ["INSTRUCTIONS:"];
-    for (const { filepath, content } of instructions) {
-      const truncated = content.trim().length > MAX_INSTRUCTION_CHARS
-        ? content.trim().slice(0, MAX_INSTRUCTION_CHARS) + "\n...(truncated)"
-        : content.trim();
-      lines.push(`# From ${filepath}`);
-      lines.push(truncated);
-      lines.push("");
+    const snapshot = this.snapshot();
+    if (!snapshot.entries.some(entry => entry.content)) return "";
+    const lines = [
+      "WORKSPACE INSTRUCTIONS (HIGH PRIORITY):",
+      "Follow these instructions for planning, tools, edits, verification, and the final response.",
+      "Application safety and permission rules always take precedence.",
+    ];
+    for (const entry of snapshot.entries) {
+      if (!entry.content) continue;
+      const optional = !entry.path.endsWith("AGENTS.md") && entry.content.length > OPTIONAL_LIMIT;
+      const content = optional ? `${entry.content.slice(0, OPTIONAL_LIMIT)}\n...(truncated)` : entry.content;
+      lines.push(`Path: ${entry.path}`, content.trim(), "");
     }
-
     return lines.join("\n");
   }
 
+  takeWarning() {
+    const warning = this.snapshot().warnings[0] || "";
+    if (!warning || warning === this.reportedWarning) return "";
+    this.reportedWarning = warning;
+    return warning;
+  }
+
   clearCache() {
-    this.cache.clear();
-  }
-}
-
-function existsSafe(filepath) {
-  try {
-    return existsSync(filepath) && statSync(filepath).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function readFileSafe(filepath) {
-  try {
-    return readFileSync(filepath, "utf-8");
-  } catch {
-    return null;
+    workspaceCache.delete(this.key);
   }
 }

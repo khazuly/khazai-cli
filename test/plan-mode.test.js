@@ -7,9 +7,11 @@ import { createElement as h } from "react";
 import { render } from "ink";
 import { Agent } from "../app/agent.js";
 import {
+  PLAN_ACTIONS,
   approvePlanMode,
   approvedPlanRequest,
   changedPlanFiles,
+  cleanPlanOutput,
   createPlanModeState,
   finalizePlanMode,
   planScopeMatches,
@@ -36,7 +38,7 @@ function scripted(responses) {
 test("Plan Mode preserves structured decisions and immutable approval scope", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-state-"));
   writeFileSync(join(workspace, "app.js"), "export const value = 1;\n");
-  const scope = { runId: "run-1", turnId: "turn-1", taskEpoch: 3 };
+  const scope = { sessionId: "session-1", runId: "run-1", turnId: "turn-1", taskEpoch: 3 };
   let plan = createPlanModeState({ objective: "Update context usage", ...scope });
   assert.equal(planScopeMatches(plan, scope), true);
   plan = recordPlanDecision(plan, {
@@ -54,10 +56,29 @@ test("Plan Mode preserves structured decisions and immutable approval scope", ()
   });
   const approved = approvePlanMode(plan);
   assert.equal(approved.status, "approved");
+  assert.ok(approved.planRevision > 1);
   assert.equal(approved.decisions[0].optionId, "provider-fallback");
   assert.equal(approved.relevantFiles[0], "app.js");
   assert.equal(approvePlanMode(approved), null);
   assert.match(approvedPlanRequest(approved), /Provider metadata with tokenizer fallback/);
+});
+
+test("Plan approval exposes one bounded Build decision", () => {
+  assert.deepEqual(PLAN_ACTIONS.map(action => action.label), [
+    "Build this plan",
+    "Continue planning",
+    "Cancel",
+  ]);
+  assert.equal(PLAN_ACTIONS.filter(action => action.recommended).length, 1);
+});
+
+test("Plan output removes internal evidence and blocking bookkeeping", () => {
+  assert.equal(cleanPlanOutput([
+    "# Implementation Plan",
+    "Evidence collected: read app.js",
+    "Blocking: mutation is unavailable",
+    "- Goal: update the runtime",
+  ].join("\n")), "# Implementation Plan\n- Goal: update the runtime");
 });
 
 test("planning evidence never requires a workspace mutation", () => {
@@ -167,7 +188,7 @@ test("footer reports Plan and approved Build lifecycle modes", async () => {
   const planning = await renderComponent(h(SessionFooter, {
     model: "big-cock",
     running: true,
-    modeStatus: { mode: "plan", status: "questioning" },
+    modeStatus: { mode: "plan", status: "clarifying" },
     promptProps,
   }), 70, 12);
   const building = await renderComponent(h(SessionFooter, {
@@ -224,6 +245,152 @@ test("Plan Mode rejects workspace-changing Shell commands without executing them
   for await (const event of agent.loop("Plan a safe change")) events.push(event);
   assert.equal(executions, 0);
   assert.match(events.find(event => event.type === "tool-result")?.result || "", /Plan Mode is read-only/);
+  assert.equal(events.find(event => event.type === "tool-result")?.metadata?.planDenied, true);
+  assert.equal(events.find(event => event.type === "tool-part" && event.part?.metadata?.planDenied)?.part?.metadata?.hidden, true);
+});
+
+test("Plan Mode settles one denied call without retrying the executor", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-denied-once-"));
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    name: "bash",
+    description: "Run shell",
+    parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    async execute() { executions++; return "unexpected"; },
+  });
+  const denied = JSON.stringify({ tool: "bash", args: { command: "touch changed.txt" } });
+  const agent = new Agent(registry, { workspace, agent: "plan", chat: scripted([denied, denied]) });
+  const events = [];
+  for await (const event of agent.loop("Plan a safe change")) events.push(event);
+  assert.equal(executions, 0);
+  assert.equal(events.filter(event => event.type === "tool-result").length, 1);
+});
+
+test("Plan provider payload contains only read-only native and MCP tools", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-tools-"));
+  const registry = new Registry();
+  for (const tool of [
+    { name: "read" },
+    { name: "write" },
+    { name: "mcp__docs__search", mcp: { server: "docs", readOnly: true } },
+    { name: "mcp__repo__write", mcp: { server: "repo", readOnly: false } },
+  ]) registry.register({
+    description: tool.name,
+    parameters: { type: "object", properties: {} },
+    async execute() { return "ok"; },
+    ...tool,
+  });
+  let names = [];
+  const agent = new Agent(registry, {
+    workspace,
+    agent: "plan",
+    chat: async (messages, options) => {
+      names = options.tools.map(tool => tool.function.name);
+      assert.match(messages[0].content, /# Plan mode/);
+      assert.doesNotMatch(messages[0].content, /Evidence required|Blocked by Plan mode/);
+      return "# Plan\n\n- Goal: inspect safely";
+    },
+  });
+  for await (const _event of agent.loop("Plan the change")) {}
+  assert.deepEqual(names.sort(), ["mcp__docs__search", "read"]);
+});
+
+test("Plan exploration reuses identical successful reads", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-dedup-"));
+  const registry = new Registry();
+  let executions = 0;
+  registry.register({
+    name: "read",
+    description: "Read a file",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    async execute() { executions++; return "source"; },
+  });
+  const agent = new Agent(registry, {
+    workspace,
+    agent: "plan",
+    chat: scripted([
+      JSON.stringify({ tool: "read", args: { path: "app.js" } }),
+      JSON.stringify({ tool: "read", args: { path: "app.js" } }),
+      "# Plan\n\n- Goal: update app.js",
+    ]),
+  });
+  for await (const _event of agent.loop("Plan an app.js update")) {}
+  assert.equal(executions, 1);
+});
+
+test("Plan runs independent read-only exploration with bounded concurrency", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-parallel-"));
+  const registry = new Registry();
+  const started = [];
+  for (const name of ["read", "grep"]) registry.register({
+    name,
+    description: name,
+    parameters: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } } },
+    async execute() {
+      started.push(Date.now());
+      await new Promise(resolve => setTimeout(resolve, 80));
+      return `${name} result`;
+    },
+  });
+  const agent = new Agent(registry, {
+    workspace,
+    agent: "plan",
+    chat: scripted([
+      JSON.stringify([
+        { tool: "read", args: { path: "app.js" }, id: "read-1" },
+        { tool: "grep", args: { pattern: "mode", path: "." }, id: "grep-1" },
+      ]),
+      "# Plan\n\n- Goal: update mode handling",
+    ]),
+  });
+  for await (const _event of agent.loop("Plan mode handling")) {}
+  assert.equal(started.length, 2);
+  assert.ok(Math.abs(started[1] - started[0]) < 50, JSON.stringify(started));
+});
+
+test("Plan to Build keeps one runtime and uses a hidden synthetic continuation", async () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-plan-handoff-"));
+  let buildMessages = [];
+  const agent = new Agent(new Registry(), {
+    workspace,
+    agent: "plan",
+    chat: async messages => {
+      if (agent.mode() === "build") buildMessages = messages;
+      return agent.mode() === "plan" ? "# Plan\n\n- Goal: update app.js" : "Implemented.";
+    },
+  });
+  for await (const _event of agent.loop("Update app.js", undefined, {
+    sessionId: "session-1", runId: "plan-run", turnId: "turn-1", taskEpoch: 1, mode: "plan",
+  })) {}
+  assert.deepEqual(agent.modeState(), {
+    sessionId: agent.modeState().sessionId,
+    runId: "plan-run",
+    turnId: "turn-1",
+    taskEpoch: 1,
+    mode: "plan",
+  });
+  const runtime = agent;
+  agent.setMode("build");
+  const approvedPlan = { planId: "plan-1", objective: "Update app.js", steps: ["Patch app.js"] };
+  for await (const _event of agent.loop(approvedPlanRequest({
+    ...approvedPlan,
+    decisions: [],
+    relevantFiles: ["app.js"],
+    summary: "# Plan",
+  }), undefined, {
+    runId: "build-run",
+    turnId: "turn-1",
+    taskEpoch: 2,
+    mode: "build",
+    approvedPlan,
+    syntheticContinuation: true,
+  })) {}
+  assert.equal(agent, runtime);
+  assert.equal(agent.modeState().mode, "build");
+  assert.equal(agent.modeState().runId, "build-run");
+  assert.equal(buildMessages.filter(message => message.role === "user" && message.content === "Update app.js").length, 1);
+  assert.ok(buildMessages.some(message => message.role === "system" && /Implement the approved plan/.test(message.content)));
 });
 
 test("approved Build runs start once with pending implementation steps", async () => {

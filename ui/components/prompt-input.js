@@ -10,7 +10,8 @@ import {
   useCommandBoundaryKeys,
   useCommandViewport,
 } from "./command-viewport.js";
-import { COMMAND_CATEGORIES, resolveCommand } from "../commands.js";
+import { resolveCommand } from "../commands.js";
+import { CommandDropdown } from "./command-dropdown.js";
 import { Panel } from "./surface.js";
 import { OptionSelector } from "./option-selector.js";
 import { graphemes, insertText, layoutEditableText, moveVertical, printableText, removeBackward } from "./prompt-input-utils.js";
@@ -240,6 +241,12 @@ export function PromptInput({
         const sel = commandViewport.selectedItem;
         if (!sel) return;
         if (!inSubMode && sel.sub) {
+          if (sel.openSubmenu) {
+            const value = `${sel.name} `;
+            setInput({ value, cursor: graphemes(value).length });
+            commandViewport.resetSelection();
+            return;
+          }
           onCommand(sel.name, "");
           setInput({ value: "", cursor: 0 });
           commandViewport.resetSelection();
@@ -482,104 +489,5 @@ export function PromptInput({
         ...content,
       ),
     )
-  );
-}
-
-
-
-
-function CommandDropdown({ commandResults, commandViewport, inSubMode, subInfo, activeModel, theme }) {
-  const label = inSubMode ? subInfo.cmd.name.slice(1) : "Commands";
-  const total = commandResults.length;
-  const rangeStart = total > COMMAND_VIEWPORT_SIZE ? commandViewport.scrollOffset + 1 : null;
-  const rangeEnd = total > COMMAND_VIEWPORT_SIZE
-    ? Math.min(commandViewport.scrollOffset + COMMAND_VIEWPORT_SIZE, total)
-    : null;
-  const { stdout } = useStdout();
-  const terminalWidth = Math.max(24, stdout?.columns || 80);
-  const dropdownWidth = Math.max(24, Math.min(72, terminalWidth - 2));
-  const markerColumn = 2;
-  const commandColumn = Math.max(
-    3,
-    Math.min(
-      24,
-      ...commandResults.map(item => String(item.name || "").length),
-    ),
-  );
-  const descriptionWidth = Math.max(8, dropdownWidth - markerColumn - commandColumn - 3);
-
-
-  const renderItems = () => {
-    const renderRow = (item, index) =>
-      renderCommandRow(item, commandViewport, index, inSubMode, activeModel, theme, {
-        markerColumn,
-        commandColumn,
-        descriptionWidth,
-      });
-    if (inSubMode) {
-      return commandViewport.visibleItems.map((item, i) => renderRow(item, i));
-    }
-
-
-    const visibleItems = commandViewport.visibleItems;
-    let currentCategory = null;
-    const rows = [];
-    let currentCategoryCount = 0;
-    const totalOffset = commandViewport.scrollOffset;
-
-    for (let i = 0; i < visibleItems.length; i++) {
-      const globalIndex = totalOffset + i;
-      const item = visibleItems[i];
-      if (item.category && item.category !== currentCategory) {
-        currentCategory = item.category;
-        currentCategoryCount = 0;
-        if (i > 0 || totalOffset === 0) {
-          const catLabel = COMMAND_CATEGORIES.find(c => c.id === currentCategory)?.label || currentCategory;
-          rows.push(
-            h(Box, { key: `cat-${currentCategory}`, flexShrink: 0, marginTop: i > 0 ? 0 : 0 },
-              h(Text, { color: theme.metadata, dimColor: true, bold: false }, catLabel),
-            )
-          );
-        }
-      }
-      rows.push(renderRow(item, i));
-      currentCategoryCount++;
-    }
-    return rows;
-  };
-
-  return h(Box, {
-    flexDirection: "column",
-    marginLeft: 2,
-    marginBottom: 1,
-    width: dropdownWidth,
-  },
-    h(Text, { color: theme.metadata, bold: false },
-      label,
-      rangeStart ? ` · ${rangeStart}–${rangeEnd} of ${total}` : "",
-    ),
-    ...renderItems(),
-  );
-}
-
-function renderCommandRow(item, viewport, localIndex, inSubMode, activeModel, theme, layout) {
-  const selected = viewport.scrollOffset + localIndex === viewport.selectedIndex;
-  const name = item.name || "";
-  const desc = item.description || "";
-  const isActive = inSubMode && item.name === activeModel;
-  const width = layout?.descriptionWidth || 0;
-  return h(Box, { key: name, flexShrink: 0, width: "100%" },
-    h(Box, { width: layout?.markerColumn || 2, flexShrink: 0 },
-      h(Text, { color: selected ? theme.secondary : undefined, bold: selected }, selected ? "›" : " "),
-    ),
-    h(Box, { flexShrink: 0, marginRight: 2 },
-      h(Text, { color: selected ? theme.secondary : undefined, bold: selected || isActive }, name),
-    ),
-    desc
-      ? h(Box, { flexGrow: 1, minWidth: 0, width },
-        h(Text, { dimColor: true, wrap: "truncate-end" }, desc),
-      )
-      : null,
-    isActive ? h(Box, { flexShrink: 0 }, h(Text, { dimColor: true }, "(active)")) : null,
   );
 }

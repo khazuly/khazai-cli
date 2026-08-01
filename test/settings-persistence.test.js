@@ -12,6 +12,7 @@ import { PromptInput } from "../ui/components/prompt-input.js";
 import { COMMANDS } from "../ui/commands.js";
 import {
   renderComponent,
+  stripAnsi,
   TerminalInput,
   TerminalOutput,
 } from "./helpers/ink-render.js";
@@ -120,6 +121,29 @@ test("leaving the theme selector identifies the preview being cancelled", async 
   assert.equal(await waitFor(() => exits.length > 0), true);
   assert.equal(previews[0]?.[0], "/theme");
   assert.deepEqual(exits, ["/theme"]);
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
+});
+
+test("submitting the parent theme command opens its theme list", async () => {
+  const stdin = new TerminalInput();
+  const stdout = new TerminalOutput(80, 20);
+  const commands = [];
+  const instance = render(h(PromptInput, {
+    commands: COMMANDS,
+    onCommand(command, value) {
+      commands.push([command, value]);
+    },
+    onSubmit() {},
+  }), { stdin, stdout, debug: false, patchConsole: false, exitOnCtrlC: false });
+
+  stdin.push("/theme");
+  assert.equal(await waitFor(() => stdout.frames.some(frame => stripAnsi(frame).includes("Change the interface theme"))), true);
+  stdin.push("\r");
+  assert.equal(await waitFor(() => stdout.frames.some(frame => stripAnsi(frame).includes("Dracula"))), true);
+  assert.deepEqual(commands, []);
+
   instance.unmount();
   instance.cleanup();
   stdin.destroy();

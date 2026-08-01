@@ -445,6 +445,10 @@ export class PermissionService {
     };
   }
 
+  setAgentPermission(permission = {}) {
+    this.agentPermission = permission;
+  }
+
   _matchRule(action, value) {
     const canonical = canonicalPath(value, this.workspace);
     for (const rule of this._store.rules) {

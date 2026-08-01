@@ -7,6 +7,7 @@ import { isObject, workspaceMetadata, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOL
 import { isProviderParseFailure, isShortContinuation, isNegativeContinuation, pendingActionState, offeredModificationContract, offersFollowUpAction, extractJsonCandidates, decodeXmlEntities, coerceTaggedArgument, extractTaggedToolCall, extractProseBeforeTool, LEGACY_PROTOCOL_HOLDBACK, MAX_PROSE_CONTINUATIONS, jsonCompletion, validateToolArguments, delimiterCount, proseLooksIncomplete, stripMarkdown, joinProseContinuation } from "./helpers/parser.js";
 import { initializeAgentRequest, prepareProviderRetry, providerFailureContent, recoverableProviderFailure, rememberProviderFailure } from "./request-state.js";
 import { createPublicActivityChannel } from "../public-activity.js";
+import { requiredMcpServer, usedMcpServer } from "./mcp-policy.js";
 export class LoopMethods {
   async *loop(input, signal, scope = {}) {
     await this._registryReady;
@@ -19,8 +20,10 @@ export class LoopMethods {
     const taskEpoch = retryProvider ? scope.taskEpoch ?? this._recoverableProviderRequest?.taskEpoch ?? this._taskEpoch
       : Math.max(this._taskEpoch + 1, Number(scope.taskEpoch) || 0);
     this._taskEpoch = taskEpoch;
-    const run = { sessionId: this._sessionId, runId, turnId, taskEpoch, cancelled: false, finalized: false };
+    const mode = scope.mode === "plan" || scope.mode === "build" ? scope.mode : this.mode();
+    const run = { sessionId: this._sessionId, runId, turnId, taskEpoch, mode, cancelled: false, finalized: false };
     this._activeRun = run;
+    this._modeState = { sessionId: this._sessionId, runId, turnId, taskEpoch, mode };
     this._lifecycle.beginScope({ runId, turnId, taskEpoch });
     this._shellScheduler.beginRun(runId, turnId, taskEpoch, retryProvider);
     const isRunCurrent = () => this._activeRun === run, isRunActive = () => isRunCurrent() && !run.cancelled && !run.finalized;
@@ -38,6 +41,7 @@ export class LoopMethods {
     else signal?.addEventListener("abort", abortRun, { once: true });
     try {
     this._latency = { inputReceived: performance.now() };
+    if (!retryProvider) this._mcpCorrectionUsed = false;
     const requestInput = retryProvider ? null : this._secretStore.capture(input, runId, turnId);
     if (!retryProvider && requestInput.rawContent.trimStart().startsWith("!")) {
       yield* this._runShellShortcut(requestInput.rawContent.trimStart());
@@ -202,8 +206,17 @@ export class LoopMethods {
         this._clearCompaction();
       }
       const prepStart = performance.now();
-      let ctx = this._buildContext();
+      const requestModel = this._model;
+      const [ctx, nativeTools] = await Promise.all([
+        Promise.resolve().then(() => this._buildContext()),
+        this._toolSchemas(requestModel, this._agentProfile?.name),
+      ]);
       this._markLatencyDuration("historyPreparationMs", prepStart);
+      this._latency.instructionLoadingMs = this._instructionService.lastLoadMs;
+      this._latency.modeSwitchMs ??= this._lastModeSwitchMs || 0;
+      this._lastModeSwitchMs = 0;
+      const instructionWarning = this._instructionService.takeWarning();
+      if (instructionWarning) yield scoped({ type: "answer", content: `[!] ${instructionWarning}` });
       const frameStats = this._lastFrameEntry?.stats || null;
       if (frameStats) {
         this._latency.messageValidationMs = frameStats.validationMs;
@@ -221,9 +234,7 @@ export class LoopMethods {
         yield scoped({ type: "phase", label: "Preparing large context" });
       }
       if (!isRunActive()) return;
-      const requestModel = this._model;
       const maxAttempts = this._chatHandlesRetries ? 1 : 2;
-      const nativeTools = await this._toolSchemas(requestModel, this._agentProfile?.name);
       if (!isRunActive()) return;
       // Context preflight: project the exact normalized payload for the
       // resolved route. If it exceeds the configured threshold, schedule
@@ -585,6 +596,28 @@ export class LoopMethods {
       }
       this._invalidToolResponses = 0;
       if (!tool) {
+        const requiredServer = requiredMcpServer(
+          this._registry,
+          this._currentRequest,
+          this._instructionService.getSystemPromptBlock(),
+        );
+        if (requiredServer && !usedMcpServer(this._registry, this._toolEvidence, requiredServer)) {
+          if (!this._mcpCorrectionUsed) {
+            this._mcpCorrectionUsed = true;
+            if (streamStarted || streamVisibleLength > 0) yield scoped({ type: "stream-discard" });
+            this._appendMessage({
+              role: "system",
+              content: "MCP CORRECTION: Use the required MCP tool before answering. Do not claim results you have not retrieved.",
+            });
+            continue;
+          }
+          const failure = `[×] Required MCP server ${requiredServer} was not used.`;
+          this._appendMessage({ role: "assistant", content: failure });
+          this._finishLatency();
+          if (finalizeRun()) yield scoped({ type: "stream", token: failure });
+          if (run.finalized) yield scoped({ type: "stream-end" });
+          return;
+        }
         let visibleReply = pendingProse ? joinProseContinuation(pendingProse, reply) : reply;
         const displayReply = visibleReply;
         if (pendingProse) {
@@ -689,13 +722,15 @@ export class LoopMethods {
         this._researchSources = [...new Set([...this._researchSources, ...sourceUrls(result)])].slice(0, 20);
       }
       const metadata = toolMetadata(tool, result);
+      const planDenied = part.metadata?.planDenied || part.state.metadata?.planDenied;
+      const resultMetadata = planDenied ? { ...metadata, hidden: true, planDenied: true } : metadata;
       yield scoped({
         type: "tool-result",
         tool: tool.name,
         result,
         metadata: tool.name === "todowrite"
-          ? { ...metadata, planItems: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [] }
-          : metadata,
+          ? { ...resultMetadata, planItems: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [] }
+          : resultMetadata,
         callId: part.callId,
         failed: part.state.status === "error",
       });

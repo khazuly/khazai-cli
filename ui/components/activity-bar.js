@@ -168,11 +168,14 @@ export function ActivityBar({
       : null;
     activityText = elapsed !== null ? `${label} · ${elapsed}s` : label;
   } else if (modeStatus?.mode === "plan") {
-    const phase = modeStatus.status === "questioning"
+    if (["ready", "awaiting"].includes(modeStatus.status)) return null;
+    const phase = modeStatus.status === "clarifying"
       ? "Waiting for decision"
-      : modeStatus.status === "reviewing"
-        ? "Reviewing implementation"
-        : "Investigating";
+      : modeStatus.status === "drafting"
+        ? "Drafting plan"
+        : modeStatus.status === "entering"
+          ? "Preparing"
+          : "Exploring";
     activityText = `Plan Mode · ${phase}${queue}`;
   } else if (modeStatus?.mode === "init") {
     if (initGenerating) {

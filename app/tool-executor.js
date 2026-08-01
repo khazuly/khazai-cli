@@ -292,11 +292,26 @@ export class ToolExecutor {
         requestedTool: call.name,
         input: this.protectData(call.args),
         error: this.readOnlyMessage,
-        metadata: { runId: this.runId, turnId: this.turnId, taskEpoch: this.taskEpoch, blocked: true },
+        metadata: {
+          runId: this.runId,
+          turnId: this.turnId,
+          taskEpoch: this.taskEpoch,
+          blocked: true,
+          hidden: true,
+          planDenied: true,
+        },
       });
       this.shellScheduler?.complete(call, this.readOnlyMessage, true);
       yield this._scoped({ type: "tool-part", part: { ...part, state: { ...part.state } } });
-      yield this._scoped({ type: "tool-result", tool: call.name, result: this.readOnlyMessage, callId: call.id, failed: true, blocked: true });
+      yield this._scoped({
+        type: "tool-result",
+        tool: call.name,
+        result: this.readOnlyMessage,
+        callId: call.id,
+        failed: true,
+        blocked: true,
+        metadata: { hidden: true, planDenied: true },
+      });
       yield this._scoped({
         type: "execution-result",
         call,

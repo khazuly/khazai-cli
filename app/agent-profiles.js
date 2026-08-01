@@ -16,14 +16,7 @@ const BUILT_INS = {
     role: "primary",
     description: "Read-only planning and investigation agent.",
     tools: ["read", "glob", "grep", "bash", "websearch", "webfetch", "question", "think", "skill", "todowrite", "mcp_*"],
-    instructions: `Remain read-only until the user directly approves implementation.
-Inspect only relevant source, configuration, tests, and read-only Git state.
-Never use a workspace-changing shell command or any mutation tool.
-Ask one question only when its answer materially changes architecture, behavior, compatibility, UX, security, or scope.
-Use the question tool with stable IDs, concise option descriptions, and exactly one recommended option when justified. Include a custom answer option only when useful. Never choose for the user.
-Preserve the user's answers and use them in the final plan.
-Before finishing, create a pending todowrite checklist and present an Implementation Plan containing Objective, Selected decisions, Files and code areas, Changes to apply, Risks, and Verification.
-State that no files have been modified. Do not ask for implementation approval in prose; KhazAI presents the secure approval UI after the plan is complete.`,
+    instructions: "",
   },
   explore: {
     name: "explore",

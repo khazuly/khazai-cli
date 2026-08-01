@@ -94,12 +94,18 @@ export function prepareProviderRetry(agent, scope = null) {
 }
 
 export async function initializeAgentRequest(agent, input, signal, authorizedInput = input, scope = null) {
+  const synthetic = scope?.syntheticContinuation === true;
+  const objective = synthetic
+    ? String(scope?.approvedPlan?.objective || agent._currentRequest || input)
+    : String(input);
   agent._recoverableProviderRequest = null;
   agent._messages = completedConversationHistory(agent._messages);
   agent._historyRevision++;
-  agent._appendMessage({ role: "user", content: input });
-  agent._requestStartIndex = agent._messages.length - 1;
-  agent._currentRequest = input;
+  agent._appendMessage({ role: synthetic ? "system" : "user", content: input });
+  agent._requestStartIndex = synthetic
+    ? Math.max(0, agent._messages.findLastIndex(message => message.role === "user"))
+    : agent._messages.length - 1;
+  agent._currentRequest = objective;
   agent._pendingAction = null;
   agent._pendingGitPush = null;
   agent._requestMode = "neutral";
@@ -145,7 +151,6 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._completionRedirects = 0;
   agent._resolvedArtifactDocumentation = false;
   agent._researchSources = [];
-  const objective = String(input);
   let contract = fallbackIntentContract(objective);
   agent._activeScope = {
     sessionId: agent._sessionId,
@@ -161,7 +166,7 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   if (agent._intentResolver?.resolve) {
     try {
       const resolved = await agent._intentResolver.resolve({
-        input: authorizedInput,
+        input: synthetic ? objective : authorizedInput,
         model: agent._model,
         signal,
       });

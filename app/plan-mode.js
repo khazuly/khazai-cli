@@ -5,25 +5,15 @@ import { inspectionCommand } from "./execution-policy.js";
 
 export const PLAN_ACTIONS = [
   {
-    id: "implement",
-    label: "Implement this plan now",
+    id: "build",
+    label: "Build this plan",
     description: "Switch to Build Mode and execute the approved plan.",
     recommended: true,
   },
   {
-    id: "revise",
-    label: "Revise the plan",
-    description: "Keep the investigation and revisit the plan decisions.",
-  },
-  {
-    id: "question",
-    label: "Ask another question",
-    description: "Keep the draft plan and return to planning input.",
-  },
-  {
-    id: "save",
-    label: "Save the plan without implementing",
-    description: "Store the plan in session history and return to the default mode.",
+    id: "continue",
+    label: "Continue planning",
+    description: "Keep Plan Mode active and refine the plan.",
   },
   {
     id: "cancel",
@@ -50,6 +40,16 @@ export const REVALIDATION_ACTIONS = [
     description: "Exit without applying modifications.",
   },
 ];
+
+const PLAN_NATIVE_TOOLS = new Set([
+  "read", "glob", "grep", "bash", "websearch", "webfetch", "question", "think", "skill", "todowrite",
+]);
+
+export function planToolDefinitionAllowed(definition) {
+  const name = String(definition?.name || "");
+  if (name.startsWith("mcp__")) return definition?.mcp?.readOnly === true;
+  return PLAN_NATIVE_TOOLS.has(name);
+}
 
 export function planToolIsReadOnly(call, definition = null) {
   const name = String(call?.name || "");
@@ -96,14 +96,16 @@ function workspaceFiles(workspace, files) {
   }))];
 }
 
-export function createPlanModeState({ objective, runId, turnId, taskEpoch }) {
+export function createPlanModeState({ objective, sessionId, runId, turnId, taskEpoch }) {
   return {
     planId: randomUUID(),
+    sessionId,
     runId,
     turnId,
     taskEpoch,
     mode: "plan",
-    status: "investigating",
+    status: "entering",
+    planRevision: 1,
     objective: String(objective || "").trim(),
     decisions: [],
     relevantFiles: [],
@@ -122,6 +124,7 @@ export function planScopeMatches(plan, scope) {
   return Boolean(
     plan
     && scope
+    && plan.sessionId === scope.sessionId
     && plan.runId === scope.runId
     && plan.turnId === scope.turnId
     && plan.taskEpoch === scope.taskEpoch
@@ -138,7 +141,12 @@ export function recordPlanDecision(plan, question, answer) {
     custom: Boolean(answer?.custom),
   };
   const decisions = plan.decisions.filter(item => item.questionId !== decision.questionId);
-  return { ...plan, status: "investigating", decisions: [...decisions, decision] };
+  return {
+    ...plan,
+    status: "exploring",
+    planRevision: (Number(plan.planRevision) || 0) + 1,
+    decisions: [...decisions, decision],
+  };
 }
 
 export function finalizePlanMode(plan, {
@@ -148,18 +156,23 @@ export function finalizePlanMode(plan, {
   steps,
 }) {
   const files = workspaceFiles(workspace, relevantFiles);
+  const suppliedSteps = (steps || []).map(item => String(item.description || item.content || item)).filter(Boolean);
+  const summarySteps = [...String(summary || "").matchAll(/^\s*\d+[.)]\s+(.+)$/gm)]
+    .map(match => match[1].trim())
+    .filter(Boolean);
   return {
     ...plan,
-    status: "reviewing",
+    status: "ready",
+    planRevision: (Number(plan.planRevision) || 0) + 1,
     summary: String(summary || "").trim(),
     relevantFiles: files.map(path => relative(resolve(workspace), path)),
-    steps: (steps || []).map(item => String(item.description || item.content || item)).filter(Boolean),
+    steps: suppliedSteps.length ? suppliedSteps : summarySteps,
     fileSnapshots: Object.fromEntries(files.map(path => [relative(resolve(workspace), path), hashFile(path)])),
   };
 }
 
 export function approvePlanMode(plan) {
-  if (!plan || plan.status !== "reviewing" || plan.approvedAt) return null;
+  if (!plan || !["ready", "awaiting"].includes(plan.status) || plan.approvedAt) return null;
   return structuredClone({
     ...plan,
     mode: "build",
@@ -215,4 +228,13 @@ export function approvedPlanRequest(plan) {
     "Approved plan:",
     plan.summary,
   ].join("\n");
+}
+
+export function cleanPlanOutput(value) {
+  return String(value || "")
+    .split("\n")
+    .filter(line => !/^\s*(?:[-*]\s*)?(?:evidence (?:required|collected)|blocking|blocked by plan mode|safety guard|cannot continue until evidence exists|finished with issues?)\b/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }

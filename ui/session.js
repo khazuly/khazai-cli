@@ -57,6 +57,7 @@ import {
   approvePlanMode,
   approvedPlanRequest,
   changedPlanFiles,
+  cleanPlanOutput,
   createPlanModeState,
   finalizePlanMode,
   recordPlanDecision,
@@ -435,6 +436,19 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     });
   }
   useEffect(() => {
+    if (!mcpManager?.subscribe) return undefined;
+    let active = true;
+    const unsubscribe = mcpManager.subscribe(async tools => {
+      if (!active) return;
+      mcpToolsRef.current = tools;
+      await agentRef.current?.replaceRegistry(buildRegistry(workspace.path, tools));
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [mcpManager, workspace.path]);
+  useEffect(() => {
     const usage = agentRef.current?.contextUsage() || {};
     contextUsageRef.current = usage;
     setContextUsage(usage);
@@ -509,7 +523,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setExpandedTool(null);
     setCurrentModel(session.model);
     setModeStatus(session.agent === "plan"
-      ? { mode: "plan", status: "reviewing" }
+      ? { mode: "plan", status: "ready" }
       : null);
     messageQueueRef.current.reset(session.id);
     setQueuedCount(0);
@@ -877,17 +891,22 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         }
         return;
       }
-      const list = await modelStatusList();
-      const choices = list.map(model => ({
-        label: `${model.alias.padEnd(11)}${model.statusLabel}`,
-        value: model.alias,
-      }));
-      const selected = await requestValue("KhazAI Free Models", choices.map(choice => choice.label), {
+      const { selectableModels } = await import("./model-command.js");
+      const list = await selectableModels();
+      const zenList = await modelStatusList();
+      const choices = list.map(alias => {
+        const entry = zenList.find(model => model.alias === alias);
+        return {
+          label: entry ? `${alias.padEnd(11)}${entry.statusLabel}` : displayModel(alias),
+          value: alias,
+        };
+      });
+      const selected = await requestValue("Select a model", choices.map(choice => choice.label), {
         kind: "mcp",
         values: choices,
       });
       if (!selected) return;
-      const entry = list.find(model => model.alias === selected);
+      const entry = zenList.find(model => model.alias === selected);
       await chooseModel(selected);
       if (entry && entry.status !== "available") {
         appendArchived({
@@ -1241,15 +1260,19 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         return;
       }
       const state = agentRef.current.exportSessionState();
-      agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
-        workspace: workspace.path,
-        sessionId: currentSessionRef.current.id,
-        model: currentModel,
-        agent: selected,
-        sessionState: { ...state, agent: selected },
-        autoApprove: autoApproveRef.current,
-        partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
-      });
+      if (["plan", "build"].includes(selected)) {
+        agentRef.current.setMode(selected);
+      } else {
+        agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
+          workspace: workspace.path,
+          sessionId: currentSessionRef.current.id,
+          model: currentModel,
+          agent: selected,
+          sessionState: { ...state, agent: selected },
+          autoApprove: autoApproveRef.current,
+          partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+        });
+      }
       currentSessionRef.current.agent = selected;
       currentSessionRef.current.agentState = agentRef.current.exportSessionState();
       currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
@@ -1257,7 +1280,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       planningQuestionRef.current = null;
       buildStartedPlanIdRef.current = null;
       setModeStatus(selected === "plan"
-        ? { mode: "plan", status: "reviewing" }
+        ? { mode: "plan", status: "ready" }
         : null);
       appendArchived({ id: nextId(), type: "answer", content: `Agent changed to ${selected}.` });
       return;
@@ -1401,22 +1424,25 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const runId = nextId();
     const turnId = options.turnId || `${sessionBefore?.id || "session"}-${runId}`;
     if (!retryProvider) taskEpochRef.current++;
+    const planningRun = currentSessionRef.current.agent === "plan" && !approvedPlan;
     const analysisScope = {
+      sessionId: sessionBefore?.id,
       runId,
       turnId,
       taskEpoch: taskEpochRef.current,
+      mode: planningRun ? "plan" : "build",
       ...(approvedPlan?.planId ? { planId: approvedPlan.planId } : {}),
     };
-    const planningRun = currentSessionRef.current.agent === "plan" && !approvedPlan;
     const previousPlan = planWorkflowRef.current;
     let planningState = planningRun
-      ? previousPlan?.mode === "plan" && ["reviewing", "investigating", "questioning"].includes(previousPlan.status)
-        ? { ...previousPlan, ...analysisScope, status: "investigating" }
+      ? previousPlan?.mode === "plan" && ["ready", "exploring", "clarifying"].includes(previousPlan.status)
+        ? { ...previousPlan, ...analysisScope, status: "exploring" }
         : createPlanModeState({ objective: input, ...analysisScope })
       : null;
     if (planningRun) {
+      planningState = { ...planningState, status: "exploring" };
       planWorkflowRef.current = planningState;
-      setModeStatus({ mode: "plan", status: "investigating" });
+      setModeStatus({ mode: "plan", status: "exploring" });
     } else if (approvedPlan) {
       setModeStatus({ mode: "build", status: "preparing" });
     }
@@ -1599,19 +1625,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       responseBufferRef.current = committed.state;
       if (!committed.response) return "";
       const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
-      if (!content) return "";
+      const visibleContent = planningRun ? cleanPlanOutput(content) : content;
+      if (!visibleContent) return "";
       if (initTask) {
         if (!initResponse.finalized) {
-          initResponse.content = content;
+          initResponse.content = visibleContent;
           initResponse.finalized = true;
           setModeStatus(null);
         }
         finalCommitted = true;
-        return content;
+        return visibleContent;
       }
-      appendArchived({ id: committed.response.id, type: "answer", content });
+      appendArchived({ id: committed.response.id, type: "answer", content: visibleContent });
       finalCommitted = true;
-      return content;
+      return visibleContent;
     };
     const resetStreaming = () => {
       responseBufferRef.current = resetResponseBuffer(responseBufferRef.current, analysisScope);
@@ -1685,6 +1712,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       ...analysisScope,
       retryProvider,
       approvedPlan,
+      syntheticContinuation: Boolean(approvedPlan),
     })) {
       if (ev.type === "compaction-state") {
         setContextUsage({
@@ -1726,7 +1754,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
           resetStreaming();
           continue;
         }
-        if (planningRun) setModeStatus({ mode: "plan", status: "investigating" });
+        if (planningRun) setModeStatus({ mode: "plan", status: "exploring" });
         resetStreaming();
         finishReadBatch();
         showAnalysis(thinkActivityFromPlan(planRef.current.steps, ev.phase, planRef.current.currentStepId));
@@ -1777,7 +1805,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         resetStreaming();
         finishReadBatch();
         pauseAnalysis();
-        if (planningRun) setModeStatus({ mode: "plan", status: "questioning" });
+        if (planningRun) setModeStatus({ mode: "plan", status: "clarifying" });
         setPendingQuestion({
           questionId: ev.questionId,
           question: ev.question,
@@ -1819,6 +1847,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       if (ev.type === "tool-part") {
         const part = ev.part;
         if (!part || part.type !== "tool") continue;
+        if (planningRun && (part.metadata?.planDenied || part.state?.metadata?.planDenied)) {
+          if (activeRef.current?.callId === part.callId) clearActive();
+          continue;
+        }
         if (part.tool === "question") continue;
         structuredCallsRef.current.add(part.callId);
         if (part.tool === "think") {
@@ -2003,6 +2035,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
 
       if (ev.type === "tool-result") {
         updateUsage();
+        if (planningRun && ev.metadata?.planDenied) {
+          if (activeRef.current?.callId === ev.callId) clearActive();
+          continue;
+        }
         if (ev.tool === "think") {
           if (!initTask && messageQueueRef.current.pendingCount() > 0) queueHandoffPending = true;
           continue;
@@ -2059,7 +2095,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (isInternalAgentFailure(ev.content)) continue;
         discardStreaming();
         finishReadBatch();
-        const safeContent = removeAssistantProtocolText(agent.redactForDisplay(removeEmoji(ev.content))).trim();
+        const rawSafeContent = removeAssistantProtocolText(agent.redactForDisplay(removeEmoji(ev.content))).trim();
+        const safeContent = planningRun ? cleanPlanOutput(rawSafeContent) : rawSafeContent;
         const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
         const providerFailure = ev.recoverable || /^\[×\]/.test(safeContent);
         if (ev.type === "answer") {
@@ -2144,6 +2181,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         && finalCommitted
         && cancelledRunIdRef.current !== runId
       ) {
+        setModeStatus({ mode: "plan", status: "drafting" });
+        const planCompletionStarted = performance.now();
         if (planWorkflowRef.current?.planId === planningState?.planId) {
           planningState = planWorkflowRef.current;
         }
@@ -2156,12 +2195,15 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         });
         planWorkflowRef.current = finalizedPlanningState;
         planningState = finalizedPlanningState;
-        setModeStatus({ mode: "plan", status: "reviewing" });
+        setModeStatus({ mode: "plan", status: "ready" });
+        if (process.env.KHAZAI_DEBUG) {
+          console.error(`[khazai debug] plan completion ${Math.round((performance.now() - planCompletionStarted) * 10) / 10}ms`);
+        }
       }
       discardStreaming();
       finishReadBatch();
       clearActive();
-      if (finishedNormally && analysisRef.current) {
+      if (finishedNormally && analysisRef.current && !planningRun) {
         analysisRef.current = completeAnalysisActivity(analysisRef.current, analysisScope);
         const summary = analysisActivityMessage(analysisRef.current);
         if (analysisRef.current?.status === "completed" && summary?.accumulatedDurationMs > 0) {
@@ -2268,7 +2310,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finalCommitted,
         finishedNormally,
       });
-      if (!initTask && runResult?.status === "failed" && runResult.unresolvedIssues.length) {
+      if (!initTask && !planningRun && runResult?.status === "failed" && runResult.unresolvedIssues.length) {
         appendArchived({
           id: nextId(),
           type: "summary",
@@ -2349,22 +2391,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     return submit(input, options);
   }, [submit]);
 
-  const replaceAgentProfile = useCallback((name, state = null) => {
-    const previous = state || agentRef.current?.exportSessionState?.() || null;
-    agentRef.current?.abort();
-    agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
-      workspace: workspace.path,
-      sessionId: currentSessionRef.current.id,
-      model: currentModel,
-      agent: name,
-      sessionState: previous ? { ...previous, agent: name } : null,
-      autoApprove: autoApproveRef.current,
-      partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
-    });
+  const replaceAgentProfile = useCallback(name => {
+    agentRef.current?.setMode(name);
     currentSessionRef.current.agent = name;
     currentSessionRef.current.agentState = agentRef.current.exportSessionState();
     currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
-  }, [currentModel, workspace.path]);
+  }, []);
 
   const launchApprovedPlan = useCallback(plan => {
     if (
@@ -2395,21 +2427,28 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       scope: null,
       resolve: answer => planActionRef.current?.(kind, answer, {
         planId: plan.planId,
+        sessionId: plan.sessionId,
         runId: plan.runId,
         turnId: plan.turnId,
         taskEpoch: plan.taskEpoch,
+        planRevision: plan.planRevision,
       }),
     };
     setPendingQuestion({ kind: "plan", question, context, options });
   }, []);
 
-  openPlanApprovalRef.current = plan => openPlanSelection(
-    "plan-approval",
-    "Ready to continue",
-    "Choose what KhazAI should do with this implementation plan.",
-    PLAN_ACTIONS,
-    plan,
-  );
+  openPlanApprovalRef.current = plan => {
+    const awaiting = { ...plan, status: "awaiting" };
+    planWorkflowRef.current = awaiting;
+    setModeStatus({ mode: "plan", status: "awaiting" });
+    openPlanSelection(
+      "plan-approval",
+      "Plan ready",
+      "Choose whether to build the plan now.",
+      PLAN_ACTIONS,
+      awaiting,
+    );
+  };
 
   planActionRef.current = (kind, answer, expected) => {
     const plan = planWorkflowRef.current;
@@ -2417,9 +2456,11 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (
       !plan
       || plan.planId !== expected?.planId
+      || plan.sessionId !== expected?.sessionId
       || plan.runId !== expected?.runId
       || plan.turnId !== expected?.turnId
       || plan.taskEpoch !== expected?.taskEpoch
+      || plan.planRevision !== expected?.planRevision
     ) return;
     if (kind === "plan-revalidation") {
       if (action === "revalidate") {
@@ -2428,9 +2469,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         launchApprovedPlan(refreshed);
       } else if (action === "plan") {
         buildStartedPlanIdRef.current = null;
-        planWorkflowRef.current = { ...plan, mode: "plan", status: "reviewing", approvedAt: null };
+        planWorkflowRef.current = { ...plan, mode: "plan", status: "ready", approvedAt: null };
         replaceAgentProfile("plan");
-        setModeStatus({ mode: "plan", status: "reviewing" });
+        setModeStatus({ mode: "plan", status: "ready" });
       } else {
         planWorkflowRef.current = null;
         buildStartedPlanIdRef.current = null;
@@ -2440,8 +2481,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
       return;
     }
-    if (plan.status !== "reviewing") return;
-    if (action === "implement") {
+    if (plan.status !== "awaiting") return;
+    if (action === "build") {
       const approved = approvePlanMode(plan);
       if (!approved) return;
       planWorkflowRef.current = approved;
@@ -2459,11 +2500,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
       return;
     }
-    if (action === "revise" || action === "question") {
-      setModeStatus({
-        mode: "plan",
-        status: action === "question" ? "questioning" : "reviewing",
-      });
+    if (action === "continue") {
+      planWorkflowRef.current = { ...plan, status: "exploring" };
+      setModeStatus({ mode: "plan", status: "exploring" });
       return;
     }
     planWorkflowRef.current = null;
@@ -2527,7 +2566,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         );
       }
       planningQuestionRef.current = null;
-      setModeStatus({ mode: "plan", status: "investigating" });
+      setModeStatus({ mode: "plan", status: "exploring" });
     }
     if (pending.kind !== "permission" && pending.archive !== false) {
       appendArchived({ id: nextId(), type: "user", content: secret ? "[credential provided]" : value });
@@ -2545,15 +2584,17 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const plan = planWorkflowRef.current;
       planActionRef.current?.(pending.kind, { id: "cancel", label: "Cancel" }, plan && {
         planId: plan.planId,
+        sessionId: plan.sessionId,
         runId: plan.runId,
         turnId: plan.turnId,
         taskEpoch: plan.taskEpoch,
+        planRevision: plan.planRevision,
       });
       return;
     }
     if (pending.kind === "plan-decision") {
       planningQuestionRef.current = null;
-      setModeStatus({ mode: "plan", status: "investigating" });
+      setModeStatus({ mode: "plan", status: "exploring" });
     }
     pending.resolve("");
   }, []);
