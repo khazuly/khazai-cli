@@ -122,6 +122,8 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._planId = null;
   agent._currentStepId = null;
   agent._planIndex = 0;
+  agent._planRevision = 0;
+  agent._planStatus = "active";
   agent._lastToolResult = null;
   agent._toolCallHistory = [];
   agent._completedToolResults.clear();

@@ -115,9 +115,11 @@ export class ToolMethods {
         : yield* this._startPlanItem(call, executionScope);
       let callFailed = false;
       let completedPart = null;
+      let bufferedPlanResult = null;
       for await (const event of this._toolExecutor(executionScope).execute(call, { agent: this._agentProfile?.name })) {
         if (event.type !== "execution-result") {
-          yield event;
+          if (event.type === "tool-result" && call.name === "todowrite") bufferedPlanResult = event;
+          else yield event;
           continue;
         }
         const result = this._protectForContext(String(event.result));
@@ -148,6 +150,17 @@ export class ToolMethods {
           items: plan.map(item => ({ ...item })),
           planId: this._planId,
           currentStepId: this._currentStepId,
+          revision: this._planRevision,
+          planStatus: this._planStatus,
+        }, executionScope);
+      }
+      if (bufferedPlanResult) {
+        yield this._scopedToolEvent({
+          ...bufferedPlanResult,
+          metadata: {
+            ...(bufferedPlanResult.metadata || {}),
+            planItems: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [],
+          },
         }, executionScope);
       }
       yield* this._finishPlanItem(

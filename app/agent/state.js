@@ -130,6 +130,8 @@ export class StateMethods {
     this._planId = null;
     this._currentStepId = null;
     this._planIndex = 0;
+    this._planRevision = 0;
+    this._planStatus = "active";
     this._pendingBatchCalls = [];
     this._toolCallHistory = [];
     this._completedToolResults.clear();

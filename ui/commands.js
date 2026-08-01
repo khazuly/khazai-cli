@@ -87,6 +87,11 @@ export const COMMANDS = [
   ] },
   { name: "/usage", description: "Show context and session token usage", category: "core", aliases: [], visible: true, group: "view" },
   { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", sub: THEMES },
+  { name: "/plan", description: "Show or hide the Plan panel", category: "core", aliases: [], visible: true, group: "view", sub: [
+    { name: "show", description: "Expand the Plan panel" },
+    { name: "hide", description: "Collapse the Plan panel" },
+    { name: "toggle", description: "Toggle the Plan panel" },
+  ] },
   { name: "/mcp", description: "Manage MCP servers", category: "core", aliases: [], visible: true, group: "workspace", sub: MCP_COMMANDS },
   { name: "/connect", description: "Connect a provider", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/skills", description: "List workspace skills", category: "workspace", aliases: [], visible: false, group: "workspace" },

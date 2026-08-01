@@ -1,4 +1,4 @@
-import { createElement as h, memo } from "react";
+import { createElement as h, memo, useRef, useState } from "react";
 import { Text, Box, useStdout } from "ink";
 import stringWidth from "string-width";
 import { useTheme } from "../theme.js";
@@ -31,37 +31,50 @@ export function visiblePlanTitle(title, columns = 80) {
   return visible ? `${visible}…` : `${text.slice(0, Math.max(1, budget - 1)).trim()}…`;
 }
 
-function PlanListInner({ plan, planId: planIdProp }) {
+function PlanListInner({ plan, planId: planIdProp, collapsed: collapsedProp }) {
   const theme = useTheme();
   const { stdout } = useStdout();
-  if (!plan || plan.length === 0) return null;
-  const finished = completedPlanCount(plan);
-  const planId = planIdProp || plan.find(item => item.planId)?.planId || "plan";
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const lastPlanIdRef = useRef(null);
+  const items = Array.isArray(plan) ? plan : [];
+  const planId = planIdProp || items.find(item => item.planId)?.planId || "plan";
+  const collapsed = collapsedProp === undefined ? internalCollapsed : collapsedProp;
+  if (collapsedProp === undefined && lastPlanIdRef.current !== null && lastPlanIdRef.current !== planId) {
+    lastPlanIdRef.current = planId;
+    if (internalCollapsed) setInternalCollapsed(false);
+  }
+  lastPlanIdRef.current = planId;
+  if (items.length === 0) return null;
+  const finished = completedPlanCount(items);
   const columns = stdout?.columns || 80;
 
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Box, {},
-      h(Text, { bold: true, color: theme.primary }, "Plan"),
-      h(Text, { color: theme.metadata }, ` ${finished}/${plan.length}`),
+    h(Box, { flexDirection: "row", flexWrap: "wrap", alignItems: "center" },
+      h(Text, { bold: true, color: theme.primary }, `Plan ${finished}/${items.length}`),
+      h(Box, { marginLeft: 2 },
+        h(Text, { color: theme.metadata }, collapsed ? "[+ Show]" : "[− Hide]"),
+      ),
     ),
-    h(Box, { flexDirection: "column", marginTop: 1 },
-      ...plan.map((item, index) => {
-        const { indicator, colorRole } = planItemPresentation(item.status);
-        const title = item.description || item.text || item.content || item.title || "";
-        return h(Box, {
-          key: planItemKey(planId, item, index),
-          flexDirection: "row",
-          width: "100%",
-        },
-          h(Box, { width: 4, flexShrink: 0 },
-            h(Text, { color: theme[colorRole], wrap: "truncate-end" }, indicator),
-          ),
-          h(Box, { flexGrow: 1, minWidth: 0 },
-            h(Text, { color: theme.text, wrap: "wrap" }, visiblePlanTitle(title, columns)),
-          ),
-        );
-      }),
-    ),
+    collapsed
+      ? null
+      : h(Box, { flexDirection: "column", marginTop: 1 },
+          ...items.map((item, index) => {
+            const { indicator, colorRole } = planItemPresentation(item.status);
+            const title = item.description || item.text || item.content || item.title || "";
+            return h(Box, {
+              key: planItemKey(planId, item, index),
+              flexDirection: "row",
+              width: "100%",
+            },
+              h(Box, { width: 4, flexShrink: 0 },
+                h(Text, { color: theme[colorRole], wrap: "truncate-end" }, indicator),
+              ),
+              h(Box, { flexGrow: 1, minWidth: 0 },
+                h(Text, { color: theme.text, wrap: "wrap" }, visiblePlanTitle(title, columns)),
+              ),
+            );
+          }),
+        ),
   );
 }
 

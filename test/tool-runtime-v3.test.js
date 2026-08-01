@@ -453,8 +453,12 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
   )), [
     { type: "plan-update", stepId: plan.items[0].id, status: "active" },
     { type: "plan-update", stepId: plan.items[0].id, status: "completed" },
-    { type: "plan-update", stepId: plan.items[1].id, status: "active" },
   ]);
+  const finalUpdate = events.filter(event => event.type === "plan-update").at(-1);
+  assert.deepEqual(finalUpdate.items.map(({ status }) => status), ["completed", "active"]);
+  assert.equal(finalUpdate.currentStepId, plan.items[1].id);
+  assert.equal(typeof finalUpdate.revision, "number");
+  assert.equal(finalUpdate.planStatus, "active");
   assert.deepEqual(agent.planningContext().plan.map(({ description, status }) => ({ description, status })), [
     { description: "Inspect files", status: "completed" },
     { description: "Run tests", status: "active" },

@@ -252,6 +252,58 @@ test("terminal resize never duplicates Plan rows or splits markers", async () =>
   }
 });
 
+test("collapsed PlanList hides rows while the heading and toggle stay visible", async () => {
+  const plan = [
+    { status: "completed", description: "Step 1" },
+    { status: "active", description: "Step 2" },
+    { status: "pending", description: "Step 3" },
+  ];
+  const expanded = await renderComponent(h(PlanList, { plan }), 40, 30);
+  assert.match(expanded, /Plan 1\/3/);
+  assert.match(expanded, /\[− Hide\]/);
+  assert.match(expanded, /\[✓\]/);
+  const collapsed = await renderComponent(h(PlanList, { plan, collapsed: true }), 40, 30);
+  assert.match(collapsed, /Plan 1\/3/);
+  assert.match(collapsed, /\[[+] Show\]/);
+  assert.doesNotMatch(collapsed, /\[✓\]/);
+  assert.doesNotMatch(collapsed, /Step 1/);
+  assert.doesNotMatch(collapsed, /\[•\]/);
+});
+
+test("PlanList renders no heading or toggle without a Plan", async () => {
+  const frame = await renderComponent(h(PlanList, { plan: [] }), 40, 30);
+  assert.equal(frame.trim(), "");
+});
+
+test("completed Plan renders 7/7 with no live marker and no currentStepId dependency", async () => {
+  const plan = [1, 2, 3, 4, 5, 6, 7].map(index => ({
+    stepId: `plan-7:step-${index}`,
+    description: `Step ${index}`,
+    status: "completed",
+  }));
+  const frame = await renderComponent(h(PlanList, { plan }), 60, 30);
+  assert.match(frame, /Plan 7\/7/);
+  const markers = frame.split("\n").filter(line => /^\[[ ✓•×]\]/.test(line));
+  assert.equal(markers.length, 7, frame);
+  assert.ok(markers.every(line => line.startsWith("[✓]")), frame);
+  assert.doesNotMatch(frame, /\[•\]/);
+  assert.match(frame, /\[− Hide\]/);
+});
+
+test("narrow terminals wrap the Plan toggle without splitting it", async () => {
+  const plan = [
+    { status: "completed", description: "Read app/agent.js" },
+    { status: "active", description: "Implement token masking utility" },
+  ];
+  for (const width of [16, 20, 26]) {
+    const frame = await renderComponent(h(PlanList, { plan }), width, 30);
+    assert.match(frame, /Plan 1\/2/);
+    assert.match(frame, /\[− Hide\]|\[[+] Show\]/);
+    const lines = frame.split("\n").filter(Boolean);
+    assert.ok(lines.every(line => line.length <= width), `${width}: ${frame}`);
+  }
+});
+
 test("numbered lists reserve one content column for one and two digit markers", async () => {
   const content = [
     "1. First item with a long description that wraps onto another line.",
@@ -373,6 +425,34 @@ test("successful shell commands reveal raw details only when expanded", async ()
   assert.match(collapsed, /Command completed with no output/);
   assert.doesNotMatch(collapsed, /exit 0/);
   assert.match(expanded, /Command\s+rm -f/);
+});
+
+test("Ctrl+P toggles the Plan without capturing typed prompts", async () => {
+  const stdout = new TerminalOutput(40, 24);
+  const stdin = new TerminalInput();
+  let toggles = 0;
+  let submitted = "";
+  const instance = render(h(PromptInput, {
+    onSubmit(value) { submitted = value; },
+    onCommand() {},
+    commands: [],
+    disabled: false,
+    onTogglePlan() { toggles += 1; },
+  }), {
+    stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false,
+  });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  stdin.push("\u0010"); // Ctrl+P
+  await new Promise(resolve => setTimeout(resolve, 60));
+  stdin.push("plan text");
+  await new Promise(resolve => setTimeout(resolve, 60));
+  stdin.push("\r");
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(toggles, 1);
+  assert.equal(submitted, "plan text");
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
 });
 
 test("input cursor uses terminal-native blink without periodic redraws", async () => {

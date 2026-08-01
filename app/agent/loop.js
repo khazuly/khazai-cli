@@ -71,6 +71,8 @@ export class LoopMethods {
         items: plan.map(item => ({ ...item })),
         planId: scope.approvedPlan.planId,
         currentStepId: this._currentStepId,
+        revision: this._planRevision,
+        planStatus: this._planStatus,
       });
     }
     yield scoped({ type: "context-usage", usage: this.contextUsage() });
@@ -676,6 +678,8 @@ export class LoopMethods {
           items: plan.map(item => ({ ...item })),
           planId: this._planId,
           currentStepId: this._currentStepId,
+          revision: this._planRevision,
+          planStatus: this._planStatus,
         });
       }
       const protectedResult = this._secretStore.protect(result, runId, turnId);
@@ -689,7 +693,9 @@ export class LoopMethods {
         type: "tool-result",
         tool: tool.name,
         result,
-        metadata,
+        metadata: tool.name === "todowrite"
+          ? { ...metadata, planItems: Array.isArray(this._plan) ? this._plan.map(item => ({ ...item })) : [] }
+          : metadata,
         callId: part.callId,
         failed: part.state.status === "error",
       });

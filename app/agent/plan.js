@@ -12,6 +12,41 @@ const VERIFICATION_COMMAND = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|che
 
 export const PLAN_STATUSES = ["pending", "active", "completed", "failed"];
 
+export function planCounts(items) {
+  const list = Array.isArray(items) ? items : [];
+  const counts = { completed: 0, active: 0, pending: 0, failed: 0, total: list.length };
+  for (const item of list) {
+    const status = item?.status;
+    if (status === "completed") counts.completed += 1;
+    else if (status === "active") counts.active += 1;
+    else if (status === "pending") counts.pending += 1;
+    else if (status === "failed") counts.failed += 1;
+  }
+  return counts;
+}
+
+export function validatePlanState(state = {}) {
+  const items = Array.isArray(state.steps) ? state.steps : [];
+  const counts = planCounts(items);
+  const activeIds = items.filter(item => item.status === "active").map(item => item.id);
+  const failedIds = items.filter(item => item.status === "failed").map(item => item.id);
+  const completedPlan = items.length > 0 && counts.completed === items.length;
+  const current = state.currentStepId ?? null;
+  const violations = [];
+  if (activeIds.length > 1) violations.push("multiple active steps");
+  if (completedPlan) {
+    if (activeIds.length > 0) violations.push("completed plan has active step");
+    if (current !== null) violations.push("completed plan has currentStepId");
+  }
+  if (!completedPlan && activeIds.length === 1 && current !== activeIds[0]) {
+    violations.push("currentStepId mismatch");
+  }
+  if (!completedPlan && activeIds.length === 0 && current !== null && !failedIds.includes(current)) {
+    violations.push("currentStepId without active or failed step");
+  }
+  return { ok: violations.length === 0, violations, counts, completedPlan };
+}
+
 function phaseFor(description) {
   const text = String(description).toLowerCase();
   if (/\b(?:explore|inspect|locate|read|search|investigate|discover|audit|design|architecture)\b/.test(text)) return "exploration";
@@ -276,15 +311,31 @@ export function settlePlanStep(tracker, tool, result, succeeded, scope) {
 export class PlanMethods {
   _definePlan(todos, scope = this._activeRun, planId = this._planId || randomUUID()) {
     if (!this._isActiveRun(scope)) return null;
+    const replaced = !this._plan || this._planId !== planId;
     this._planId = planId;
     this._plan = definePlanItems(todos, this._plan, scope, planId);
     this._currentStepId = this._plan.find(item => item.status === "active")?.id || null;
     this._planIndex = this._plan.findIndex(item => item.status !== "completed");
     if (this._planIndex < 0) this._planIndex = this._plan.length;
+    const completedPlan = this._plan.length > 0 && this._plan.every(item => item.status === "completed");
+    this._planStatus = completedPlan ? "completed" : "active";
+    this._planRevision = replaced ? 1 : this._planRevision + 1;
     if (this._activeScope?.taskEpoch === scope.taskEpoch) {
       this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
     }
     return this._plan;
+  }
+
+  _planSnapshot(planId, extra = {}) {
+    return {
+      planId,
+      revision: this._planRevision,
+      planStatus: this._planStatus,
+      currentStepId: this._currentStepId,
+      counts: planCounts(this._plan),
+      items: this._plan.map(item => ({ ...item })),
+      ...extra,
+    };
   }
 
   *_startPlanItem(tool, scope = this._activeRun) {
@@ -295,17 +346,19 @@ export class PlanMethods {
     if (!step) return null;
     this._currentStepId = step.id;
     this._planIndex = this._plan.indexOf(step);
+    this._planStatus = "active";
+    this._planRevision += 1;
     if (this._activeScope?.taskEpoch === scope.taskEpoch) {
       this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
     }
     yield this._scopedToolEvent({
       type: "plan-update",
-      planId: tracker.planId,
-      stepId: tracker.stepId,
-      index: this._plan.indexOf(step),
-      status: "active",
-      currentStepId: step.id,
-      toolCallId: tracker.toolCallId,
+      ...this._planSnapshot(tracker.planId, {
+        stepId: tracker.stepId,
+        index: this._plan.indexOf(step),
+        status: "active",
+        toolCallId: tracker.toolCallId,
+      }),
     }, scope);
     return tracker;
   }
@@ -323,38 +376,37 @@ export class PlanMethods {
         nextActive.status = "active";
         nextActive.startedAt ||= Date.now();
       }
-      this._currentStepId = nextActive?.id || step.id;
+    }
+    const completedPlan = this._plan.length > 0 && this._plan.every(item => item.status === "completed");
+    if (completedPlan) {
+      this._currentStepId = null;
+      this._planStatus = "completed";
+      this._planIndex = this._plan.length;
+    } else if (nextActive) {
+      this._currentStepId = nextActive.id;
+      this._planStatus = "active";
       this._planIndex = this._plan.findIndex(item => item.status !== "completed");
       if (this._planIndex < 0) this._planIndex = this._plan.length;
     } else {
       // Failed: keep the step as the current step so a matching retry can
       // reactivate it (failed -> active).
       this._currentStepId = step.id;
+      this._planStatus = "active";
       this._planIndex = index;
     }
+    this._planRevision += 1;
     if (this._activeScope?.taskEpoch === scope.taskEpoch) {
       this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
     }
     yield this._scopedToolEvent({
       type: "plan-update",
-      planId: tracker.planId,
-      stepId: step.id,
-      index,
-      status: step.status,
-      currentStepId: this._currentStepId,
-      toolCallId: tracker.toolCallId,
-      evidence: settled.evidence,
-    }, scope);
-    if (nextActive) {
-      yield this._scopedToolEvent({
-        type: "plan-update",
-        planId: tracker.planId,
-        stepId: nextActive.id,
-        index: this._plan.indexOf(nextActive),
-        status: "active",
-        currentStepId: nextActive.id,
+      ...this._planSnapshot(tracker.planId, {
+        stepId: step.id,
+        index,
+        status: step.status,
+        evidence: settled.evidence,
         toolCallId: tracker.toolCallId,
-      }, scope);
-    }
+      }),
+    }, scope);
   }
 }

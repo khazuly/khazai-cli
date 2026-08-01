@@ -45,7 +45,7 @@ import {
 } from "../lib/init-task.js";
 import { ThemeProvider } from "./theme.js";
 import { attachFileReferences, listWorkspaceFiles } from "./file-reference.js";
-import { formatQueuedMessages, UserMessageQueue } from "./user-message-queue.js";
+import { validatePlanState } from "../app/agent/plan.js";
 import { InitPrompt } from "./components/init-prompt.js";
 import { formatSessionList, SessionManager } from "./components/session-manager.js";
 import { formatUsageReport } from "./context-usage.js";
@@ -102,6 +102,54 @@ function nextId() { return `m${++msgId}`; }
 function readFileName(args) {
   const parts = String(args?.path || "").split("/").filter(Boolean);
   return parts.at(-1) || String(args?.path || "");
+}
+
+const EMPTY_PLAN_STATE = {
+  planId: null,
+  revision: 0,
+  runId: null,
+  turnId: null,
+  taskEpoch: null,
+  currentStepId: null,
+  planStatus: "active",
+  steps: [],
+};
+
+export function applyPlanEventState(state, event) {
+  const current = state || EMPTY_PLAN_STATE;
+  const steps = (Array.isArray(event?.items) ? event.items : []).map(item => ({ ...item, status: item.status || "pending" }));
+  const sameRun = current.runId === event?.runId && current.turnId === event?.turnId && current.taskEpoch === event?.taskEpoch;
+  if (sameRun && typeof event?.revision === "number" && event.revision < current.revision) return current;
+  return {
+    planId: event?.planId || current.planId,
+    revision: typeof event?.revision === "number" ? event.revision : current.revision,
+    runId: event?.runId || current.runId,
+    turnId: event?.turnId || current.turnId,
+    taskEpoch: event?.taskEpoch ?? current.taskEpoch,
+    currentStepId: typeof event?.currentStepId === "string" ? event.currentStepId : null,
+    planStatus: event?.planStatus || (steps.length > 0 && steps.every(item => item.status === "completed") ? "completed" : "active"),
+    steps,
+  };
+}
+
+export function applyPlanUpdateState(state, event) {
+  const current = state || EMPTY_PLAN_STATE;
+  if (event?.planId && current.planId && event.planId !== current.planId) return current;
+  const sameRun = current.runId === event?.runId && current.turnId === event?.turnId && current.taskEpoch === event?.taskEpoch;
+  if (sameRun && typeof event?.revision === "number" && event.revision < current.revision) return current;
+  const steps = (Array.isArray(event?.items) ? event.items : current.steps).map(item => ({ ...item, status: item.status || "pending" }));
+  const next = {
+    planId: event?.planId || current.planId,
+    revision: typeof event?.revision === "number" ? event.revision : current.revision,
+    runId: event?.runId || current.runId,
+    turnId: event?.turnId || current.turnId,
+    taskEpoch: event?.taskEpoch ?? current.taskEpoch,
+    currentStepId: event?.currentStepId ?? null,
+    planStatus: event?.planStatus || (steps.length > 0 && steps.every(item => item.status === "completed") ? "completed" : "active"),
+    steps,
+  };
+  if (!validatePlanState(next).ok) return current;
+  return next;
 }
 
 function thinkActivityFromPlan(plan, phase, currentStepId = null) {
@@ -290,14 +338,37 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const [completedMessages, setCompletedMessages] = useState([]);
   const [activeMessage, setActiveMessage] = useState(null);
   const [plan, setPlanState] = useState([]);
-  const planRef = useRef([]);
+  const planRef = useRef({ planId: null, revision: 0, runId: null, turnId: null, taskEpoch: null, currentStepId: null, planStatus: "active", steps: [] });
   const planStepRef = useRef(null);
+  const [planCollapsed, setPlanCollapsed] = useState(false);
   const setPlan = useCallback(next => {
     setPlanState(prev => {
+      const current = planRef.current;
       const value = typeof next === "function" ? next(prev) : next;
-      if (!Array.isArray(value) || value.length === 0) planStepRef.current = null;
-      planRef.current = value;
-      return value;
+      const state = Array.isArray(value)
+        ? {
+            planId: current.planId,
+            revision: current.revision,
+            runId: current.runId,
+            turnId: current.turnId,
+            taskEpoch: current.taskEpoch,
+            currentStepId: current.currentStepId,
+            planStatus: current.planStatus,
+            steps: value,
+          }
+        : {
+            planId: value.planId ?? current.planId ?? null,
+            revision: typeof value.revision === "number" ? value.revision : current.revision,
+            runId: value.runId ?? current.runId ?? null,
+            turnId: value.turnId ?? current.turnId ?? null,
+            taskEpoch: value.taskEpoch ?? current.taskEpoch ?? null,
+            currentStepId: value.currentStepId ?? current.currentStepId ?? null,
+            planStatus: value.planStatus || current.planStatus || "active",
+            steps: Array.isArray(value.steps) ? value.steps : current.steps,
+          };
+      planRef.current = state;
+      if (state.steps.length === 0) planStepRef.current = null;
+      return state.steps;
     });
   }, []);
   const [running, setRunning] = useState(false);
@@ -483,7 +554,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       ...session,
       messages: completedRef.current,
       agentState,
-      savedPlan: planRef.current.map(item => ({ ...item })),
+      savedPlan: planRef.current.steps.map(item => ({ ...item })),
     });
   }, []);
 
@@ -1149,6 +1220,18 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       }
       return;
     }
+    if (cmd === "/plan") {
+      const planArg = String(arg || "").trim().toLowerCase();
+      const hasPlan = planRef.current.steps.length > 0;
+      if (planArg === "show") {
+        if (hasPlan) setPlanCollapsed(false);
+      } else if (planArg === "hide") {
+        if (hasPlan) setPlanCollapsed(true);
+      } else if (hasPlan) {
+        setPlanCollapsed(collapsed => !collapsed);
+      }
+      return;
+    }
     if (cmd === "/agent") {
       const profiles = [...loadAgentProfiles(workspace.path).values()].filter(profile => profile.role === "primary");
       const values = profiles.map(profile => ({
@@ -1424,7 +1507,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       analysisRef.current = startAnalysisActivity(
         analysisRef.current,
         analysisScope,
-        thinkActivityFromPlan(planRef.current, undefined, planStepRef.current),
+        thinkActivityFromPlan(planRef.current.steps, undefined, planRef.current.currentStepId),
       );
       analysisRef.current = updatePublicAnalysisActivity(
         analysisRef.current,
@@ -1649,7 +1732,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         if (planningRun) setModeStatus({ mode: "plan", status: "investigating" });
         resetStreaming();
         finishReadBatch();
-        showAnalysis(thinkActivityFromPlan(planRef.current, ev.phase, planStepRef.current));
+        showAnalysis(thinkActivityFromPlan(planRef.current.steps, ev.phase, planRef.current.currentStepId));
         continue;
       }
 
@@ -1667,26 +1750,29 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finishReadBatch();
         pauseAnalysis();
         clearActive();
-        latestPlan = ev.items.map(item => ({ ...item, status: item.status || "pending" }));
-        if (typeof ev.currentStepId === "string") planStepRef.current = ev.currentStepId;
-        setPlan(latestPlan);
+        const current = planRef.current;
+        if (ev.planId && current.planId && ev.planId !== current.planId) setPlanCollapsed(false);
+        const next = applyPlanEventState(current, ev);
+        if (next === current) continue;
+        latestPlan = next.steps;
+        setPlan(next);
         continue;
       }
 
       if (ev.type === "plan-update") {
-        setPlan(prev => {
-          if (!Array.isArray(prev) || !ev.stepId) return prev;
-          const matches = item => item.stepId === ev.stepId || item.id === ev.stepId;
-          if (ev.planId && !prev.some(item => item.planId === ev.planId)) return prev;
-          const matched = prev.find(matches);
-          if (!matched || matched.status === ev.status) return prev;
-          const next = prev.map(item => matches(item) ? { ...item, status: ev.status } : item);
-          if (typeof ev.currentStepId === "string") planStepRef.current = ev.currentStepId;
-          if (activeRef.current?.type === "think") {
-            updateAnalysis(thinkActivityFromPlan(next, undefined, planStepRef.current));
+        const next = applyPlanUpdateState(planRef.current, ev);
+        if (next === planRef.current) continue;
+        latestPlan = next.steps;
+        setPlan(next);
+        const activeStep = next.steps.find(item => item.status === "active");
+        if (activeRef.current?.type === "think") {
+          if (activeStep) {
+            updateAnalysis(thinkActivityFromPlan(next.steps, undefined, next.currentStepId));
+          } else {
+            analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
+            clearActive();
           }
-          return next;
-        });
+        }
         continue;
       }
 
@@ -2023,7 +2109,10 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         finishReadBatch();
         pauseAnalysis();
         finalResponse = completeStreaming() || finalResponse;
-        if (!planningRun) setPlan([]);
+        if (activeRef.current?.type === "think") {
+          analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
+          clearActive();
+        }
         finishedNormally = true;
         updateUsage();
         continue;
@@ -2527,6 +2616,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     ...completedMessages,
   ];
   const visiblePlan = plan;
+  const togglePlanCollapsed = useCallback(() => {
+    setPlanCollapsed(collapsed => !collapsed);
+  }, []);
   const displayedActiveMessage = activeMessage;
 
   const handleCloseSettings = useCallback(() => {
@@ -2728,7 +2820,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       completedMessages.length === 0 && !activeMessage && !pendingQuestion && plan.length === 0
         ? h(EmptyState)
         : null,
-      h(PlanList, { plan: visiblePlan }),
+      h(PlanList, { plan: visiblePlan, collapsed: planCollapsed }),
       sessionManagerSessions !== null
         ? h(SessionManager, {
             key: "session-manager",
@@ -2803,6 +2895,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
               fileItems: workspaceFiles,
               onPreviewChange: handleThemePreview,
               onExitSub: handleThemeExitSub,
+              onTogglePlan: togglePlanCollapsed,
             },
           }),
     ),

@@ -248,6 +248,27 @@ test("plan previews use structured status counts", () => {
   assert.deepEqual(view.resultPreview.lines, ["3 completed, 1 active, 2 pending"]);
 });
 
+test("plan previews derive counts from the single Plan store snapshot", () => {
+  const view = presentTool({
+    tool: "todowrite",
+    done: true,
+    content: "Updated 7 todos.",
+    metadata: {
+      planItems: [
+        { status: "completed" },
+        { status: "completed" },
+        { status: "completed" },
+        { status: "completed" },
+        { status: "completed" },
+        { status: "completed" },
+        { status: "completed" },
+      ],
+    },
+  });
+  assert.equal(view.label, "Plan updated");
+  assert.deepEqual(view.resultPreview.lines, ["7 completed, 0 active, 0 pending"]);
+});
+
 test("result previews remove terminal controls, redact secrets, and stay bounded", () => {
   const view = presentTool({
     tool: "bash",

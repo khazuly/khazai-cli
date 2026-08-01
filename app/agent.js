@@ -55,6 +55,8 @@ export class Agent {
     this._planId = null;
     this._currentStepId = null;
     this._planIndex = 0;
+    this._planRevision = 0;
+    this._planStatus = "active";
     this._lastToolIsRead = false;
     this._depsInstalled = false;
     this._readFiles = new Map();

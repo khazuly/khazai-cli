@@ -280,12 +280,14 @@ function searchResultSummary(tool, content) {
 }
 
 function planSummary(metadata, content) {
-  const todos = Array.isArray(metadata?.todos) ? metadata.todos : [];
-  if (!todos.length) return /^Cleared todos\./i.test(content) ? "No plan items remain" : null;
-  const count = status => todos.filter(todo => todo?.status === status).length;
+  const items = Array.isArray(metadata?.planItems)
+    ? metadata.planItems
+    : Array.isArray(metadata?.todos) ? metadata.todos : [];
+  if (!items.length) return /^Cleared todos\./i.test(content) ? "No plan items remain" : null;
+  const count = status => items.filter(item => item?.status === status).length;
   return [
     `${count("completed")} completed`,
-    `${count("in_progress")} active`,
+    `${count("active") + count("in_progress")} active`,
     `${count("pending")} pending`,
   ].join(", ");
 }

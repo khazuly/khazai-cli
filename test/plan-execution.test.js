@@ -11,7 +11,10 @@ import {
   definePlanItems,
   selectNextActiveStep,
   settlePlanStep,
+  planCounts,
+  validatePlanState,
 } from "../app/agent/plan.js";
+import { applyPlanUpdateState } from "../ui/session.js";
 
 const scope = {
   runId: "run-current",
@@ -355,15 +358,22 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   assert.equal(afterFirst[6].status, "pending", "Step 7 must stay pending");
 
   // Every plan-update carries the guards needed to reject stale callbacks.
+  const revisions = new Set();
   for (const update of updates) {
     assert.equal(typeof update.planId, "string");
     assert.equal(typeof update.stepId, "string");
     assert.equal(typeof update.toolCallId, "string");
-    assert.equal(typeof update.currentStepId, "string");
+    assert.ok(typeof update.currentStepId === "string" || update.currentStepId === null);
     assert.equal(typeof update.runId, "string");
     assert.equal(typeof update.turnId, "string");
     assert.equal(typeof update.taskEpoch, "number");
+    assert.equal(typeof update.revision, "number");
+    assert.ok(Array.isArray(update.items));
+    assert.equal(typeof update.counts?.completed, "number");
+    revisions.add(update.revision);
   }
+  assert.ok(updates.length > 1, "plan-update events must carry monotonic revisions");
+  assert.ok([...revisions].every((revision, index, all) => index === 0 || revision >= all[index - 1]));
 
   // Only real implementation and verification evidence reach 7/7.
   const finalPlan = events.filter(event => event.type === "plan").at(-1).items;
@@ -373,4 +383,114 @@ test("approved /init plan renders Step 2 active while Step 7 stays pending, then
   ]);
   assert.equal(finalStates.every(item => item.evidenceIds.length === 1), true);
   assert.equal(finalStates.filter(item => item.status === "completed").length, 7);
+
+  // The final atomic update reports 7 completed and clears the current step.
+  const finalUpdate = updates.at(-1);
+  assert.equal(finalUpdate.counts.completed, 7);
+  assert.equal(finalUpdate.counts.active, 0);
+  assert.equal(finalUpdate.counts.pending, 0);
+  assert.equal(finalUpdate.currentStepId, null);
+  assert.equal(finalUpdate.planStatus, "completed");
+  assert.deepEqual(finalUpdate.items.map(item => item.status), [
+    "completed", "completed", "completed", "completed", "completed", "completed", "completed",
+  ]);
+
+  // A stale Step 2 callback arriving after completion cannot regress the plan.
+  const staleStep2 = updates.find(update => update.status === "active" && update.items[0]?.status === "active");
+  const replayState = applyPlanUpdateState({
+    planId: finalUpdate.planId,
+    revision: finalUpdate.revision,
+    runId: finalUpdate.runId,
+    turnId: finalUpdate.turnId,
+    taskEpoch: finalUpdate.taskEpoch,
+    currentStepId: finalUpdate.currentStepId,
+    planStatus: finalUpdate.planStatus,
+    steps: finalUpdate.items,
+  }, { ...staleStep2, runId: finalUpdate.runId, turnId: finalUpdate.turnId, taskEpoch: finalUpdate.taskEpoch });
+  assert.equal(replayState.currentStepId, null);
+  assert.equal(replayState.planStatus, "completed");
+  assert.equal(replayState.steps.filter(item => item.status === "completed").length, 7);
+  assert.equal(replayState.steps.some(item => item.status === "active"), false);
+});
+
+test("plan invariants reject stale currentStepId and invalid states", () => {
+  const completed = {
+    planId: "p1",
+    revision: 9,
+    currentStepId: null,
+    planStatus: "completed",
+    steps: [1, 2, 3].map(n => ({ id: `s${n}`, order: n, title: `Step ${n}`, status: "completed" })),
+  };
+  assert.equal(validatePlanState(completed).ok, true);
+  assert.deepEqual(planCounts(completed.steps), { completed: 3, active: 0, pending: 0, failed: 0, total: 3 });
+
+  const stale = validatePlanState({ ...completed, currentStepId: "s2" });
+  assert.equal(stale.ok, false);
+  assert.ok(stale.violations.some(v => v.includes("currentStepId")));
+
+  const activeWithMarker = validatePlanState({
+    ...completed,
+    steps: completed.steps.map((step, index) => index === 0 ? { ...step, status: "active" } : step),
+  });
+  assert.equal(activeWithMarker.ok, false);
+
+  const mismatched = validatePlanState({
+    planId: "p1",
+    revision: 1,
+    currentStepId: "s1",
+    steps: [{ id: "s2", status: "active" }],
+  });
+  assert.equal(mismatched.ok, false);
+
+  const multipleActive = validatePlanState({
+    planId: "p1",
+    revision: 1,
+    currentStepId: "s1",
+    steps: [{ id: "s1", status: "active" }, { id: "s2", status: "active" }],
+  });
+  assert.equal(multipleActive.ok, false);
+
+  const singleActive = validatePlanState({
+    planId: "p1",
+    revision: 1,
+    currentStepId: "s1",
+    steps: [{ id: "s1", status: "active" }, { id: "s2", status: "pending" }],
+  });
+  assert.equal(singleActive.ok, true);
+});
+
+test("plan-update application is atomic and revision-guarded", () => {
+  const base = {
+    planId: "p1",
+    revision: 5,
+    runId: "run-1",
+    turnId: "turn-1",
+    taskEpoch: 1,
+    currentStepId: null,
+    planStatus: "completed",
+    steps: [1, 2, 3].map(n => ({ id: `s${n}`, status: "completed" })),
+  };
+  const stale = { ...base, revision: 2, currentStepId: "s2", planStatus: "active", items: base.steps.map(step => ({ ...step, status: "active" })) };
+  assert.equal(applyPlanUpdateState(base, stale), base, "older revision must be rejected");
+
+  const wrongPlan = { ...base, planId: "other", revision: 6, currentStepId: "s1", items: base.steps };
+  assert.equal(applyPlanUpdateState(base, wrongPlan), base, "mismatched planId must be rejected");
+
+  const invalid = { ...base, revision: 6, currentStepId: "s1", items: base.steps.map(step => ({ ...step, status: "completed" })) };
+  assert.equal(applyPlanUpdateState(base, invalid), base, "invalid state must be rejected");
+
+  const next = applyPlanUpdateState(base, {
+    ...base,
+    revision: 6,
+    currentStepId: "s1",
+    planStatus: "active",
+    items: [{ id: "s1", status: "active" }, { id: "s2", status: "completed" }, { id: "s3", status: "pending" }],
+  });
+  assert.equal(next.revision, 6);
+  assert.equal(next.currentStepId, "s1");
+  assert.deepEqual(planCounts(next.steps), { completed: 1, active: 1, pending: 1, failed: 0, total: 3 });
+
+  const crossRun = applyPlanUpdateState(base, { ...base, runId: "run-2", turnId: "turn-2", taskEpoch: 2, revision: 1, currentStepId: "s1", planStatus: "active", items: [{ id: "s1", status: "active" }, { id: "s2", status: "completed" }, { id: "s3", status: "completed" }] });
+  assert.equal(crossRun.revision, 1, "a fresh run resets the revision baseline");
+  assert.equal(crossRun.currentStepId, "s1");
 });
