@@ -72,12 +72,23 @@ test("details latest skips the selector and limits history choices to twenty", a
   await handleSessionCommand("/details", "", selectorState.context);
 });
 
-test("allow-all command persists session mode and restores normal prompts", async () => {
+test("allow-all command persists workspace state and restores normal prompts", async () => {
   const messages = [];
   const permissionValues = [];
   const session = { id: "session-1", permissionMode: "prompt" };
+  let confirmation = null;
   const context = {
-    agentRef: { current: { setAutoApprove: value => permissionValues.push(value) } },
+    agentRef: {
+      current: {
+        _permissionService: {
+          setAllowAll: value => {
+            permissionValues.push(value);
+            return Promise.resolve();
+          },
+          permissionState: () => ({ allowAll: permissionValues.at(-1) === true, rules: [] }),
+        },
+      },
+    },
     appendArchived: message => messages.push(message),
     autoApproveRef: { current: false },
     completedRef: { current: [] },
@@ -86,20 +97,27 @@ test("allow-all command persists session mode and restores normal prompts", asyn
     sessionStoreRef: { current: { save: value => ({ ...value }) } },
     setInspectedTool() {},
     setThemeName() {},
+    requestValue: async (question, options, settings) => {
+      confirmation = { question, options, settings };
+      return settings.values[1].value;
+    },
     workspacePath: "/tmp/project",
   };
 
   await handleSessionCommand("/allow-all", "", context);
-  assert.equal(context.autoApproveRef.current, true);
-  assert.equal(context.currentSessionRef.current.permissionMode, "allow-all");
-  assert.equal(messages.at(-1).content, "All tool permissions are allowed for this session.");
+  assert.equal(confirmation.question, "Enable allow-all for this workspace?");
+  assert.equal(confirmation.options[0], "Cancel");
+  assert.equal(confirmation.options[1], "Enable allow-all");
+  assert.deepEqual(permissionValues, [true]);
+  assert.equal(messages.at(-1).content, "Allow-all enabled for /tmp/project.");
 
   await handleSessionCommand("/allow-all", "status", context);
-  assert.equal(messages.at(-1).content, "All tool permissions are allowed for this session.");
+  assert.equal(messages.at(-1).content, "Allow-all is enabled for /tmp/project.");
 
   await handleSessionCommand("/allow-all", "off", context);
-  assert.equal(context.autoApproveRef.current, false);
-  assert.equal(context.currentSessionRef.current.permissionMode, "prompt");
   assert.deepEqual(permissionValues, [true, false]);
-  assert.equal(messages.at(-1).content, "Normal permission prompts are restored for this session.");
+  assert.equal(messages.at(-1).content, "Allow-all disabled for /tmp/project.");
+
+  await handleSessionCommand("/allow-all", "status", context);
+  assert.equal(messages.at(-1).content, "Allow-all is disabled for /tmp/project.");
 });

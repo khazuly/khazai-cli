@@ -24,7 +24,7 @@ export function OptionSelector({
   const maximumOffset = Math.max(0, options.length - COMMAND_VIEWPORT_SIZE);
   const offset = Math.min(maximumOffset, Math.max(0, selectedIndex - COMMAND_VIEWPORT_SIZE + 1));
   const visibleOptions = options.slice(offset, offset + COMMAND_VIEWPORT_SIZE);
-  const managerStyle = kind === "mcp";
+  const managerStyle = kind === "mcp" || kind === "permissions";
   const normalized = option => typeof option === "string"
     ? { id: option, label: option, description: "", recommended: false }
     : option;

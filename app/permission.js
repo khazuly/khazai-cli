@@ -1,6 +1,15 @@
-import { readFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { loadConfig } from "../config/index.js";
 
 const DEFAULT_PERMISSIONS = {
@@ -25,6 +34,41 @@ export class PermissionRejectedError extends Error {
 
 function readJSON(path) {
   try { return JSON.parse(readFileSync(path, "utf-8")); } catch { return null; }
+}
+
+const PERMISSION_STORE_VERSION = 1;
+const PERMISSION_STORE_DIR = join(homedir(), ".local", "share", "khazai-ai", "permissions");
+
+function workspaceStoreKey(workspace) {
+  return createHash("sha256").update(resolve(workspace)).digest("hex").slice(0, 24);
+}
+
+function canonicalPath(value, workspace) {
+  const resolved = resolve(workspace, expandHome(value));
+  try {
+    return realpathSync(resolved);
+  } catch {}
+  try {
+    return join(realpathSync(dirname(resolved)), basename(resolved));
+  } catch {
+    return resolved;
+  }
+}
+
+function isDirectoryPath(value) {
+  try {
+    return statSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function atomicWriteStore(path, value) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
 }
 
 function expandHome(value) {
@@ -294,6 +338,143 @@ export class PermissionService {
     this.approvals = [];
     this.globalConfigPath = join(homedir(), ".config", "khazai-ai", "permissions.json");
     this.projectConfigPath = join(this.workspace, ".khazai", "permissions.json");
+    this.storePath = options.storePath || join(PERMISSION_STORE_DIR, `${workspaceStoreKey(this.workspace)}.json`);
+    this._store = this._loadStore();
+    this._writeQueue = Promise.resolve();
+  }
+
+  _loadStore() {
+    const empty = {
+      version: PERMISSION_STORE_VERSION,
+      workspaceRoot: this.workspace,
+      allowAll: false,
+      revision: 0,
+      rules: [],
+    };
+    let raw;
+    try {
+      raw = readFileSync(this.storePath, "utf-8");
+    } catch {
+      return empty;
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || Array.isArray(data)) return empty;
+      if (data.workspaceRoot && resolve(data.workspaceRoot) !== this.workspace) return empty;
+      const rules = (Array.isArray(data.rules) ? data.rules : [])
+        .filter(rule => rule && typeof rule === "object"
+          && typeof rule.action === "string"
+          && typeof rule.path === "string"
+          && (rule.scope === "exact" || rule.scope === "directory"))
+        .map(rule => ({
+          id: String(rule.id || randomUUID().slice(0, 8)),
+          action: rule.action,
+          path: String(rule.path),
+          scope: rule.scope,
+          createdAt: String(rule.createdAt || new Date().toISOString()),
+        }));
+      return {
+        version: PERMISSION_STORE_VERSION,
+        workspaceRoot: this.workspace,
+        allowAll: data.allowAll === true,
+        revision: Number(data.revision) || 0,
+        rules,
+      };
+    } catch {
+      return empty;
+    }
+  }
+
+  _writeStore(state) {
+    atomicWriteStore(this.storePath, state);
+  }
+
+  _mutate(transform) {
+    const task = this._writeQueue.then(() => {
+      const latest = this._loadStore();
+      const next = transform(latest);
+      this._writeStore(next);
+      this._store = next;
+      return next;
+    });
+    this._writeQueue = task.catch(() => {});
+    return task;
+  }
+
+  allowAlways(action, value) {
+    const path = canonicalPath(value, this.workspace);
+    const scope = isDirectoryPath(path) ? "directory" : "exact";
+    return this._mutate(state => {
+      if (state.rules.some(rule => rule.action === action && rule.path === path)) return state;
+      const rule = {
+        id: randomUUID().slice(0, 8),
+        action,
+        path,
+        scope,
+        createdAt: new Date().toISOString(),
+      };
+      return { ...state, revision: state.revision + 1, rules: [...state.rules, rule] };
+    });
+  }
+
+  setAllowAll(value) {
+    return this._mutate(state => ({ ...state, revision: state.revision + 1, allowAll: Boolean(value) }));
+  }
+
+  revokeRule(id) {
+    return this._mutate(state => {
+      const rules = state.rules.filter(rule => rule.id !== id);
+      if (rules.length === state.rules.length) return state;
+      return { ...state, revision: state.revision + 1, rules };
+    });
+  }
+
+  resetPermissions() {
+    return this._mutate(state => ({
+      ...state,
+      revision: state.revision + 1,
+      allowAll: false,
+      rules: [],
+    }));
+  }
+
+  permissionState() {
+    return {
+      allowAll: this._store.allowAll,
+      rules: this._store.rules.map(rule => ({ ...rule })),
+    };
+  }
+
+  _matchRule(action, value) {
+    const canonical = canonicalPath(value, this.workspace);
+    for (const rule of this._store.rules) {
+      if (rule.action !== action) continue;
+      if (rule.scope === "directory") {
+        if (canonical === rule.path || canonical.startsWith(`${rule.path}${sep}`)) return rule;
+      } else if (canonical === rule.path) {
+        return rule;
+      }
+    }
+    return null;
+  }
+
+  _persistentAllowsPath(action, toolName, args) {
+    let targets;
+    if (toolName === "apply_patch") {
+      targets = [...String(args.patchText || "").matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+        .map(match => match[1]);
+      if (!targets.length) return false;
+    } else if (args.path) {
+      targets = [args.path];
+    } else {
+      return false;
+    }
+    return targets.every(target => Boolean(this._matchRule(action, target)));
+  }
+
+  _allowAllCovers(toolName, args) {
+    if (toolName === "webfetch" || toolName === "websearch") return false;
+    return externalPaths(toolName, args, this.workspace).length === 0;
   }
 
   rules() {
@@ -334,7 +515,18 @@ export class PermissionService {
       }
     }
     selected ||= { permission, pattern: "*", action: "allow", value: values[0] || "*" };
-    const decision = this.auto && selected.action === "ask" ? "allow" : selected.action;
+    let decision = selected.action;
+    let source = "config";
+    if (decision === "ask" && this._store.allowAll && this._allowAllCovers(toolName, args)) {
+      decision = "allow";
+      source = "allow-all";
+    } else if (decision === "ask" && this._persistentAllowsPath(permission, toolName, args)) {
+      decision = "allow";
+      source = "persisted";
+    } else if (decision === "ask" && this.auto) {
+      decision = "allow";
+      source = "auto";
+    }
     const patterns = values.map(value => {
       if (toolName !== "bash") return value || "*";
       const prefix = value.trim().split(/\s+/).slice(0, 2).join(" ");
@@ -347,7 +539,7 @@ export class PermissionService {
       patterns,
       always: patterns,
       value: selected.value,
-      source: this.auto && selected.action === "ask" ? "auto" : "config",
+      source,
       reason: decision === "ask"
         ? `Approval required for ${permission}: ${selected.value}`
         : "",
@@ -373,23 +565,28 @@ export class PermissionService {
       };
     }
     let selected = null;
+    let persisted = false;
     for (const path of paths) {
-      const match = resolveAction(this.rules(), "external_directory", path)
-        || { permission: "external_directory", pattern: "*", action: "ask" };
+      const rule = this._matchRule("external_directory", path);
+      if (rule) persisted = true;
+      const match = rule
+        ? { permission: "external_directory", pattern: path, action: "allow" }
+        : resolveAction(this.rules(), "external_directory", path)
+          || { permission: "external_directory", pattern: "*", action: "ask" };
       if (!selected || match.action === "deny" || (match.action === "ask" && selected.action === "allow")) {
         selected = { ...match, value: path };
       }
     }
-    const decision = this.auto && selected.action === "ask" ? "allow" : selected.action;
+    const autoAllowed = this.auto && selected.action === "ask";
     return {
-      decision,
+      decision: autoAllowed ? "allow" : selected.action,
       permission: "external_directory",
       pattern: selected.pattern,
       patterns: paths,
       always: paths.map(path => path.endsWith(sep) ? `${path}**` : path),
       value: selected.value,
-      source: this.auto && selected.action === "ask" ? "auto" : "config",
-      reason: decision === "ask"
+      source: persisted ? "persisted" : (autoAllowed ? "auto" : "config"),
+      reason: selected.action === "ask" && !autoAllowed
         ? `Approval required to access a path outside the workspace: ${selected.value}`
         : "",
     };

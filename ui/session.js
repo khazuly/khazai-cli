@@ -34,6 +34,7 @@ import { SessionFooter } from "./components/session-footer.js";
 import { EmptyState } from "./components/empty-state.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
+import { UserMessageQueue } from "./user-message-queue.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
 import { redactSecrets } from "../lib/secrets.js";
 import { writeAtomicFile } from "../lib/init-generator.js";
@@ -79,11 +80,11 @@ import {
   commitResponseBuffer,
   createResponseBuffer,
   discardResponseBuffer,
-  permissionModeCommand,
   prepareRunInterruption,
   resetResponseBuffer,
   terminalRunResult,
 } from "./session-runtime.js";
+import { handlePermissionCommand } from "./session-commands.js";
 import { stealthModelDisplayName } from "../config/khazai-free-models.js";
 export { streamViewportText } from "./stream-viewport.js";
 
@@ -403,6 +404,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
   const agentSessionRef = useRef(null);
   const mcpToolsRef = useRef(initialMcpTools);
   const autoApproveRef = useRef(false);
+  const pendingPermissionCallIdRef = useRef(null);
   const structuredCallsRef = useRef(new Set());
   const analysisRef = useRef(null);
   const cancelledRunIdRef = useRef(null);
@@ -485,14 +487,12 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     questionResolverRef.current = null;
     currentSessionRef.current = session;
     agentSessionRef.current = session.agentState || null;
-    autoApproveRef.current = session.permissionMode === "allow-all";
     agentRef.current = new Agent(buildRegistry(workspace.path, mcpToolsRef.current), {
       workspace: workspace.path,
       sessionId: session.id,
       model: session.model,
       agent: session.agent,
       sessionState: session.agentState,
-      autoApprove: session.permissionMode === "allow-all",
       partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
     });
     completedRef.current = session.messages || [];
@@ -783,24 +783,20 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
       const requested = cmd === "/auto" && !String(arg || "").trim()
         ? (autoApproveRef.current ? "off" : "on")
         : arg;
-      const result = permissionModeCommand(
-        requested,
-        autoApproveRef.current ? "allow-all" : "prompt",
-      );
-      if (result.error) {
-        appendArchived({ id: nextId(), type: "error", content: result.error });
-        return;
-      }
-      autoApproveRef.current = result.mode === "allow-all";
-      if (String(requested || "").trim().toLowerCase() !== "status") {
-        agentRef.current?.setAutoApprove(autoApproveRef.current);
-        currentSessionRef.current.permissionMode = result.mode;
-        currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
-      }
-      appendArchived({
-        id: nextId(),
-        type: "answer",
-        content: result.message,
+      await handlePermissionCommand(cmd === "/auto" ? "/allow-all" : cmd, requested, {
+        appendArchived,
+        requestValue,
+        workspacePath: workspace.path,
+        permissionService: () => agentRef.current?._permissionService || new PermissionService(workspace.path),
+      });
+      return;
+    }
+    if (cmd === "/permissions") {
+      await handlePermissionCommand(cmd, arg, {
+        appendArchived,
+        requestValue,
+        workspacePath: workspace.path,
+        permissionService: () => agentRef.current?._permissionService || new PermissionService(workspace.path),
       });
       return;
     }
@@ -1673,6 +1669,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         kind: "permission",
         resolve,
         scope: { runId: request.runId, turnId: request.turnId, taskEpoch: request.taskEpoch },
+        callId: request.callId,
       };
     }));
     try {
@@ -1802,6 +1799,8 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
         ) {
           activate({ ...currentTool, status: "awaiting-approval" });
         }
+        if (pendingPermissionCallIdRef.current === ev.callId) continue;
+        pendingPermissionCallIdRef.current = ev.callId;
         setPendingQuestion({
           id: `permission-${ev.callId}`,
           question: ev.action,
@@ -2495,6 +2494,14 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     ) {
       questionResolverRef.current = null;
       pending.resolve("");
+      if (pending.kind === "permission") pendingPermissionCallIdRef.current = null;
+      return;
+    }
+    if (pending.kind === "permission" && pending.callId !== pendingPermissionCallIdRef.current) {
+      questionResolverRef.current = null;
+      setPendingQuestion(null);
+      pendingPermissionCallIdRef.current = null;
+      pending.resolve("reject");
       return;
     }
     if (selected.custom && ["plan-decision", "question"].includes(pending.kind)) {
@@ -2509,6 +2516,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const secret = Boolean(pendingQuestion?.secret);
     questionResolverRef.current = null;
     setPendingQuestion(null);
+    if (pending.kind === "permission") pendingPermissionCallIdRef.current = null;
     if (pending.kind === "plan-decision") {
       const currentPlan = planWorkflowRef.current;
       if (currentPlan && planningQuestionRef.current) {
@@ -2532,6 +2540,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     if (!pending) return;
     questionResolverRef.current = null;
     setPendingQuestion(null);
+    if (pending.kind === "permission") pendingPermissionCallIdRef.current = null;
     if (pending.kind === "plan-approval" || pending.kind === "plan-revalidation") {
       const plan = planWorkflowRef.current;
       planActionRef.current?.(pending.kind, { id: "cancel", label: "Cancel" }, plan && {
@@ -2564,6 +2573,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     const pending = questionResolverRef.current;
     questionResolverRef.current = null;
     pending?.resolve("");
+    if (pending?.kind === "permission") pendingPermissionCallIdRef.current = null;
     responseBufferRef.current = interruption.responseBuffer;
     analysisRef.current = null;
     setPendingQuestion(null);

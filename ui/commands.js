@@ -100,7 +100,15 @@ export const COMMANDS = [
 
 
   { name: "/cancel", description: "Cancel the active run", category: "execution", aliases: [], visible: true, available: "submitting", group: "session" },
-  { name: "/allow-all", description: "Toggle automatic permission approval", category: "execution", aliases: ["/auto"], visible: true, group: "settings" },
+  { name: "/allow-all", description: "Toggle automatic permission approval for this workspace", category: "execution", aliases: ["/auto"], visible: true, group: "settings", sub: [
+    { name: "status", description: "Show whether allow-all is enabled" },
+    { name: "off", description: "Disable allow-all while preserving individual rules" },
+  ] },
+  { name: "/permissions", description: "Manage workspace permissions", category: "execution", aliases: [], visible: true, group: "settings", sub: [
+    { name: "list", description: "Show active rules for the current workspace" },
+    { name: "revoke", description: "Revoke one permission rule by id" },
+    { name: "reset", description: "Remove all persisted permissions for the current workspace" },
+  ] },
   { name: "/details", description: "Toggle tool result details", category: "execution", aliases: ["/expand", "/collapse"], visible: true, available: "tools", group: "view", sub: [
     { name: "on", description: "Expand the latest tool result" },
     { name: "off", description: "Collapse tool details" },

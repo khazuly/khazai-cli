@@ -335,13 +335,20 @@ export class ToolExecutor {
         yield* this._reject(part, call, `Permission rejected: external_directory (${external.value})`);
         return;
       }
-      this._recordApproval(call, external, /always|session/i.test(String(answer)) ? "session" : "user");
-      if (/always|session/i.test(String(answer))) {
-        this.permissionService.allowForSession("external_directory", external.always);
+      if (/always/i.test(String(answer))) {
+        await this.permissionService.allowAlways("external_directory", request.target.value);
+        this._recordApproval(call, external, "persisted");
+      } else {
+        this._recordApproval(call, external, /session/i.test(String(answer)) ? "session" : "user");
+        if (/session/i.test(String(answer))) {
+          this.permissionService.allowForSession("external_directory", external.always);
+        }
       }
       call.args._allowExternal = true;
     } else if (external?.decision === "allow") {
-      if (external.source === "auto") this._recordApproval(call, external, "allow-all");
+      if (external.source === "auto" || external.source === "persisted") {
+        this._recordApproval(call, external, external.source === "auto" ? "allow-all" : "persisted");
+      }
       call.args._allowExternal = true;
     }
 
@@ -364,12 +371,21 @@ export class ToolExecutor {
         yield* this._reject(part, call, `Permission rejected: ${permission.permission} (${permission.value})`);
         return;
       }
-      this._recordApproval(call, permission, /always|session/i.test(String(answer)) ? "session" : "user");
-      if (/always|session/i.test(String(answer))) {
-        this.permissionService.allowForSession(call.name, permission.always);
+      if (/always/i.test(String(answer))) {
+        if (request.target.label === "Path") {
+          await this.permissionService.allowAlways(permission.permission, request.target.value);
+          this._recordApproval(call, permission, "persisted");
+        } else {
+          this._recordApproval(call, permission, "session");
+          this.permissionService.allowForSession(call.name, permission.always);
+        }
+      } else {
+        this._recordApproval(call, permission, "user");
       }
-    } else if (permission.source === "auto") {
+    } else if (permission.source === "auto" || permission.source === "allow-all") {
       this._recordApproval(call, permission, "allow-all");
+    } else if (permission.source === "persisted") {
+      this._recordApproval(call, permission, "persisted");
     }
 
     if (!this._isActive()) return;

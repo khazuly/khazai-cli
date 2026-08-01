@@ -229,6 +229,8 @@ export class Agent {
     };
   }
   setAutoApprove(value) { this._permissionService.setAuto(value); }
+  setAllowAll(value) { return this._permissionService.setAllowAll(value); }
+  permissionState() { return this._permissionService.permissionState(); }
   redactForDisplay(value) { return this._secretStore.redact(value); }
   redactSerializableForDisplay(value) { return this._secretStore.redactSerializable(value); }
   clearTurnSecrets(scope = {}) { return this._secretStore.clear(scope.runId, scope.turnId); }
