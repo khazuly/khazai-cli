@@ -205,15 +205,15 @@ if (cmd === "/model" || cmd === "/models") {
     }
     return;
   }
-  const { selectableModels } = await import("./model-command.js");
+  const { EXCEPTIONAL_STATUSES, selectableModels } = await import("./model-command.js");
   const list = await selectableModels();
   const zenList = await modelStatusList();
   const choices = list.map(alias => {
     const entry = zenList.find(model => model.alias === alias);
-    return {
-      label: entry ? `${alias.padEnd(11)}${entry.statusLabel}` : displayModel(alias),
-      value: alias,
-    };
+    const label = entry
+      ? EXCEPTIONAL_STATUSES.has(entry.status) ? `${alias} (${entry.statusLabel})` : alias
+      : displayModel(alias);
+    return { label, value: alias };
   });
   const selected = await requestValue("Select a model", choices.map(choice => choice.label), {
     kind: "mcp",

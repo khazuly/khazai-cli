@@ -423,8 +423,84 @@ test("llmproxy response normalization supports native, legacy, and strict XML ca
   assert.equal(normalizeLlmProxyText("Prose with <functions>documentation</functions> inside.").kind, "prose");
   assert.equal(
     normalizeLlmProxyText("<functions><function><name>bash</name><args>{bad}</args></function></functions>").text,
-    "[×] Invalid llmproxy tool call.",
+    "[×] Invalid KhazAI tool call.",
   );
+});
+
+test("llmproxy response normalization supports <tools> XML with reasoning tags and multiple tools", () => {
+  const xml = [
+    "<antThinking>inspect the repository first</antThinking>",
+    "<tools>",
+    '  <tool name="glob">',
+    "    <pattern>**/*.ts</pattern>",
+    "    <path>/root/khazai-cli</path>",
+    "  </tool>",
+    '  <tool name="grep">',
+    "    <pattern>Available</pattern>",
+    "    <path>/root/khazai-cli</path>",
+    "    <include>*.ts</include>",
+    "  </tool>",
+    "</tools>",
+  ].join("\n");
+  const result = normalizeLlmProxyText(xml, "request-tools");
+  assert.equal(result.kind, "tool");
+  assert.equal(result.tools.length, 2);
+  assert.deepEqual(result.tools.map(tool => tool.tool), ["glob", "grep"]);
+  assert.deepEqual(result.tools[0].args, { pattern: "**/*.ts", path: "/root/khazai-cli" });
+  assert.deepEqual(result.tools[1].args, { pattern: "Available", path: "/root/khazai-cli", include: "*.ts" });
+  assert.notEqual(result.tools[0].id, result.tools[1].id);
+  assert.doesNotMatch(result.text, /antThinking|inspect the repository/i);
+});
+
+test("llmproxy response normalization strips reasoning tags without exposing chain-of-thought", () => {
+  const result = normalizeLlmProxyText(
+    "<thinking>compare the outputs</thinking><functions><function><name>bash</name><args>{\"command\":\"ls -la\"}</args></function></functions>",
+    "request-reasoning",
+  );
+  assert.equal(result.kind, "tool");
+  assert.equal(result.tool.tool, "bash");
+  assert.doesNotMatch(result.text, /thinking|compare the outputs/i);
+  const message = normalizeLlmProxyMessage({
+    tool_calls: [{ id: "n-1", function: { name: "grep", arguments: "{\"pattern\":\"needle\"}" } }],
+    content: "<analysis>reasoning here</analysis>",
+  }, "request-reasoning-message");
+  assert.equal(message.content, null);
+  assert.equal(message.tool_calls.length, 1);
+  const prose = normalizeLlmProxyText("<analysis>hidden reasoning</analysis>Visible answer.");
+  assert.equal(prose.kind, "prose");
+  assert.equal(prose.text, "Visible answer.");
+});
+
+test("llmproxy response normalization preserves order for multiple native and JSON calls", () => {
+  const native = normalizeLlmProxyMessage({
+    tool_calls: [
+      { id: "a-1", function: { name: "glob", arguments: "{\"pattern\":\"*.ts\"}" } },
+      { id: "a-2", function: { name: "grep", arguments: "{\"pattern\":\"x\"}" } },
+    ],
+  }, "request-multi-native");
+  assert.deepEqual(native.tool_calls.map(call => call.function.name), ["glob", "grep"]);
+  const json = normalizeLlmProxyText(
+    '[{"tool":"glob","args":{"pattern":"*.ts"},"id":"j-1"},{"tool":"grep","args":{"pattern":"x"},"id":"j-2"}]',
+    "request-multi-json",
+  );
+  assert.equal(json.kind, "tool");
+  assert.deepEqual(json.tools.map(tool => tool.id), ["j-1", "j-2"]);
+  assert.deepEqual(JSON.parse(json.text).map(tool => tool.tool), ["glob", "grep"]);
+});
+
+test("llmproxy response normalization converts XML argument keys to canonical shapes", () => {
+  const bash = normalizeLlmProxyText(
+    '<tools><tool name="bash"><args>{"cmd":"ls -la","cwd":"/root/khazai-cli"}</args></tool></tools>',
+    "request-args",
+  );
+  assert.equal(bash.kind, "tool");
+  assert.deepEqual(bash.tool.args, { command: "ls -la", workdir: "/root/khazai-cli" });
+  const glob = normalizeLlmProxyText(
+    '<tools><tool name="glob"><pattern>**/*.js</pattern><dir>/root/khazai-cli</dir></tool></tools>',
+    "request-args-glob",
+  );
+  assert.equal(glob.kind, "tool");
+  assert.deepEqual(glob.tool.args, { pattern: "**/*.js", path: "/root/khazai-cli" });
 });
 
 test("llmproxy streaming buffers XML and emits one canonical tool call", async () => {
@@ -466,6 +542,116 @@ test("llmproxy streaming buffers XML and emits one canonical tool call", async (
     assert.equal(JSON.parse(result).tool, "bash");
     assert.equal(events.filter(event => event.type === "tool-call-delta").length, 1);
     assert.equal(events.some(event => event.type === "text-delta" && /<functions>/.test(event.text)), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("llmproxy streaming buffers reasoning and <tools> XML and emits every tool once in order", async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+  const fragments = [
+    "<antThinking>find the ts files first",
+    "</antThinking>",
+    "<tools>",
+    '<tool name="glob">',
+    "<pattern>**/*.ts</pattern>",
+    "<path>/root/khazai-cli</path>",
+    "</tool>",
+    '<tool name="grep">',
+    "<pattern>Available</pattern>",
+    "<path>/root/khazai-cli</path>",
+    "</tool>",
+    "</tools>",
+  ];
+  globalThis.fetch = async () => ({
+    ok: true,
+    headers: { get: name => name.toLowerCase() === "content-type" ? "text/event-stream" : null },
+    body: new ReadableStream({
+      start(controller) {
+        for (const content of fragments) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`));
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    }),
+  });
+  const events = [];
+  try {
+    const provider = new OpenAICompatibleProvider({
+      id: "khazai-rotate",
+      baseURL: "https://rotate.test/chat.php",
+      compatibility: { toolProtocol: "prompt-json" },
+    });
+    const result = await provider.chat([{ role: "user", content: "find available" }], {
+      model: "chatgpt",
+      tools: [validTool],
+      requestId: "request-tools-stream",
+      capabilities: { supportsStreaming: true, supportsToolCalling: true },
+      onEvent: event => events.push(event),
+    });
+    const tools = JSON.parse(result);
+    assert.equal(tools.length, 2);
+    assert.deepEqual(tools.map(tool => tool.tool), ["glob", "grep"]);
+    assert.deepEqual(tools[0].args, { pattern: "**/*.ts", path: "/root/khazai-cli" });
+    assert.equal(events.filter(event => event.type === "tool-call-delta").length, 1);
+    const deltas = events.find(event => event.type === "tool-call-delta");
+    assert.equal(deltas.delta.length, 2);
+    assert.equal(events.some(event => event.type === "text-delta" && /<tools>|<tool|<antThinking/.test(event.text)), false);
+    assert.equal(events.filter(event => event.type === "finish").length, 1);
+    assert.equal(events.find(event => event.type === "finish").reason, "tool-calls");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("llmproxy non-streaming responses normalize <tools> XML into canonical Search calls", async () => {
+  const originalFetch = globalThis.fetch;
+  const content = [
+    "<antThinking>check what changed first</antThinking>",
+    "<tools>",
+    '  <tool name="glob">',
+    "    <pattern>**/*.ts</pattern>",
+    "    <path>/root/khazai-cli</path>",
+    "  </tool>",
+    '  <tool name="grep">',
+    "    <pattern>Available</pattern>",
+    "    <path>/root/khazai-cli</path>",
+    "    <include>*.ts</include>",
+    "  </tool>",
+    "</tools>",
+  ].join("\n");
+  globalThis.fetch = async () => ({
+    ok: true,
+    headers: { get: () => "application/json" },
+    async json() {
+      return {
+        choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }],
+      };
+    },
+  });
+  const events = [];
+  try {
+    const provider = new OpenAICompatibleProvider({
+      id: "khazai-rotate",
+      baseURL: "https://rotate.test/chat.php",
+      compatibility: { toolProtocol: "prompt-json" },
+    });
+    const result = await provider.chat([{ role: "user", content: "find available" }], {
+      model: "chatgpt",
+      tools: [validTool],
+      requestId: "request-nonstream",
+      capabilities: { supportsStreaming: false, supportsToolCalling: true },
+      onEvent: event => events.push(event),
+    });
+    const tools = JSON.parse(result);
+    assert.equal(tools.length, 2);
+    assert.deepEqual(tools.map(tool => tool.tool), ["glob", "grep"]);
+    assert.deepEqual(tools[1].args, { pattern: "Available", path: "/root/khazai-cli", include: "*.ts" });
+    assert.equal(events.find(event => event.type === "finish").reason, "tool-calls");
+    assert.equal(events.some(event => event.type === "text-delta" && /<tools>|<antThinking/.test(event.text)), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

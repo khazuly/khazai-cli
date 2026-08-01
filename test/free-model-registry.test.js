@@ -81,7 +81,8 @@ test("All configured aliases appear in /model free", async () => {
     for (const alias of FREE_ALIASES) {
       assert.match(output, new RegExp(`\\b${alias}\\b`), `${alias} must appear in /model free`);
     }
-    assert.match(output, /auto-free\s+Automatic routing/);
+    assert.match(output, /auto-free/);
+    assert.doesNotMatch(output, /\bAvailable\b/);
     assert.equal(list.length, FREE_ALIASES.length);
   } finally {
     globalThis.fetch = originalFetch;
@@ -230,7 +231,7 @@ test("Upstream names do not appear in normal UI", async () => {
       }
       assert.match(details, /Model\s+Boboiboy/);
       assert.match(details, /Provider\s+KhazAI/);
-      assert.match(details, /Status\s+Available/);
+      assert.doesNotMatch(details, /\bAvailable\b/);
       assert.match(details, /Context\s+Unknown/);
       assert.doesNotMatch(details, /opencode|zen\//i);
       assert.equal(sanitizePublicBranding("LLMProxy route failed"), "KhazAI route failed");

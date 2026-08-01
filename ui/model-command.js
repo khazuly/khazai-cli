@@ -12,6 +12,8 @@ import {
   statusLabel,
 } from "../lib/khazai-free-model-catalog.js";
 
+export const EXCEPTIONAL_STATUSES = new Set(["cooldown", "unhealthy", "unknown", "unavailable", "disabled"]);
+
 function supported(value) {
   return value ? "Supported" : "Not supported";
 }
@@ -45,15 +47,20 @@ export async function modelDetails(alias) {
   const context = Number(model.capabilities.contextLimit) > 0
     ? Number(model.capabilities.contextLimit).toLocaleString("en-US")
     : "Unknown";
-  return [
+  const lines = [
     `Model       ${model.displayName}`,
     `Provider    ${KHAZAI_FREE_PROVIDER_NAME}`,
     "Tier        Free",
-    `Status      ${model.statusLabel}`,
+  ];
+  if (EXCEPTIONAL_STATUSES.has(model.status)) {
+    lines.push(`Status      ${model.statusLabel}`);
+  }
+  lines.push(
     `Tools       ${supported(capabilities.supportsToolCalling)}`,
     `Reasoning   ${supported(model.capabilities.reasoning)}`,
     `Context     ${context}`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export async function modelUnavailable(alias) {
@@ -85,6 +92,9 @@ export function modelSelectionDescription(alias) {
 }
 
 export function formatModelStatusList(list) {
-  const lines = list.map(model => `- ${model.alias.padEnd(11)}${statusLabel(model.status)}`);
+  const lines = list.map(model => {
+    const status = EXCEPTIONAL_STATUSES.has(model.status) ? ` (${statusLabel(model.status)})` : "";
+    return `- ${model.alias}${status}`;
+  });
   return [KHAZAI_FREE_MODEL_CATEGORY, "", ...lines].join("\n");
 }
