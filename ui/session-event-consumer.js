@@ -130,6 +130,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
       permissionRequest: {
         action: agent.redactForDisplay(ev.action),
         target: agent.redactSerializableForDisplay(ev.target),
+        evidence: agent.redactSerializableForDisplay(ev.evidence),
       },
       runId: ev.runId,
       turnId: ev.turnId,

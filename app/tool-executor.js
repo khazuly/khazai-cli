@@ -58,8 +58,9 @@ function permissionAction(tool, outsideWorkspace = false) {
 }
 
 function permissionTarget(call, request, workspace) {
-  if (request.permission === "external_directory" || call.args.path) {
-    const path = String(request.value || call.args.path || "");
+  const verifiedExternalPath = request.evidence?.externalTargets?.[0];
+  if (verifiedExternalPath || (request.permission === "external_directory" && call.name !== "bash") || call.args.path) {
+    const path = String(verifiedExternalPath || request.value || call.args.path || "");
     return { label: "Path", value: resolve(workspace, path) };
   }
   if (call.name === "bash") return { label: "Command", value: String(call.args.command || "") };
@@ -125,6 +126,12 @@ export class ToolExecutor {
 
   _approvalRequest(call, permission, outsideWorkspace = false) {
     const target = permissionTarget(call, permission, this.workspace);
+    const unclassified = /^Unclassified command:|could not be parsed/i.test(permission.evidence?.reason || "");
+    const action = call.name === "bash" && unclassified && !outsideWorkspace
+      ? "KhazAI wants to run an unclassified shell command."
+      : permissionAction(call.name, outsideWorkspace);
+    const verifiedPath = target.label === "Path"
+      && (call.name !== "bash" || Boolean(permission.evidence?.externalTargets?.length));
     return {
       ...permission,
       runId: this.runId,
@@ -133,11 +140,12 @@ export class ToolExecutor {
       callId: call.id,
       tool: call.name,
       pattern: permission.value,
-      action: permissionAction(call.name, outsideWorkspace),
+      action,
       target,
+      evidence: permission.evidence || null,
       options: [
         "Allow once",
-        target.label === "Path" ? "Always allow this path" : "Always allow this action",
+        verifiedPath ? "Always allow this path" : "Always allow this action",
         "Reject",
       ],
     };

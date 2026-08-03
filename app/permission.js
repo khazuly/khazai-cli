@@ -18,9 +18,10 @@ import {
   readJSON,
   resolveAction,
   rulesFromLayer,
+  shellPermissionEvidence,
   workspaceStoreKey,
 } from "./permission-policy.js";
-export { externalPath, externalPaths, hardSafetyViolation } from "./permission-policy.js";
+export { externalPath, externalPaths, hardSafetyViolation, shellPermissionEvidence } from "./permission-policy.js";
 
 export class PermissionRejectedError extends Error {
   constructor(permission, pattern) {
@@ -182,6 +183,10 @@ export class PermissionService {
 
   _allowAllCovers(toolName, args) {
     if (toolName === "webfetch" || toolName === "websearch") return false;
+    if (toolName === "bash") {
+      const evidence = shellPermissionEvidence(args, this.workspace);
+      if (/^Unclassified command:|could not be parsed/i.test(evidence.reason)) return false;
+    }
     return externalPaths(toolName, args, this.workspace).length === 0;
   }
 
@@ -251,13 +256,15 @@ export class PermissionService {
       reason: decision === "ask"
         ? `Approval required for ${permission}: ${selected.value}`
         : "",
+      evidence: toolName === "bash" ? shellPermissionEvidence(args, this.workspace) : null,
     };
   }
 
   evaluateExternalDirectory(toolNameOrArgs, maybeArgs = {}) {
     const toolName = typeof toolNameOrArgs === "string" ? toolNameOrArgs : "read";
     const args = typeof toolNameOrArgs === "string" ? maybeArgs : toolNameOrArgs;
-    const paths = externalPaths(toolName, args, this.workspace);
+    const evidence = toolName === "bash" ? shellPermissionEvidence(args, this.workspace) : null;
+    const paths = evidence ? evidence.externalTargets : externalPaths(toolName, args, this.workspace);
     if (!paths.length) return null;
     const safety = hardSafetyViolation(toolName, args, this.workspace);
     if (safety) {
@@ -297,6 +304,7 @@ export class PermissionService {
       reason: selected.action === "ask" && !autoAllowed
         ? `Approval required to access a path outside the workspace: ${selected.value}`
         : "",
+      evidence,
     };
   }
 

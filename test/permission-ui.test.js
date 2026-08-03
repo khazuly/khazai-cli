@@ -49,6 +49,29 @@ test("permission card keeps human-readable content aligned at narrow widths", as
   }
 });
 
+test("shell action approval never renders an unverified path rule", async () => {
+  const frame = await renderComponent(h(PermissionPrompt, {
+    request: {
+      action: "KhazAI wants to run an unclassified shell command.",
+      target: { label: "Command", value: 'echo "/etc/passwd"' },
+      evidence: {
+        action: "shell",
+        workspaceRoot: "/root/project",
+        workingDirectory: "/root/project",
+        filesystemTargets: ["/root/project"],
+        externalTargets: [],
+        reason: "Unclassified command: custom-command",
+      },
+    },
+    options: ["Allow once", "Always allow this action", "Reject"],
+    selectedIndex: 0,
+    width: 44,
+  }), 46, 18);
+  assert.match(frame, /Command:/);
+  assert.match(frame, /Always allow this action/);
+  assert.doesNotMatch(frame, /Path:|Always allow this path/);
+});
+
 test("permission prompt supports arrows, numeric selection, and Escape rejection", async () => {
   const stdout = new TerminalOutput(50, 18);
   const stdin = new TerminalInput();
