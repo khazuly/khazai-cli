@@ -30,7 +30,7 @@ test("semantic resolver maps a validation request to a canonical contract", asyn
 
   const contract = await resolver.resolve({
     input: "run this obfuscated result",
-    model: "claude",
+    model: "codex/gpt-5.4",
   });
 
   assert.equal(contract.intent, "validate");

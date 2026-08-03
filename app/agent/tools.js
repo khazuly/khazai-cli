@@ -348,6 +348,8 @@ export class ToolMethods {
   }
 
   _compactMessages(force = false) {
+    const sourceRevision = this._historyRevision;
+    if (this._compactedRevisions.has(sourceRevision)) return false;
     const result = this._buildCompactedMessages(force);
     if (!result) return false;
     this._messages = result.messages;
@@ -355,6 +357,15 @@ export class ToolMethods {
     this._requestStartIndex = result.requestStartIndex;
     this._usageTracker.bumpHistoryRevision();
     this._historyRevision = this._usageTracker.historyRevision;
+    this._compactedRevisions.add(sourceRevision);
+    this._compactedRevisions.add(this._historyRevision);
+    this._compactedCheckpoint = {
+      contextRevision: this._historyRevision,
+      sourceRevision,
+      messages: this._messages,
+      summary: this._summary,
+      requestStartIndex: this._requestStartIndex,
+    };
     this._lastFrameEntry = null;
     this._contextCache.reset();
     return true;

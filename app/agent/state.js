@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { isObject, INSPECTION_TOOLS, IDEMPOTENT_MUTATION_TOOLS, toolSignature, resultFailed } from "./helpers/task.js";
 import { pendingActionState, stripMarkdown } from "./helpers/parser.js";
 import { completedConversationHistory } from "./request-state.js";
+import { hydrateCanonicalMessages } from "../session-hydration.js";
+import { emitPerformanceTimings } from "../performance-timings.js";
 
 
 export class StateMethods {
@@ -27,6 +29,7 @@ export class StateMethods {
       tokenCountingMs: this._latency.tokenCountingMs ?? null,
       compactionCheckMs: this._latency.compactionCheckMs ?? null,
       compactionMs: this._latency.compactionMs ?? null,
+      compactionPreparationMs: this._latency.compactionPreparationMs ?? null,
       toolSchemaBuildMs: this._latency.toolSchemaBuildMs ?? null,
       serializationMs: this._latency.serializationMs ?? null,
       requestUploadMs: this._latency.providerFirstByte !== undefined
@@ -35,8 +38,8 @@ export class StateMethods {
       providerTimeToFirstByteMs: this._latency.providerFirstByte !== undefined
         ? this._latency.providerFirstByte - this._latency.requestDispatched
         : null,
-      providerTimeToFirstTokenMs: this._latency.providerFirstDelta !== undefined && this._latency.providerFirstByte !== undefined
-        ? this._latency.providerFirstDelta - this._latency.providerFirstByte
+      providerTimeToFirstTokenMs: this._latency.providerFirstDelta !== undefined && this._latency.requestDispatched !== undefined
+        ? this._latency.providerFirstDelta - this._latency.requestDispatched
         : null,
       totalResponseMs: this._latency.completed - this._latency.inputReceived,
       messageCount: this._latency.messageCount ?? null,
@@ -45,14 +48,17 @@ export class StateMethods {
       compactionLabel: this._latency.compactionLabel ?? "Not required",
     };
     this._lastRequestMetrics = metrics;
+    emitPerformanceTimings("provider-request", {
+      ...metrics,
+      ...(this._hydrationMetrics || {}),
+    });
   }
 
   exportSessionState() {
     const state = {
       version: 5,
       sessionId: this._sessionId,
-      messages: this._messages.slice(-200),
-      canonicalProviderMessages: null,
+      messages: this._messages,
       summary: this._summary,
       model: this._model,
       agent: this._agentProfile?.name || "build",
@@ -61,6 +67,10 @@ export class StateMethods {
       recoverableProviderRequest: this._recoverableProviderRequest,
       contextUsage: this._usageTracker.export(),
       historyRevision: this._historyRevision,
+      contextRevision: this._historyRevision,
+      tokenCache: this._contextCache.exportTokenState(),
+      compactedCheckpoint: this._compactedCheckpoint,
+      compactedRevisions: [...this._compactedRevisions].slice(-32),
       resolvedProvider: this._model,
       resolvedModel: this._model,
     };
@@ -69,21 +79,30 @@ export class StateMethods {
 
   restoreSessionState(state) {
     if (!isObject(state)) return false;
-    if (Array.isArray(state.messages)) {
-      const filtered = state.messages
-        .filter(message => !String(message?.content || "").startsWith("[INTERNAL STEERING]"))
-        .slice(-200);
-
-      this._messages = Array.isArray(state.canonicalProviderMessages)
-        ? state.canonicalProviderMessages.slice(-200)
-        : completedConversationHistory(filtered);
+    const candidateCheckpoint = isObject(state.compactedCheckpoint) ? state.compactedCheckpoint : null;
+    const checkpoint = candidateCheckpoint?.contextRevision === (state.contextRevision ?? state.historyRevision)
+      ? candidateCheckpoint
+      : null;
+    const source = checkpoint?.messages || state.messages;
+    if (Array.isArray(source)) {
+      const hydrated = hydrateCanonicalMessages(completedConversationHistory(source));
+      this._messages = hydrated.messages;
+      this._messageIndexes = hydrated.indexes;
+      this._hydrationMetrics = process.env.KHAZAI_DEBUG_PERF
+        ? hydrated.timings
+        : { canonicalMessageHydrationMs: hydrated.hydrationMs };
     }
     this._messages = this._messages.map(message => {
       if (message?.role !== "tool") return message;
       const { concise, truncated } = this._conciseToolContent(message.name, message.tool_call_id, message.content);
       return truncated ? { ...message, content: concise } : message;
     });
-    this._summary = typeof state.summary === "string" ? state.summary : "";
+    this._summary = typeof checkpoint?.summary === "string"
+      ? checkpoint.summary
+      : typeof state.summary === "string" ? state.summary : "";
+    this._requestStartIndex = Number(checkpoint?.requestStartIndex) || 0;
+    this._compactedCheckpoint = checkpoint;
+    this._compactedRevisions = new Set(state.compactedRevisions || []);
     if (state.model) this._model = String(state.model);
     if (state.sessionId) {
       this._sessionId = String(state.sessionId);
@@ -118,8 +137,7 @@ export class StateMethods {
     if (state.historyRevision !== undefined) {
       this._historyRevision = state.historyRevision;
     }
-    this._historyRevision++;
-    this._contextCache.reset();
+    this._historyRevision = Number(state.contextRevision ?? state.historyRevision ?? 0);
     return true;
   }
 

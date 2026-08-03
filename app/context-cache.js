@@ -10,10 +10,12 @@ function tokensForLength(length) {
 }
 
 export class ContextCache {
-  constructor() {
+  constructor(state = null, tokenizerProfile = "chars4") {
     this._frames = new Map();
     this._projections = new Map();
     this._messageMeta = new WeakMap();
+    this._tokenEntries = new Map();
+    this._tokenizerProfile = tokenizerProfile;
     this.stats = {
       metaComputations: 0,
       frameBuilds: 0,
@@ -24,6 +26,9 @@ export class ContextCache {
       projectionHits: 0,
       toolSchemaBuilds: 0,
     };
+    for (const entry of state?.entries || []) {
+      if (entry?.key && Number.isFinite(entry.size)) this._tokenEntries.set(entry.key, entry);
+    }
   }
 
   reset() {
@@ -34,22 +39,33 @@ export class ContextCache {
   messageMeta(message) {
     let meta = this._messageMeta.get(message);
     if (meta) return meta;
-    const json = JSON.stringify(message || {});
     const content = String(message?.content ?? "");
     const toolCalls = Array.isArray(message?.tool_calls)
       ? JSON.stringify(message.tool_calls)
       : "[]";
+    const contentHash = createHash("sha256")
+      .update(content)
+      .update("\0")
+      .update(toolCalls)
+      .digest("hex")
+      .slice(0, 16);
+    const messageId = String(message?.id || contentHash);
+    const key = `${messageId}:${contentHash}:${this._tokenizerProfile}`;
+    const persisted = this._tokenEntries.get(key);
+    const json = JSON.stringify(message || {});
     meta = {
-      hash: createHash("sha256").update(json).digest("hex").slice(0, 12),
+      key,
+      hash: contentHash,
       jsonLength: json.length,
-      size: tokensForLength(content.length) + tokensForLength(toolCalls.length),
+      size: persisted?.size ?? tokensForLength(content.length) + tokensForLength(toolCalls.length),
     };
+    this._tokenEntries.set(key, { key, size: meta.size });
     this._messageMeta.set(message, meta);
     this.stats.metaComputations++;
     return meta;
   }
 
-  _validateMessage(message, previous) {
+  _validateMessage(message, pendingCallIds) {
     if (!message || typeof message !== "object") {
       return { valid: false, issue: "non-message object" };
     }
@@ -65,15 +81,16 @@ export class ContextCache {
         } catch {
           return { valid: false, issue: "tool call arguments are not valid JSON" };
         }
+        pendingCallIds.add(String(call.id));
       }
       return { valid: true, issue: null };
     }
     if (role === "tool") {
       const id = String(message.tool_call_id || "");
-      const previousCalls = Array.isArray(previous?.tool_calls) ? previous.tool_calls : [];
-      if (!previousCalls.some(call => call.id === id)) {
+      if (!pendingCallIds.has(id)) {
         return { valid: false, issue: `orphan tool result "${id}"` };
       }
+      pendingCallIds.delete(id);
       return { valid: true, issue: null };
     }
     return { valid: true, issue: null };
@@ -99,6 +116,7 @@ export class ContextCache {
     }
 
     this.stats.frameBuilds++;
+    const tokenCountingStart = performance.now();
     const boundary = Math.max(0, Math.min(requestStartIndex, rawMessages.length));
     const historical = [];
     const active = [];
@@ -121,7 +139,7 @@ export class ContextCache {
         used += size;
       }
       while (historical.length > 0 && historical[0]?.role === "tool") {
-        const index = rawMessages.indexOf(historical[0]);
+        const index = boundary - historical.length;
         if (index > 0) historical.unshift(rawMessages[index - 1]);
         else historical.shift();
       }
@@ -159,12 +177,14 @@ export class ContextCache {
       }
     }
 
+    const tokenCountingMs = performance.now() - tokenCountingStart;
     const validationStart = performance.now();
     const start = existing?.validatedUpTo ?? 0;
-    const issues = [];
-    let valid = true;
+    const issues = existing?.validation?.issues?.filter(issue => issue.index < start) || [];
+    let valid = issues.length === 0;
+    const pendingCallIds = new Set(existing?.pendingCallIds || []);
     for (let index = start; index < rawMessages.length; index++) {
-      const result = this._validateMessage(rawMessages[index], index > 0 ? rawMessages[index - 1] : null);
+      const result = this._validateMessage(rawMessages[index], pendingCallIds);
       if (!result.valid) {
         valid = false;
         issues.push({ index, issue: result.issue });
@@ -184,9 +204,10 @@ export class ContextCache {
       hasPlaceholders,
       validation: { valid, issues },
       validatedUpTo: rawMessages.length,
+      pendingCallIds: [...pendingCallIds],
       stats: {
         validationMs,
-        tokenCountingMs: 0,
+        tokenCountingMs,
         messageCount: context.length,
         payloadBytes: jsonLength,
       },
@@ -212,5 +233,12 @@ export class ContextCache {
       const oldest = this._projections.keys().next().value;
       this._projections.delete(oldest);
     }
+  }
+
+  exportTokenState() {
+    return {
+      tokenizerProfile: this._tokenizerProfile,
+      entries: [...this._tokenEntries.values()].slice(-2_000),
+    };
   }
 }

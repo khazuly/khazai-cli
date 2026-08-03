@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "check": "find app lib tools config ui scripts -name '*.js' -print0 | xargs -0 -n1 node --check",
-    "benchmark:latency": "node scripts/latency-benchmark.js"
+    "benchmark:latency": "node scripts/latency-benchmark.js",
+    "benchmark:session": "node scripts/session-performance-benchmark.js"
   },
   "engines": {
     "node": ">=18"

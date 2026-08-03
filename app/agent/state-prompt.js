@@ -1,6 +1,6 @@
 import { resolveModelDescriptor } from "../../lib/llm.js";
 import { redactSecrets } from "../../lib/secrets.js";
-import { getPlanPrompt, getProviderPrompt } from "../prompts.js";
+import { getFamilyPrompt, getModePrompt, resolvePromptProfile } from "../prompts.js";
 import { resolve } from "node:path";
 import { isObject } from "./helpers/task.js";
 import { isProviderParseFailure, extractJsonCandidates, extractTaggedToolCall, jsonCompletion } from "./helpers/parser.js";
@@ -18,12 +18,15 @@ export class StatePromptMethods {
     try {
       descriptor = resolveModelDescriptor(this._model, this._config);
     } catch {
-      descriptor = { exactID: this._model };
+      descriptor = { exactID: this._model, modelID: this._model, definition: {} };
     }
+    const promptProfile = resolvePromptProfile(descriptor);
     const date = new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
     const cacheKey = JSON.stringify({
       model: this._model,
       exactModel: descriptor.exactID,
+      promptProfile,
+      mode: this.mode(),
       agent: this._agentProfile?.name,
       profileInstructions: this._agentProfile?.instructions || "",
       analysis: this._lastAnalysis || "",
@@ -53,10 +56,7 @@ export class StatePromptMethods {
       "",
     ].join("\n");
 
-    const modePrompt = this.mode() === "plan"
-      ? getPlanPrompt(descriptor.exactID)
-      : getProviderPrompt(descriptor.exactID);
-    const parts = [modePrompt, envInfo];
+    const parts = [getFamilyPrompt(descriptor), getModePrompt(this.mode()), envInfo];
     if (instructionBlock) parts.push(instructionBlock, "");
     if (mcpInstructions.length) {
       parts.push(

@@ -1,11 +1,12 @@
 import { useCallback } from "react";
+import { recentHistoryWindow } from "./history-window.js";
 
 export function useSessionPersistence(context) {
   const { Agent, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisRef, buildRegistry, buildStartedPlanIdRef, completedRef, currentSessionRef, exitStartedRef, loadConfig, mcpToolsRef, messageQueueRef, nextId, planRef, planWorkflowRef, planningQuestionRef, questionResolverRef, randomUUID, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setCompletedMessages, setCurrentModel, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setQueuedCount, setSessionKey, structuredCallsRef, taskEpochRef, mcpManager, exit, workspace, autoApproveRef, setContextUsage } = context;
 const appendCompleted = useCallback(message => {
   const next = [...completedRef.current, message];
   completedRef.current = next;
-  setCompletedMessages(next);
+  setCompletedMessages(recentHistoryWindow(next));
   return next;
 }, []);
 
@@ -53,7 +54,7 @@ const loadStoredSession = useCallback(session => {
   planWorkflowRef.current = null;
   planningQuestionRef.current = null;
   buildStartedPlanIdRef.current = null;
-  setCompletedMessages(session.messages || []);
+  setCompletedMessages(recentHistoryWindow(session.messages));
   setActiveMessage(null);
   setPlan([]);
   setExpandedTool(null);
@@ -70,7 +71,7 @@ const loadStoredSession = useCallback(session => {
 const freshSession = useCallback(() => {
   const now = new Date().toISOString();
   return {
-    version: 4,
+    version: 5,
     id: randomUUID(),
     workspace: resolve(workspace.path),
     title: "",
@@ -85,7 +86,7 @@ const freshSession = useCallback(() => {
     turns: [],
     redo: [],
     permissionMode: "prompt",
-    runtime: { version: 2, lastPartAt: null },
+    runtime: { version: 3, lastPartAt: null },
   };
 }, [workspace.path]);
 

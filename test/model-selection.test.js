@@ -6,20 +6,6 @@ import { chat, resolveModelDescriptor } from "../lib/llm.js";
 import { COMMANDS, MODELS } from "../ui/commands.js";
 import { MODEL_LABELS } from "../ui/components/banner.js";
 import { handlePrimarySessionCommand } from "../ui/session-command-primary.js";
-import { resolveZenModel } from "../config/khazai-free-models.js";
-
-const promptTool = {
-  type: "function",
-  function: {
-    name: "read",
-    description: "Read a file",
-    parameters: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-};
 
 test("model selection rebuilds the agent with the active tool registry", async () => {
   const created = [];
@@ -71,15 +57,6 @@ test("Big Cock remains the default and all KhazAI free aliases are registered", 
     { name: "kutub", description: "Compact coding model" },
     { name: "mecha", description: "Tool-capable reasoning model" },
     { name: "auto-free", description: "Auto (free)" },
-    { name: "chatgpt", description: "GPT by KhazAI" },
-    { name: "claude", description: "Claude by KhazAI" },
-    { name: "gemini", description: "Gemini by KhazAI" },
-    { name: "grok", description: "Grok by KhazAI" },
-    { name: "deepseek", description: "DeepSeek by KhazAI" },
-    { name: "qwen", description: "Qwen by KhazAI" },
-    { name: "kimi", description: "Kimi by KhazAI" },
-    { name: "perplexity", description: "Perplexity by KhazAI" },
-    { name: "r1", description: "Deep reasoning by KhazAI" },
   ]);
   assert.deepEqual(
     COMMANDS.find(command => command.name === "/model")?.sub.slice(0, MODELS.length),
@@ -96,15 +73,6 @@ test("Big Cock remains the default and all KhazAI free aliases are registered", 
     "kutub": "Kutub",
     "mecha": "Mecha",
     "auto-free": "Auto (free)",
-    "chatgpt": "GPT",
-    "claude": "Claude",
-    "gemini": "Gemini",
-    "grok": "Grok",
-    "deepseek": "DeepSeek",
-    "qwen": "Qwen",
-    "kimi": "Kimi",
-    "perplexity": "Perplexity",
-    "r1": "Deep Thinking",
   });
 });
 
@@ -118,6 +86,8 @@ test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
       baseURL: "https://opencode.ai/zen/v1",
       env: "OPENCODE_API_KEY",
       headers: {},
+      family: "unknown",
+      promptProfile: "default",
     },
   });
   assert.equal(resolveModelDescriptor("cock").exactID, "opencode/big-pickle");
@@ -135,38 +105,6 @@ test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
       definition: { baseURL: "http://localhost:8080/v1", env: "LOCAL_KEY" },
     },
   );
-});
-
-test("KhazAI rotating models expose tools through the prompt JSON protocol", async () => {
-  for (const alias of ["chatgpt", "claude", "gemini", "grok", "deepseek", "qwen", "kimi", "perplexity", "r1"]) {
-    assert.equal(resolveZenModel(alias).capabilities.tools, true);
-    assert.equal(resolveModelDescriptor(alias).definition.compatibility.toolProtocol, "prompt-json");
-  }
-  const originalFetch = globalThis.fetch;
-  let body;
-  globalThis.fetch = async (_url, options) => {
-    body = JSON.parse(options.body);
-    return {
-      ok: true,
-      headers: { get: () => "application/json" },
-      async json() {
-        return { content: '{"tool":"read","args":{"path":"package.json"},"id":"read-1"}' };
-      },
-    };
-  };
-  try {
-    const result = await chat([{ role: "user", content: "Inspect package.json" }], {
-      model: "chatgpt",
-      tools: [promptTool],
-      maxProviderAttempts: 1,
-    });
-    assert.equal(JSON.parse(result).tool, "read");
-    assert.equal("tools" in body, false);
-    assert.match(body.messages[0].content, /Available tools:/);
-    assert.match(body.messages[0].content, /"name":"read"/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
 });
 
 test("removed provider models require explicit reselection", () => {
@@ -191,6 +129,8 @@ test("Auto free resolves to the configured gateway without a user-facing provide
       baseURL: "https://api.kilo.ai/api/gateway",
       env: "KILO_API_KEY",
       headers: {},
+      family: "unknown",
+      promptProfile: "default",
     },
   });
 });
@@ -201,7 +141,7 @@ test("Codex models resolve to the OAuth Responses provider", () => {
     providerID: "codex",
     modelID: "gpt-5.4",
     exactID: "codex/gpt-5.4",
-    definition: { protocol: "codex-responses" },
+    definition: { protocol: "codex-responses", family: "openai", promptProfile: "codex" },
   });
 });
 

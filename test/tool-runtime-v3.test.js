@@ -361,12 +361,12 @@ test("legacy text parser stays disabled after a native tool-call event", async (
   assert.equal(executions, 0);
 });
 
-test("session v4 migration and lifecycle updates persist incrementally", () => {
+test("session v5 lifecycle updates persist incrementally", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-v3-work-"));
   const data = mkdtempSync(join(tmpdir(), "khazai-v3-data-"));
   const store = new SessionStore(workspace, data);
   const session = store.create();
-  assert.equal(session.version, 4);
+  assert.equal(session.version, 5);
 
   const lifecycle = new ToolLifecycle({
     sessionId: session.id,
@@ -380,7 +380,7 @@ test("session v4 migration and lifecycle updates persist incrementally", () => {
   lifecycle.finishStep("tool-calls");
 
   const loaded = store.load(session.id);
-  assert.equal(loaded.version, 4);
+  assert.equal(loaded.version, 5);
   assert.equal(loaded.parts.find(item => item.callId === "call-v3").state.status, "completed");
   assert.equal(loaded.runtime.activeMessageId, null);
   const migrated = migrateSessionV3({ version: 2, id: "old", parts: [], agentState: { version: 2, parts: [] } });

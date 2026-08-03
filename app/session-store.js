@@ -15,6 +15,8 @@ import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { toProviderMessages } from "../lib/providers.js";
+import { emitPerformanceTimings, measurePhase } from "./performance-timings.js";
+import { indexPresentationMessages } from "./session-hydration.js";
 
 const DATA_DIR = join(homedir(), ".local", "share", "khazai-ai", "sessions");
 
@@ -156,6 +158,24 @@ export function migrateSessionV4(value) {
   return session;
 }
 
+export function migrateSessionV5(value) {
+  if (value?.version === 5) return value;
+  const session = migrateSessionV4(value);
+  session.version = 5;
+  session.runtime = { version: 3, lastPartAt: null, ...(session.runtime || {}) };
+  session.runtime.version = 3;
+  return session;
+}
+
+function validateSessionSchema(session) {
+  if (!session || typeof session !== "object") throw new Error("Session data is invalid.");
+  if (!session.id || typeof session.workspace !== "string") throw new Error("Session identity is invalid.");
+  if (!Array.isArray(session.messages) || !Array.isArray(session.turns) || !Array.isArray(session.parts)) {
+    throw new Error("Session history is invalid.");
+  }
+  return session;
+}
+
 function atomicWrite(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -257,7 +277,7 @@ export class SessionStore {
   create({ title = "New session", model = "big-cock", agent = "build" } = {}) {
     const now = new Date().toISOString();
     const session = {
-      version: 4,
+      version: 5,
       id: randomUUID(),
       workspace: this.workspace,
       title,
@@ -271,7 +291,7 @@ export class SessionStore {
       turns: [],
       redo: [],
       permissionMode: "prompt",
-      runtime: { version: 2, lastPartAt: null },
+      runtime: { version: 3, lastPartAt: null },
     };
     this.save(session);
     return session;
@@ -284,10 +304,17 @@ export class SessionStore {
   }
 
   load(id) {
-    const original = JSON.parse(readFileSync(this.path(id), "utf-8"));
-    const data = migrateSessionV4(original);
+    const timings = {};
+    const raw = measurePhase(timings, "sessionFileReadMs", () => readFileSync(this.path(id), "utf-8"));
+    const original = measurePhase(timings, "jsonParseMs", () => JSON.parse(raw));
+    const data = measurePhase(timings, "schemaMigrationMs", () => migrateSessionV5(original));
+    measurePhase(timings, "schemaValidationMs", () => validateSessionSchema(data));
     if (resolve(data.workspace) !== this.workspace) throw new Error("Session belongs to a different workspace.");
-    if (original.version !== 4) this.save(data);
+    const indexes = measurePhase(timings, "messageToolIndexMs", () => indexPresentationMessages(data.messages));
+    Object.defineProperty(data, "hydrationTimings", { value: timings, enumerable: false });
+    Object.defineProperty(data, "presentationIndexes", { value: indexes, enumerable: false });
+    if (original.version !== 5) this.save(data);
+    emitPerformanceTimings("session-resume", timings);
     return data;
   }
 
@@ -300,11 +327,11 @@ export class SessionStore {
     else parts[index] = safeJSON(part);
     session.parts = parts.slice(-1_000);
     session.runtime = {
-      version: 2,
+      version: 3,
       lastPartAt: new Date().toISOString(),
       activeMessageId: part.type === "step-finish" ? null : part.messageId,
     };
-    if (session.agentState) session.agentState = { ...session.agentState, version: 4, parts: session.parts.slice(-200) };
+    if (session.agentState) session.agentState = { ...session.agentState, parts: session.parts.slice(-200) };
     return this.save(session);
   }
 
@@ -369,7 +396,7 @@ export class SessionStore {
       id: randomUUID(),
       input: redactSecrets(input),
       messageCountBefore: Math.max(0, session.messages.length),
-      messagesAfter: safeJSON(messages),
+      messageDelta: safeJSON(messages.slice(session.messages.length)),
       agentStateBefore: safeJSON(agentStateBefore),
       agentStateAfter: safeJSON(agentState),
       journal,
@@ -417,7 +444,9 @@ export class SessionStore {
     }
     session.redo.pop();
     session.turns.push(turn);
-    session.messages = turn.messagesAfter;
+    session.messages = Array.isArray(turn.messagesAfter)
+      ? turn.messagesAfter
+      : [...session.messages, ...(turn.messageDelta || [])];
     session.agentState = turn.agentStateAfter;
     session.parts = turn.agentStateAfter?.parts || [];
     return {

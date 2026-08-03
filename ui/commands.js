@@ -9,15 +9,6 @@ const MODELS = [
   { name: "kutub", description: "Compact coding model" },
   { name: "mecha", description: "Tool-capable reasoning model" },
   { name: "auto-free", description: "Auto (free)" },
-  { name: "chatgpt", description: "GPT by KhazAI" },
-  { name: "claude", description: "Claude by KhazAI" },
-  { name: "gemini", description: "Gemini by KhazAI" },
-  { name: "grok", description: "Grok by KhazAI" },
-  { name: "deepseek", description: "DeepSeek by KhazAI" },
-  { name: "qwen", description: "Qwen by KhazAI" },
-  { name: "kimi", description: "Kimi by KhazAI" },
-  { name: "perplexity", description: "Perplexity by KhazAI" },
-  { name: "r1", description: "Deep reasoning by KhazAI" },
 ];
 
 const THEMES = THEME_NAMES.map(name => ({ name, description: THEME_DESCRIPTIONS[name] || name }));

@@ -1,4 +1,4 @@
-import { createElement as h } from "react";
+import { createElement as h, memo } from "react";
 import { useEffect, useState } from "react";
 import { Text, Box } from "ink";
 import { SPINNER_FRAMES } from "./status-bar.js";
@@ -167,57 +167,55 @@ function PermissionDisplay({ message }) {
   );
 }
 
+function HistoryWindow({ count }) {
+  const theme = useTheme();
+  return h(Box, { marginBottom: 1 },
+    h(Text, { color: theme.metadata, dimColor: true }, `${count} earlier messages remain available in this saved session.`),
+  );
+}
+
+const MessageRow = memo(function MessageRow({ message: m }) {
+  switch (m.type) {
+    case "user":
+      return h(UserMessage, { content: m.content });
+    case "tool":
+      return h(Box, { flexDirection: "column", marginBottom: 1 },
+        h(ToolCall, {
+          tool: m.tool, args: m.args, done: m.done, duration: m.duration,
+          resultSize: m.resultSize, content: m.content, expanded: m.expanded,
+          status: m.status, startedAt: m.startedAt, metadata: m.metadata,
+          toolCallId: m.callId,
+          scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
+        }),
+        hasCodePreview(m)
+          ? h(Box, { marginBottom: 1, width: "100%" },
+              h(CodePreview, { tool: m.tool, args: m.args, expanded: Boolean(m.expanded) }))
+          : null,
+      );
+    case "read-group":
+      return h(Box, { flexDirection: "column", marginBottom: 1 },
+        h(ToolCall, {
+          readGroup: true, count: m.count, currentFile: m.currentFile,
+          done: m.done, duration: m.duration, failed: m.failed,
+          status: m.status, failedCount: m.failedCount,
+          startedAt: m.startedAt,
+          toolCallId: m.callIds?.join(":") || m.id,
+          scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
+        }),
+      );
+    case "answer": return h(RoleMessage, { role: "KhazAI", content: m.content });
+    case "think": return h(ThinkStatus, { message: m });
+    case "error": return h(ErrorDisplay, { content: m.content });
+    case "provider-error": return h(ProviderErrorDisplay, { content: m.content });
+    case "summary": return h(SummaryDisplay, { message: m });
+    case "permission": return h(PermissionDisplay, { message: m });
+    case "history-window": return h(HistoryWindow, { count: m.hiddenCount });
+    default: return null;
+  }
+}, (previous, next) => previous.message === next.message);
+
 export function MessageList({ messages }) {
-  const items = messages.map(m => {
-    switch (m.type) {
-      case "user":
-        return h(UserMessage, { key: m.id, content: m.content });
-      case "tool":
-        return h(Box, {
-          key: m.id,
-          flexDirection: "column",
-          marginBottom: 1,
-        },
-          h(ToolCall, {
-            tool: m.tool, args: m.args, done: m.done, duration: m.duration,
-            resultSize: m.resultSize, content: m.content, expanded: m.expanded,
-            status: m.status, startedAt: m.startedAt, metadata: m.metadata,
-            toolCallId: m.callId,
-            scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
-          }),
-          hasCodePreview(m)
-            ? h(Box, { marginBottom: 1, width: "100%" },
-                h(CodePreview, { tool: m.tool, args: m.args, expanded: Boolean(m.expanded) })
-              )
-            : null,
-        );
-      case "read-group":
-        return h(Box, { key: m.id, flexDirection: "column", marginBottom: 1 },
-          h(ToolCall, {
-            readGroup: true, count: m.count, currentFile: m.currentFile,
-            done: m.done, duration: m.duration, failed: m.failed,
-            status: m.status, failedCount: m.failedCount,
-            startedAt: m.startedAt,
-            toolCallId: m.callIds?.join(":") || m.id,
-            scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
-          }),
-        );
-      case "answer":
-        return h(RoleMessage, { key: m.id, role: "KhazAI", content: m.content });
-      case "think":
-        return h(ThinkStatus, { key: m.id, message: m });
-      case "error":
-        return h(ErrorDisplay, { key: m.id, content: m.content });
-      case "provider-error":
-        return h(ProviderErrorDisplay, { key: m.id, content: m.content });
-      case "summary":
-        return h(SummaryDisplay, { key: m.id, message: m });
-      case "permission":
-        return h(PermissionDisplay, { key: m.id, message: m });
-      default:
-        return null;
-    }
-  }).filter(Boolean);
+  const items = messages.map(message => h(MessageRow, { key: message.id, message }));
 
   return h(Box, {
     flexDirection: "column",

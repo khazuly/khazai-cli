@@ -52,6 +52,10 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
       }
       return;
     }
+    if (event?.type === "request-prepared") {
+      Object.assign(this._latency, event.timings || {});
+      return;
+    }
     if (event?.type === "provider-fallback") {
       queueEvent(event);
       return;

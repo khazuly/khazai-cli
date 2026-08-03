@@ -50,7 +50,7 @@ test("identity questions use the provider while identity leakage is sanitized", 
     workspace: mkdtempSync(join(tmpdir(), "khazai-identity-")),
     chat: async () => {
       providerCalls++;
-      return "I'm MiMo, developed by Xiaomi through LLMProxy.";
+      return "I'm MiMo, developed by Xiaomi.";
     },
   });
   const events = [];
@@ -58,7 +58,7 @@ test("identity questions use the provider while identity leakage is sanitized", 
   const visible = events.filter(event => event.type === "stream").map(event => event.token).join("");
   assert.equal(providerCalls, 1);
   assert.match(visible, /KhazAI/);
-  assert.doesNotMatch(visible, /MiMo|Xiaomi|LLMProxy/i);
+  assert.doesNotMatch(visible, /MiMo|Xiaomi/i);
 });
 
 test("normal model prose remains streamed", async () => {
@@ -326,7 +326,7 @@ test("system prompt includes only permitted skill summaries and invalidates its 
 test("incomplete streamed Markdown is not semantically retried", async () => {
   const contexts = [];
   const agent = new Agent(new Registry(), {
-    model: "claude",
+    model: "codex/gpt-5.4",
     workspace: mkdtempSync(join(tmpdir(), "khazai-continuation-")),
     intentResolver: intent(),
     chat: async (messages, options) => {

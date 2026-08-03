@@ -24,6 +24,7 @@ import { resolveEffectiveSettings } from "../config/model-settings.js";
 import { configRevision } from "../config/store.js";
 import { performance } from "node:perf_hooks";
 import { sanitizePublicBranding, sanitizePublicSerializable } from "../config/khazai-free-models.js";
+import { hydrateCanonicalMessages } from "./session-hydration.js";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
@@ -134,7 +135,7 @@ export class Agent {
     this._resetSession = opts.resetSession || null;
     this._recoverableProviderRequest = null;
     this._usageTracker = new ContextUsageTracker(opts.sessionState?.contextUsage);
-    this._contextCache = new ContextCache();
+    this._contextCache = new ContextCache(opts.sessionState?.tokenCache);
     this._toolSchemaCache = new Map();
     this._storedToolResults = new Map();
     this._lastFrameEntry = null;
@@ -145,6 +146,9 @@ export class Agent {
     this._effectiveSettings = null;
     this._applyEffectiveSettings();
     this._historyRevision = 0;
+    this._compactedRevisions = new Set(opts.sessionState?.compactedRevisions || []);
+    this._compactedCheckpoint = null;
+    this._hydrationMetrics = null;
     this._compactionThresholdCrossed = false;
     this._contextErrorCompactedRunId = null;
     this._compaction = {
@@ -292,6 +296,7 @@ export class Agent {
 
   _scheduleCompaction(run, reason = "threshold") {
     if (!this._isActiveRun(run) || this._compaction.status !== "idle") return false;
+    if (this._compactedRevisions.has(this._historyRevision)) return false;
     if (reason === "threshold" && !this._config.automaticCompaction) return false;
     if (reason === "threshold" && !this._contextLimitKnown()) return false;
     const usage = this.contextUsage();
@@ -311,9 +316,13 @@ export class Agent {
   }
 
   _appendMessage(message) {
-    this._messages.push(message);
+    const candidate = message?.id ? message : { ...message, id: `message_${randomUUID()}` };
+    const hydrated = hydrateCanonicalMessages([candidate]).messages[0] || candidate;
+    this._messages.push(hydrated);
+    this._usageTracker.bumpHistoryRevision();
+    this._historyRevision = this._usageTracker.historyRevision;
     this._lastFrameEntry = null;
-    return message;
+    return hydrated;
   }
 
   _storedOutputReference(callId) {
@@ -351,12 +360,7 @@ export class Agent {
   }
 
   _contextCacheKey() {
-    const last = this._messages.at(-1) || null;
-    const fingerprint = last
-      ? `${this._messages.length}:${this._contextCache.messageMeta(last).hash}`
-      : `${this._messages.length}:`;
     return [
-      `h:${this._historyRevision}:${fingerprint}`,
       `m:${this._model}`,
       `t:chars4`,
     ].join("|");

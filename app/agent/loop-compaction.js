@@ -26,7 +26,9 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
     if (!event) { failed = true; break; }
     yield event;
   }
+  const preparationStartedAt = performance.now();
   const compacted = failed ? null : this._buildCompactedMessages(true);
+  this._markLatencyDuration("compactionPreparationMs", preparationStartedAt);
   if (!compacted) failed = true;
   const committing = failed ? null : transition("committing");
   if (committing) {
@@ -41,6 +43,15 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
       this._requestStartIndex = compacted.requestStartIndex;
       this._usageTracker.bumpHistoryRevision();
       this._historyRevision = this._usageTracker.historyRevision;
+      this._compactedRevisions.add(revisionAtSchedule);
+      this._compactedRevisions.add(this._historyRevision);
+      this._compactedCheckpoint = {
+        contextRevision: this._historyRevision,
+        sourceRevision: revisionAtSchedule,
+        messages: this._messages,
+        summary: this._summary,
+        requestStartIndex: this._requestStartIndex,
+      };
     } else {
       failed = true;
     }

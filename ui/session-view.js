@@ -1,8 +1,8 @@
 import { createElement as h } from "react";
-import { Box, Static } from "ink";
+import { Box } from "ink";
 import { ThemeProvider } from "./theme.js";
-import { Banner } from "./components/banner.js";
 import { MessageList } from "./components/message-list.js";
+import { HistoricalTranscript } from "./components/historical-transcript.js";
 import { PlanList } from "./components/plan-list.js";
 import { SessionFooter } from "./components/session-footer.js";
 import { EmptyState } from "./components/empty-state.js";
@@ -15,18 +15,14 @@ import { displayModel } from "./session-helpers.js";
 export function SessionView(context) {
   const { themeName, sessionKey, staticItems, currentModel, workspace, currentSessionRef, autoApproveRef, displayedActiveMessage, expandedTool, running, completedMessages, activeMessage, pendingQuestion, plan, planState, sessionManagerSessions, handleResumeSession, handleDeleteSession, handleClearSessions, setSessionManagerSessions, showSettings, settingsSection, handleCloseSettings, handleSettingChange, queuedCount, modeStatus, contextUsage, activeScopeRef, answerQuestion, handlePromptSubmit, handleCommand, clearDisplay, handleAbort, messageQueueRef, cancelQuestion, workspaceFiles, handleThemePreview, handleThemeExitSub } = context;
 return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
-  h(Static, {
-    key: `history-${sessionKey}`,
+  h(HistoricalTranscript, {
     items: staticItems,
-  }, item => item.type === "banner"
-    ? h(Banner, {
-        key: item.id,
-        model: currentModel,
-        workspace: workspace.path,
-        agent: currentSessionRef.current.agent,
-        autoApprove: autoApproveRef.current,
-      })
-    : h(MessageList, { key: item.id, messages: [item] })),
+    sessionKey,
+    model: currentModel,
+    workspace: workspace.path,
+    agent: currentSessionRef.current.agent,
+    autoApprove: autoApproveRef.current,
+  }),
   h(Box, { flexDirection: "column", width: "100%" },
     displayedActiveMessage
       ? h(MessageList, {

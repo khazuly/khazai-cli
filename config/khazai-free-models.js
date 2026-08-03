@@ -4,24 +4,6 @@ export const KHAZAI_FREE_PROVIDER_NAME = "KhazAI";
 export const KHAZAI_AUTO_FREE_NAME = "KhazAI Auto Free";
 export const KHAZAI_FREE_MODEL_CATEGORY = "KhazAI Free Models";
 
-export const KHAZAI_ROTATING_PROVIDER_ID = "khazai-rotate";
-export const KHAZAI_ROTATING_UPSTREAM_BASE_URL = "https://llmproxy.org/api/chat.php";
-export const KHAZAI_ROTATING_UPSTREAM_ORIGIN = "https://ai-chat.ai";
-
-const KHAZAI_ROTATING_CAPABILITIES = {
-  streaming: true,
-  tools: true,
-  reasoning: false,
-  usage: false,
-  contextLimit: null,
-  temperature: false,
-  topP: false,
-  maxOutputTokens: false,
-  parallelTools: false,
-  toolChoice: false,
-  reasoningEffort: false,
-};
-
 const MODELS = [
   {
     alias: "big-cock",
@@ -110,81 +92,6 @@ const MODELS = [
       streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
       temperature: true, topP: false, maxOutputTokens: true, parallelTools: false,
       toolChoice: false, reasoningEffort: false,
-    },
-  },
-  {
-    alias: "chatgpt",
-    displayName: "GPT",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "chatgpt",
-    description: "GPT by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "claude",
-    displayName: "Claude",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "claude",
-    description: "Claude by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "gemini",
-    displayName: "Gemini",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "gemini",
-    description: "Gemini by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "grok",
-    displayName: "Grok",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "grok",
-    description: "Grok by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "deepseek",
-    displayName: "DeepSeek",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "deepseek",
-    description: "DeepSeek by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "qwen",
-    displayName: "Qwen",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "qwen",
-    description: "Qwen by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "kimi",
-    displayName: "Kimi",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "kimi",
-    description: "Kimi by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "perplexity",
-    displayName: "Perplexity",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "perplexity",
-    description: "Perplexity by KhazAI",
-    capabilities: { ...KHAZAI_ROTATING_CAPABILITIES },
-  },
-  {
-    alias: "r1",
-    displayName: "Deep Thinking",
-    provider: KHAZAI_ROTATING_PROVIDER_ID,
-    upstreamModel: "r1",
-    description: "Deep reasoning by KhazAI",
-    capabilities: {
-      ...KHAZAI_ROTATING_CAPABILITIES,
-      reasoning: true,
     },
   },
 ];
@@ -278,8 +185,6 @@ export function sanitizePublicBranding(value, config = {}) {
     );
   }
   return output
-    .replace(/\bllmproxy(?:\.org)?\b/gi, KHAZAI_FREE_PROVIDER_NAME)
-    .replace(/\bai-chat\.ai\b/gi, KHAZAI_FREE_PROVIDER_NAME)
     .replace(/\bOpenCode\s+Zen\b/gi, KHAZAI_FREE_PROVIDER_NAME)
     .replace(/\bOpenCode\b(?![/.])/gi, KHAZAI_FREE_PROVIDER_NAME)
     .replace(/\bZen(?=\s+(?:API|models?|provider|route|transport)\b)/gi, "KhazAI");

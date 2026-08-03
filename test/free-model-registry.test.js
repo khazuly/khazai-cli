@@ -27,7 +27,7 @@ import {
 } from "../ui/model-command.js";
 
 const CHAT_ENDPOINT = `${KHAZAI_FREE_UPSTREAM_BASE_URL}/chat/completions`;
-const FREE_ALIASES = ["big-cock", "boboiboy", "komodo", "ombak", "petir", "kutub", "mecha", "auto-free", "chatgpt", "claude", "gemini", "grok", "deepseek", "qwen", "kimi", "perplexity", "r1"];
+const FREE_ALIASES = ["big-cock", "boboiboy", "komodo", "ombak", "petir", "kutub", "mecha", "auto-free"];
 
 function jsonListResponse(ids) {
   return {
@@ -95,7 +95,7 @@ test("Temporary HTTP 429 does not remove an alias", async () => {
   recordRouteFailure("khazai-free", "deepseek-v4-flash-free", CHAT_ENDPOINT, "rate_limited");
   const list = modelStatusList();
   assert.ok(list.some(model => model.alias === "boboiboy"), "boboiboy stays in the registry after 429");
-  assert.ok(list.every(model => model.provider === "khazai-rotate" || ["routing", "unknown", "cooldown"].includes(model.status)));
+  assert.ok(list.every(model => ["routing", "unknown", "cooldown"].includes(model.status)));
 });
 
 test("HTTP 500 marks a route unhealthy without deleting it", async () => {
@@ -120,7 +120,7 @@ test("Failed discovery preserves the static registry", async () => {
     await refreshZenAvailability({ force: true });
     const list = modelStatusList();
     assert.equal(list.length, FREE_ALIASES.length, "static registry is preserved when discovery fails");
-    assert.ok(list.every(model => model.provider === "khazai-rotate" || model.status === "unknown" || model.status === "routing"));
+    assert.ok(list.every(model => model.status === "unknown" || model.status === "routing"));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -224,7 +224,6 @@ test("Upstream names do not appear in normal UI", async () => {
       for (const alias of FREE_ALIASES) assert.match(free, new RegExp(`\\b${alias}\\b`));
       for (const model of zenModels()) {
         if (!model.upstreamModel) continue;
-        if (model.provider === "khazai-rotate") continue;
         assert.doesNotMatch(free, new RegExp(model.upstreamModel, "i"));
         assert.doesNotMatch(details, new RegExp(model.upstreamModel, "i"));
         assert.equal(sanitizePublicBranding(model.upstreamModel), model.alias);
@@ -234,8 +233,6 @@ test("Upstream names do not appear in normal UI", async () => {
       assert.doesNotMatch(details, /\bAvailable\b/);
       assert.match(details, /Context\s+Unknown/);
       assert.doesNotMatch(details, /opencode|zen\//i);
-      assert.equal(sanitizePublicBranding("LLMProxy route failed"), "KhazAI route failed");
-      assert.equal(sanitizePublicBranding("llmproxy.org unavailable"), "KhazAI unavailable");
     },
   );
 });
@@ -251,7 +248,7 @@ test("Refresh updates status without removing aliases", async () => {
     await refreshZenAvailability({ force: true });
     const after = modelStatusList();
     assert.equal(after.length, FREE_ALIASES.length);
-    assert.equal(after.filter(model => model.status === "available").length, 13);
+    assert.equal(after.filter(model => model.status === "available").length, 4);
     assert.equal(after.filter(model => model.status === "unavailable").length, 3);
     assert.ok(after.find(model => model.alias === "kutub").status === "unavailable");
     globalThis.fetch = async () => jsonListResponse(upstream);
