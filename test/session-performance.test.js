@@ -10,7 +10,7 @@ import { Registry } from "../app/registry.js";
 import { SessionStore } from "../app/session-store.js";
 import { hydrateCanonicalMessages } from "../app/session-hydration.js";
 import { HistoricalTranscript } from "../ui/components/historical-transcript.js";
-import { recentHistoryWindow } from "../ui/history-window.js";
+import { appendVisibleHistory, recentHistoryWindow } from "../ui/history-window.js";
 import { ThemeProvider } from "../ui/theme.js";
 import { stripAnsi, TerminalInput, TerminalOutput } from "./helpers/ink-render.js";
 
@@ -44,6 +44,40 @@ test("a 1,000-message resume renders only the bounded recent window", () => {
   assert.equal(visible.length, 81);
   assert.equal(visible[0].hiddenCount, 920);
   assert.equal(visible.at(-1), messages.at(-1));
+});
+
+test("messages appended after a bounded resume remain append-only and visible", async () => {
+  const stored = Array.from({ length: 1_000 }, (_, index) => ({ id: `stored-${index}`, type: "answer", content: `stored ${index}` }));
+  const resumed = recentHistoryWindow(stored, 2);
+  const updates = [
+    { id: "new-user", type: "user", content: "VISIBLE NEW USER" },
+    { id: "new-tool", type: "tool", tool: "bash", callId: "new-call", args: { command: "echo visible" }, content: "VISIBLE TOOL RESULT", done: true },
+    { id: "new-answer", type: "answer", content: "VISIBLE NEW ANSWER" },
+  ];
+  const visible = updates.reduce(appendVisibleHistory, resumed);
+  assert.equal(visible.length, resumed.length + updates.length);
+  assert.deepEqual(visible.slice(-3), updates);
+  assert.equal(visible[0], resumed[0]);
+
+  const stdout = new TerminalOutput(80, 30);
+  const stdin = new TerminalInput();
+  const view = items => h(ThemeProvider, { name: "dark" },
+    h(HistoricalTranscript, { items, sessionKey: 1, model: "big-cock", workspace: "/tmp", agent: "build", autoApprove: false }));
+  const instance = render(view(resumed), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  let current = resumed;
+  for (const update of updates) {
+    current = appendVisibleHistory(current, update);
+    instance.rerender(view(current));
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  const rendered = stripAnsi(stdout.frames.join(""));
+  assert.match(rendered, /VISIBLE NEW USER/);
+  assert.match(rendered, /VISIBLE TOOL RESULT/);
+  assert.match(rendered, /VISIBLE NEW ANSWER/);
+  instance.unmount();
+  instance.cleanup();
+  stdin.destroy();
 });
 
 test("live footer ticks do not rerender unchanged historical transcript rows", async () => {

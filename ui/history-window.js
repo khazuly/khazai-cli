@@ -14,3 +14,7 @@ export function recentHistoryWindow(messages, limit = INITIAL_HISTORY_LIMIT) {
     ...source.slice(-count),
   ];
 }
+
+export function appendVisibleHistory(messages, message) {
+  return [...messages, message];
+}

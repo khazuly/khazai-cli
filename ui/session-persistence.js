@@ -1,12 +1,12 @@
 import { useCallback } from "react";
-import { recentHistoryWindow } from "./history-window.js";
+import { appendVisibleHistory, recentHistoryWindow } from "./history-window.js";
 
 export function useSessionPersistence(context) {
   const { Agent, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisRef, buildRegistry, buildStartedPlanIdRef, completedRef, currentSessionRef, exitStartedRef, loadConfig, mcpToolsRef, messageQueueRef, nextId, planRef, planWorkflowRef, planningQuestionRef, questionResolverRef, randomUUID, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setCompletedMessages, setCurrentModel, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setQueuedCount, setSessionKey, structuredCallsRef, taskEpochRef, mcpManager, exit, workspace, autoApproveRef, setContextUsage } = context;
 const appendCompleted = useCallback(message => {
   const next = [...completedRef.current, message];
   completedRef.current = next;
-  setCompletedMessages(recentHistoryWindow(next));
+  setCompletedMessages(current => appendVisibleHistory(current, message));
   return next;
 }, []);
 
