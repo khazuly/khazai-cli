@@ -15,6 +15,7 @@ export class LoopMethods {
     if (this._activeRun && !this._activeRun.finalized) {
       this._activeRun.cancelled = true;
       this._abortController?.abort(new Error("Superseded by a newer turn"));
+      this._clearCompactionIfStale(this._activeRun);
     }
     const runId = scope.runId || randomUUID(), turnId = scope.turnId || randomUUID();
     const taskEpoch = retryProvider ? scope.taskEpoch ?? this._recoverableProviderRequest?.taskEpoch ?? this._taskEpoch
@@ -31,6 +32,7 @@ export class LoopMethods {
     const finalizeRun = () => {
       if (!isRunCurrent() || run.finalized) return false;
       run.finalized = true;
+      this._clearCompactionIfStale(run);
       return true;
     };
     const controller = new AbortController();

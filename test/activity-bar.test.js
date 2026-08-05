@@ -9,7 +9,7 @@ import { renderComponent, TerminalInput, TerminalOutput, stripAnsi } from "./hel
 
 const promptProps = { onSubmit() {}, onCommand() {}, commands: [] };
 
-test("generic Working shimmers without a spinner or duration", async () => {
+test("generic Working shimmers in place with an elapsed duration", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,
     model: "big-cock",
@@ -19,8 +19,8 @@ test("generic Working shimmers without a spinner or duration", async () => {
   const promptIndex = frame.indexOf("Ask anything...");
   assert.ok(promptIndex >= 0);
   assert.match(frame, /Working/);
+  assert.match(frame, /Working · \d+s/);
   assert.doesNotMatch(frame, new RegExp(`[${SPINNER_FRAMES.join("")}]`));
-  assert.doesNotMatch(frame, /Working · \d+s/);
   assert.equal(frame.match(/Esc cancel/g)?.length, 1);
   assert.ok(frame.indexOf("Working") < promptIndex);
   assert.ok(frame.indexOf("Esc cancel") < promptIndex);
@@ -160,7 +160,7 @@ test("idle, queued, compaction, and unknown context layouts remain intact", asyn
     contextUsage: { currentContextTokens: 14, contextLimit: 100 },
     promptProps,
   }), 42, 14);
-  assert.match(queued, /Working · 2 queued/);
+  assert.match(queued, /Working · \d+s · 2 queued/);
   assert.ok(queued.indexOf("2 queued") < queued.indexOf("Ask anything..."));
   assert.ok(queued.indexOf("Context 14 / 100 · 14%") > queued.indexOf("Ask anything..."));
 

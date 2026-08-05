@@ -1,5 +1,7 @@
 import { performance } from "node:perf_hooks";
 
+const COMPACTION_DEADLINE_MS = 30_000;
+
 export async function* runScheduledCompaction(run, { isRunActive, scoped, finalizeRun }) {
 if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
   const compactionId = this._compaction.compactionId;
@@ -8,9 +10,10 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
   const originalSummary = this._summary;
   const originalRequestStartIndex = this._requestStartIndex;
   const revisionAtSchedule = this._historyRevision;
+  this._compaction.executionStartedAt = Date.now();
   const transition = status => {
     if (!isRunActive() || this._compaction.compactionId !== compactionId) return null;
-    if (Date.now() - this._compaction.startedAt > 30_000) return null;
+    if (Date.now() - this._compaction.executionStartedAt > COMPACTION_DEADLINE_MS) return null;
     this._compaction.status = status;
     return scoped({
       type: "compaction-state",
@@ -27,7 +30,9 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
     yield event;
   }
   const preparationStartedAt = performance.now();
-  const compacted = failed ? null : this._buildCompactedMessages(true);
+  const emergency = this._compaction.reason === "emergency"
+    || this._compaction.reason === "context-error";
+  const compacted = failed ? null : this._buildCompactedMessages(emergency);
   this._markLatencyDuration("compactionPreparationMs", preparationStartedAt);
   if (!compacted) failed = true;
   const committing = failed ? null : transition("committing");
@@ -43,8 +48,7 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
       this._requestStartIndex = compacted.requestStartIndex;
       this._usageTracker.bumpHistoryRevision();
       this._historyRevision = this._usageTracker.historyRevision;
-      this._compactedRevisions.add(revisionAtSchedule);
-      this._compactedRevisions.add(this._historyRevision);
+      this._recordCompactedRevision(revisionAtSchedule);
       this._compactedCheckpoint = {
         contextRevision: this._historyRevision,
         sourceRevision: revisionAtSchedule,
@@ -52,6 +56,8 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
         summary: this._summary,
         requestStartIndex: this._requestStartIndex,
       };
+      this._lastFrameEntry = null;
+      this._contextCache.reset();
     } else {
       failed = true;
     }
@@ -59,19 +65,22 @@ if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
   const recounting = failed ? null : transition("recounting");
   if (recounting) yield recounting;
   if (failed || !isRunActive() || this._compaction.compactionId !== compactionId) {
-    this._messages = originalMessages;
-    this._summary = originalSummary;
-    this._requestStartIndex = originalRequestStartIndex;
-    this._compaction.status = "failed";
-    yield scoped({ type: "compaction-state", status: "failed", compactionId });
-    this._clearCompaction();
-    yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
+    if (this._compaction.compactionId === compactionId) {
+      this._messages = originalMessages;
+      this._summary = originalSummary;
+      this._requestStartIndex = originalRequestStartIndex;
+      this._compaction.status = "failed";
+      yield scoped({ type: "compaction-state", status: "failed", compactionId });
+      this._clearCompaction();
+      yield scoped({ type: "error", content: "[×] Context compaction could not be completed." });
+    }
     if (finalizeRun()) return;
+    return;
   }
   this._compaction.status = "completed";
   this._compaction.stableTokens = null;
   this._markLatencyDuration("compactionMs", compactionStart);
-  this._latency.compactionLabel = "Compacted";
+  if (this._latency) this._latency.compactionLabel = "Compacted";
   this._recordProgress();
   yield scoped({
     type: "compaction-state",

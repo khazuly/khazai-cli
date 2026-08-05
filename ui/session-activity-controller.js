@@ -23,6 +23,9 @@ const pauseAnalysis = (now = Date.now()) => {
   analysisRef.current = pauseAnalysisActivity(analysisRef.current, analysisScope, now);
   if (activeRef.current?.id === analysisRef.current?.analysisId) clearActive();
 };
+const resumeAnalysis = (now = Date.now()) => {
+  analysisRef.current = startAnalysisActivity(analysisRef.current, analysisScope, {}, now);
+};
 const showAnalysis = activity => {
   analysisRef.current = startAnalysisActivity(
     analysisRef.current,
@@ -150,5 +153,5 @@ const cleanupCompletedPlan = () => {
   clearPlanActivity();
   setPlanVisibility(null);
 };
-  return { activate, clearActive, pauseAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan };
+  return { activate, clearActive, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan };
 }

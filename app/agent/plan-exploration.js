@@ -44,13 +44,30 @@ export async function* runPlanExplorationBatch(agent, calls, scope) {
   const results = new Map();
   let cursor = 0;
   const runWorker = async () => {
-    while (cursor < calls.length && agent._isActiveRun(scope)) {
-      const call = calls[cursor++];
-      for await (const event of agent._toolExecutor(scope).execute(call, { agent: "plan" })) {
-        queue.push({ call, event });
+    try {
+      while (cursor < calls.length && agent._isActiveRun(scope)) {
+        const call = calls[cursor++];
+        for await (const event of agent._toolExecutor(scope).execute(call, { agent: "plan" })) {
+          queue.push({ call, event });
+        }
       }
+    } catch (error) {
+      const failedCall = calls[cursor - 1];
+      if (failedCall) {
+        queue.push({
+          call: failedCall,
+          event: {
+            type: "execution-result",
+            call: failedCall,
+            result: String(error?.message || error),
+            failed: true,
+            finishReason: "tool-error",
+          },
+        });
+      }
+    } finally {
+      queue.finish();
     }
-    queue.finish();
   };
   const tasks = Array.from({ length: workers }, runWorker);
   while (true) {

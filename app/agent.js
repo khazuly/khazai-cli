@@ -288,6 +288,7 @@ export class Agent {
       taskEpoch: null,
       compactionId: null,
       startedAt: null,
+      executionStartedAt: null,
       error: null,
       stableTokens: null,
       reason: null,
@@ -295,6 +296,7 @@ export class Agent {
   }
 
   _scheduleCompaction(run, reason = "threshold") {
+    this._clearCompactionIfStale();
     if (!this._isActiveRun(run) || this._compaction.status !== "idle") return false;
     if (this._compactedRevisions.has(this._historyRevision)) return false;
     if (reason === "threshold" && !this._config.automaticCompaction) return false;

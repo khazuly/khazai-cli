@@ -295,16 +295,41 @@ export class ToolMethods {
         keptTokens += this._contextCache.messageMeta(message).size;
         if (message.role === "assistant" && message.content) turns++;
       }
+      if (keptTokens >= target) {
+        let index = keepFrom;
+        let tokens = 0;
+        for (; index < this._messages.length; index++) {
+          const message = this._messages[index];
+          if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+          const size = this._contextCache.messageMeta(message).size;
+          if (tokens > 0 && tokens + size > target) break;
+          tokens += size;
+        }
+        while (index < this._messages.length && this._messages[index]?.role === "tool") index++;
+        keepFrom = index;
+        keptTokens = tokens;
+      } else {
+        for (let index = keepFrom - 1; index >= 0; index--) {
+          const message = this._messages[index];
+          if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+          const size = this._contextCache.messageMeta(message).size;
+          if (keptTokens > 0 && keptTokens + size > target) break;
+          keptTokens += size;
+          keepFrom = index;
+        }
+        while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
+      }
+    } else {
+      for (let index = keepFrom - 1; index >= 0; index--) {
+        const message = this._messages[index];
+        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
+        const size = this._contextCache.messageMeta(message).size;
+        if (keptTokens > 0 && keptTokens + size > target) break;
+        keptTokens += size;
+        keepFrom = index;
+      }
+      while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
     }
-    for (let index = keepFrom - 1; index >= 0; index--) {
-      const message = this._messages[index];
-      if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-      const size = this._contextCache.messageMeta(message).size;
-      if (keptTokens > 0 && keptTokens + size > target) break;
-      keptTokens += size;
-      keepFrom = index;
-    }
-    while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
 
     const earlier = this._messages.slice(0, keepFrom);
     const transcript = earlier
@@ -314,9 +339,13 @@ export class ToolMethods {
       .slice(-6000);
 
     const planBlock = this._preservePlanBlock();
-    const newSummary = transcript
-      ? [this._summary, planBlock, transcript].filter(Boolean).join("\n").slice(-Math.max(512, this._maxSummaryChars()))
-      : [this._summary, planBlock].filter(Boolean).join("\n").slice(-Math.max(512, this._maxSummaryChars()));
+    const maxChars = Math.max(512, this._maxSummaryChars());
+    const head = [this._summary, planBlock].filter(Boolean).join("\n");
+    const headBudget = Math.floor(maxChars * 0.7);
+    const keptHead = head.length > headBudget ? head.slice(-headBudget) : head;
+    const transcriptBudget = Math.max(0, maxChars - keptHead.length - 1);
+    const keptTranscript = transcript ? transcript.slice(-transcriptBudget) : "";
+    const newSummary = [keptHead, keptTranscript].filter(Boolean).join("\n").slice(-maxChars);
 
     const kept = this._messages.slice(keepFrom);
     return {
@@ -347,6 +376,30 @@ export class ToolMethods {
     return parts.length ? `\nContext state: ${parts.join(" · ")}` : "";
   }
 
+  _clearCompactionIfStale(activeRun = this._activeRun) {
+    const compaction = this._compaction;
+    if (compaction.status === "idle") return;
+    const belongsToActiveRun = Boolean(
+      activeRun
+      && compaction.runId === activeRun.runId
+      && compaction.turnId === activeRun.turnId
+      && compaction.taskEpoch === activeRun.taskEpoch
+      && !activeRun.cancelled
+      && !activeRun.finalized,
+    );
+    if (!belongsToActiveRun) this._clearCompaction();
+  }
+
+  _recordCompactedRevision(sourceRevision) {
+    this._compactedRevisions.add(sourceRevision);
+    this._compactedRevisions.add(this._historyRevision);
+    while (this._compactedRevisions.size > 32) {
+      const oldest = this._compactedRevisions.values().next().value;
+      if (oldest === undefined) break;
+      this._compactedRevisions.delete(oldest);
+    }
+  }
+
   _compactMessages(force = false) {
     const sourceRevision = this._historyRevision;
     if (this._compactedRevisions.has(sourceRevision)) return false;
@@ -357,8 +410,7 @@ export class ToolMethods {
     this._requestStartIndex = result.requestStartIndex;
     this._usageTracker.bumpHistoryRevision();
     this._historyRevision = this._usageTracker.historyRevision;
-    this._compactedRevisions.add(sourceRevision);
-    this._compactedRevisions.add(this._historyRevision);
+    this._recordCompactedRevision(sourceRevision);
     this._compactedCheckpoint = {
       contextRevision: this._historyRevision,
       sourceRevision,

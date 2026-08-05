@@ -57,6 +57,20 @@ const PROVIDER_CAPABILITIES = {
     temperatureRange: [0, 2],
     topPRange: [0, 1],
   },
+  mistral: {
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsMaxTokens: true,
+    supportsStreaming: true,
+    supportsReasoningEffort: false,
+    supportsParallelTools: false,
+    supportsToolCalling: true,
+    supportsToolChoice: false,
+    supportsStreamOptions: false,
+    outputLimit: 32_000,
+    temperatureRange: [0, 2],
+    topPRange: [0, 1],
+  },
 };
 
 const DEFAULT_CAPABILITIES = {
@@ -80,6 +94,7 @@ export function resolveProviderId(model) {
   if (["big-cock", "cock"].includes(lower)) return "opencode";
   if (lower === "auto-free") return "auto-free";
   if (lower.startsWith("codex/")) return "codex";
+  if (lower === "vibe" || lower === "mistral/vibe") return "mistral";
   if (lower.startsWith("khazai-free/")) return "khazai-free";
   const separator = lower.indexOf("/");
   if (separator > 0) return lower.slice(0, separator);

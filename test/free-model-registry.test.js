@@ -271,7 +271,7 @@ test("Restart preserves the complete free-model list", async () => {
     ...zenModels(config).filter(model => model.alias !== "auto-free").map(model => model.alias),
     "auto-free",
   ];
-  assert.deepEqual(configuredModels().slice(0, leading.length), leading);
+  assert.deepEqual(configuredModels().filter(model => model !== "vibe").slice(0, leading.length), leading);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error("discovery down at restart"); };
   try {

@@ -1,7 +1,7 @@
 import { attachFileReferences } from "./file-reference.js";
 
 export async function consumeSessionEvents(context, runState) {
-  const { agent, input, analysisScope, retryProvider, approvedPlan, initialization, runId, turnId, planningRun, appendArchived, activeRef, analysisRef, pauseAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan, clearActive, activate, completeStreaming, resetStreaming, discardStreaming, updateUsage, responseBufferRef, completedRef, contextUsageRef, cancelledRunIdRef, pendingPermissionCallIdRef, structuredCallsRef, messageQueueRef, planRef, setContextUsage, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, appendResponseDelta, analysisActivityMessage, analysisEventIsCurrent, clearAnalysisActivity, clearPublicAnalysisActivity, failAnalysisActivity, discardResponseBuffer, cleanPlanOutput, removeAssistantProtocolText, removeEmoji, EMPTY_PLAN_STATE, classifyToolState, applyPlanEventState, applyPlanUpdateState, toolResultFailed, isInternalAgentFailure, isCompletionClaim, nextId, planWorkflowRef, planningQuestionRef, questionResolverRef, setExpandedTool, setQueuedCount, activeScopeRef, readFileName, thinkActivityFromPlan, workspace, setActiveMessage } = context;
+  const { agent, input, analysisScope, retryProvider, approvedPlan, initialization, runId, turnId, planningRun, appendArchived, activeRef, analysisRef, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan, clearActive, activate, completeStreaming, resetStreaming, discardStreaming, updateUsage, responseBufferRef, completedRef, contextUsageRef, cancelledRunIdRef, pendingPermissionCallIdRef, structuredCallsRef, messageQueueRef, planRef, setContextUsage, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, appendResponseDelta, analysisActivityMessage, analysisEventIsCurrent, clearAnalysisActivity, clearPublicAnalysisActivity, failAnalysisActivity, discardResponseBuffer, cleanPlanOutput, removeAssistantProtocolText, removeEmoji, EMPTY_PLAN_STATE, classifyToolState, applyPlanEventState, applyPlanUpdateState, toolResultFailed, isInternalAgentFailure, isCompletionClaim, nextId, planWorkflowRef, planningQuestionRef, questionResolverRef, setExpandedTool, setQueuedCount, activeScopeRef, readFileName, thinkActivityFromPlan, workspace, setActiveMessage } = context;
 updateUsage();
 const agentInput = retryProvider
   ? ""
@@ -52,6 +52,10 @@ for await (const ev of agent.loop(agentInput, undefined, {
     if (planningRun) setModeStatus({ mode: "plan", status: "exploring" });
     resetStreaming();
     finishReadBatch();
+    if (ev.phase === "continuation") {
+      resumeAnalysis();
+      continue;
+    }
     const currentPlan = planRef.current;
     const scopedPlan = planMatchesRun(currentPlan) ? currentPlan : EMPTY_PLAN_STATE;
     showAnalysis(thinkActivityFromPlan(scopedPlan.steps, ev.phase, scopedPlan.currentStepId));
@@ -287,11 +291,21 @@ for await (const ev of agent.loop(agentInput, undefined, {
       analysisScope,
       ev.token,
     );
+    if (activeRef.current?.type !== "streaming") {
+      activate({
+        id: `stream-${ev.runId || analysisScope.runId}-${ev.turnId || analysisScope.turnId}-${ev.taskEpoch ?? ""}`,
+        type: "streaming",
+        runId: ev.runId,
+        turnId: ev.turnId,
+        taskEpoch: ev.taskEpoch,
+      });
+    }
     continue;
   }
 
   if (ev.type === "stream-discard") {
     resetStreaming();
+    if (activeRef.current?.type === "streaming") clearActive();
     continue;
   }
 
@@ -369,6 +383,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
     const providerFailure = ev.recoverable || /^\[×\]/.test(safeContent);
     if (ev.type === "answer") {
       pauseAnalysis();
+      if (activeRef.current?.type === "streaming") clearActive();
       runState.finishedNormally = true;
       runState.finalResponse = safeContent;
     } else if (providerFailure) {
@@ -413,6 +428,8 @@ for await (const ev of agent.loop(agentInput, undefined, {
     runState.finalResponse = completeStreaming() || runState.finalResponse;
     if (activeRef.current?.type === "think") {
       analysisRef.current = clearAnalysisActivity(analysisRef.current, analysisScope);
+      clearActive();
+    } else if (activeRef.current?.type === "streaming") {
       clearActive();
     }
     runState.finishedNormally = true;

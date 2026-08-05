@@ -71,11 +71,9 @@ export function thinkActivityFromPlan(plan, phase, currentStepId = null) {
       step: stepLabel(items[pendingIndex], pendingIndex),
     };
   }
-  const text = phase === "continuation"
-    ? "Inspecting continuation after tool results"
-    : phase === "implementation"
-      ? "Preparing the implementation"
-      : "Analyzing the execution context";
+  const text = phase === "implementation"
+    ? "Preparing the implementation"
+    : "Analyzing the execution context";
   return { text, step: null };
 }
 

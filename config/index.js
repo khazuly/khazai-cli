@@ -203,6 +203,7 @@ export function configuredModels() {
     .filter(alias => alias !== MODEL && alias !== AUTO_FREE_MODEL);
   return [
     MODEL,
+    "vibe",
     ...aliases,
     AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>

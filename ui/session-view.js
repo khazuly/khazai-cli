@@ -67,9 +67,7 @@ return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", w
           model: displayModel(currentModel),
           modeStatus,
           contextUsage,
-          hasSpecificActivity: Boolean(
-            displayedActiveMessage && displayedActiveMessage.type !== "streaming"
-          ),
+          hasSpecificActivity: Boolean(displayedActiveMessage),
           activityScope: activeScopeRef.current,
           promptProps: {
             onSubmit: pendingQuestion ? answerQuestion : handlePromptSubmit,

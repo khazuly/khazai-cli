@@ -5,7 +5,7 @@ import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
 export { streamViewportText } from "./stream-viewport.js";
 
-const MODEL_LABELS = { "auto-free": "Auto (free)" };
+const MODEL_LABELS = { "auto-free": "Auto (free)", vibe: "Vibe" };
 let messageSequence = 0;
 
 export function displayModel(model) {

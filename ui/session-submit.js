@@ -77,7 +77,7 @@ responseBufferRef.current = createResponseBuffer(analysisScope);
 const gitBefore = sessionStoreRef.current.captureGitState();
 const agentStateBefore = agentRef.current?.exportSessionState?.() || null;
 const {
-  activate, clearActive, pauseAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis,
+  activate, clearActive, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis,
   finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan,
 } = createSessionActivityController({
   analysisScope, analysisRef, activeRef, setActiveMessage, appendArchived, planRef,
@@ -159,6 +159,7 @@ try {
     activeRef,
     analysisRef,
     pauseAnalysis,
+    resumeAnalysis,
     showAnalysis,
     updateAnalysis,
     showPublicAnalysis,

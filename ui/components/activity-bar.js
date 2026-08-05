@@ -99,6 +99,13 @@ export function WorkingShimmer({ frame = 0 }) {
   return h(TextShimmer, { text: "Working", frame });
 }
 
+function formatWorkingElapsed(ms) {
+  const total = Math.max(0, Math.floor(Number(ms) || 0));
+  const minutes = Math.floor(total / 60000);
+  const seconds = Math.floor((total % 60000) / 1000);
+  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+}
+
 export function ActivityBar({
   running = false,
   waitingForAnswer = false,
@@ -112,6 +119,7 @@ export function ActivityBar({
   const [frame, setFrame] = useState(0);
   const [now, setNow] = useState(Date.now());
   const scopeRef = useRef("");
+  const workingStartedRef = useRef(null);
 
   const {
     compactionStatus = "idle",
@@ -136,12 +144,18 @@ export function ActivityBar({
 
   useEffect(() => {
     setFrame(0);
+    if (genericWorking && workingStartedRef.current === null) {
+      workingStartedRef.current = Date.now();
+    }
+    if (!genericWorking) {
+      workingStartedRef.current = null;
+    }
     if (!animating) return undefined;
     const expectedScope = animationKey;
     const timer = setInterval(() => {
       if (scopeRef.current !== expectedScope) return;
       setFrame(v => v + 1);
-      if (compacting) setNow(Date.now());
+      if (compacting || genericWorking) setNow(Date.now());
     }, 150);
     timer.unref?.();
     return () => clearInterval(timer);
@@ -185,8 +199,12 @@ export function ActivityBar({
   } else if (waitingForAnswer) {
     activityText = `Action required · Waiting for approval${queue}`;
   } else if (genericWorking) {
+    const workingElapsed = workingStartedRef.current
+      ? Math.max(0, now - workingStartedRef.current)
+      : 0;
     activityContent = h(Text, { wrap: "truncate-end" },
       h(WorkingShimmer, { frame }),
+      h(Text, { color: theme.muted }, ` · ${formatWorkingElapsed(workingElapsed)}`),
       queue ? h(Text, { color: theme.muted }, queue) : null,
     );
   }

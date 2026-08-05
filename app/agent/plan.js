@@ -140,7 +140,7 @@ function requiredEvidenceFor(phase) {
   if (phase === "exploration") return ["inspection"];
   if (phase === "implementation") return ["mutation"];
   if (phase === "verification") return ["verification"];
-  return [];
+  return ["inspection", "mutation", "verification"];
 }
 
 function toolEvidenceType(tool) {
@@ -151,8 +151,17 @@ function toolEvidenceType(tool) {
   return null;
 }
 
-function matchingExisting(existing, description) {
-  return existing.find(item => item.description === description);
+function normalizedStepText(text) {
+  return String(text).trim().replace(/\s+/g, " ").replace(/[.,;:!?]+$/g, "").toLowerCase();
+}
+
+function matchingExisting(existing, description, claimedIds, scope) {
+  const key = normalizedStepText(description);
+  return existing.find(item => (
+    (item.taskEpoch ?? null) === (scope?.taskEpoch ?? null)
+    && normalizedStepText(item.description) === key
+    && !claimedIds.has(item.id)
+  )) || null;
 }
 
 function stepId(planId, description, index, usedIds) {
@@ -190,11 +199,13 @@ function successfulVerification(tool, result) {
 
 export function definePlanItems(todos, currentPlan, scope, planId = randomUUID()) {
   const existing = Array.isArray(currentPlan) ? currentPlan : [];
-  const usedIds = new Set();
+  if (!Array.isArray(todos) || todos.length === 0) return [];
+  const usedIds = new Set(existing.map(item => item.id));
+  const claimedIds = new Set();
   const newItems = (Array.isArray(todos) ? todos : []).map((todo, index) => {
     const description = String(todo?.content ?? todo?.description ?? "").trim();
     if (!description) return null;
-    const previous = matchingExisting(existing, description);
+    const previous = matchingExisting(existing, description, claimedIds, scope);
     const phase = previous?.phase || phaseFor(description);
     const completed = previous?.status === "completed"
       && (previous?.evidenceIds?.length || 0) > 0;
@@ -202,6 +213,7 @@ export function definePlanItems(todos, currentPlan, scope, planId = randomUUID()
     const active = previous?.status === "active";
     const id = previous?.id || stepId(planId, description, index, usedIds);
     usedIds.add(id);
+    if (previous) claimedIds.add(previous.id);
     return {
       id,
       planId,
@@ -221,9 +233,11 @@ export function definePlanItems(todos, currentPlan, scope, planId = randomUUID()
       activeToolCallId: active ? previous?.activeToolCallId || null : null,
     };
   }).filter(Boolean);
+  const overlapsExisting = newItems.some(item => existing.some(previous => previous.id === item.id));
   const retainedCompleted = existing.filter(previous => (
     previous.status === "completed"
     && !newItems.some(item => item.id === previous.id)
+    && (overlapsExisting || previous.taskEpoch === scope?.taskEpoch)
   )).map(item => ({
     ...item,
     runId: scope?.runId,
@@ -288,7 +302,7 @@ export function canTransition(step, nextStatus, evidence = null) {
 }
 
 export function associatePlanStep(plan, tool, scope) {
-  if (!Array.isArray(plan) || !scopeMatches(plan[0], scope)) return null;
+  if (!Array.isArray(plan) || plan.length === 0 || !scopeMatches(plan[0], scope)) return null;
   const evidenceType = toolEvidenceType(tool);
   if (!evidenceType) return null;
   if (

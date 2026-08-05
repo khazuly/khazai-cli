@@ -63,7 +63,10 @@ export function planToolIsReadOnly(call, definition = null) {
     /(?:^|[;&|]\s*)\s*(?:touch|mkdir|rm|rmdir|unlink|cp|mv|install|tee|truncate|chmod|chown|ln)\b/i.test(command)
     || /\b(?:npm|pnpm|yarn|bun|pip|pip3)\s+(?:install|add|remove|uninstall|update)\b/i.test(command)
     || /\bgit\s+(?:add|commit|push|pull|merge|rebase|reset|checkout|clean|stash|switch|restore)\b/i.test(command)
-    || /\b(?:mktemp|sed\s+-i|curl\b[\s\S]*\s-o\b|wget\b[\s\S]*\s-O\b)\b/i.test(command)
+    || /\b(?:mktemp|sed\s+-i)\b/i.test(command)
+    || /\bcurl\b[\s\S]*?(?:\s-[A-Za-z]*[oO](?!\s*-)|--output-document(?:\s|=)|--output(?:\s|=)|--remote-name\b|--remote-header-name\b)/i.test(command)
+    || (/\bwget\b[\s\S]*https?:\/\//i.test(command)
+      && !/\bwget\b[\s\S]*?(?:\s-O-(?=\s|$)|--output-document=-|--spider\b)/i.test(command))
     || /\b(?:node|python3?)\s+(?:-e|-c|<<)\b/i.test(command)
   ) return false;
   const withoutSafeDevices = command.replace(
