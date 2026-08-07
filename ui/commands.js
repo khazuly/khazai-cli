@@ -1,13 +1,11 @@
 import { THEME_NAMES, THEME_DESCRIPTIONS } from "./theme.js";
+import { zenModels } from "../config/khazai-free-models.js";
 
 const MODELS = [
-  { name: "big-cock", description: "Big Cock (default)" },
-  { name: "boboiboy", description: "Advanced reasoning and coding" },
-  { name: "komodo", description: "Fast coding assistant" },
-  { name: "ombak", description: "Balanced coding model" },
-  { name: "petir", description: "Lightweight and fast" },
-  { name: "kutub", description: "Compact coding model" },
-  { name: "mecha", description: "Tool-capable reasoning model" },
+  ...zenModels().filter(model => model.upstreamModel).map(model => ({
+    name: model.key,
+    description: model.alias === "big-cock" ? "Big Cock (default)" : model.description,
+  })),
   { name: "auto-free", description: "Auto (free)" },
 ];
 

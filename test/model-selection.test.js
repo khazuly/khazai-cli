@@ -44,18 +44,18 @@ test("model selection rebuilds the agent with the active tool registry", async (
   assert.equal(created[0].options.model, "big-cock");
 });
 
-test("Big Cock remains the default and all KhazAI free aliases are registered", () => {
+test("Big Cock remains the default and KhazAI free models use canonical public names", () => {
   assert.equal(DEFAULTS.model, "big-cock");
   assert.equal(normalizeModel("gpt"), "big-cock");
   assert.equal(normalizeModel("local/qwen"), "local/qwen");
   assert.deepEqual(MODELS, [
     { name: "big-cock", description: "Big Cock (default)" },
-    { name: "boboiboy", description: "Advanced reasoning and coding" },
-    { name: "komodo", description: "Fast coding assistant" },
-    { name: "ombak", description: "Balanced coding model" },
-    { name: "petir", description: "Lightweight and fast" },
-    { name: "kutub", description: "Compact coding model" },
-    { name: "mecha", description: "Tool-capable reasoning model" },
+    { name: "deepseek/deepseek-v4-flash-free", description: "Advanced reasoning and coding" },
+    { name: "mimo/mimo-v2.5-free", description: "Fast coding assistant" },
+    { name: "laguna/laguna-s-2.1-free", description: "Balanced coding model" },
+    { name: "ling/ling-3.0-flash-free", description: "Lightweight and fast" },
+    { name: "north/north-mini-code-free", description: "Compact coding model" },
+    { name: "nemotron/nemotron-3-ultra-free", description: "Tool-capable reasoning model" },
     { name: "auto-free", description: "Auto (free)" },
   ]);
   assert.deepEqual(
@@ -66,12 +66,18 @@ test("Big Cock remains the default and all KhazAI free aliases are registered", 
   assert.equal(COMMANDS.some(command => command.name === "/reasoning"), true);
   assert.deepEqual(MODEL_LABELS, {
     "big-cock": "Big Cock",
-    "boboiboy": "Boboiboy",
-    "komodo": "Komodo",
-    "ombak": "Ombak",
-    "petir": "Petir",
-    "kutub": "Kutub",
-    "mecha": "Mecha",
+    "boboiboy": "deepseek/deepseek-v4-flash-free",
+    "deepseek/deepseek-v4-flash-free": "deepseek/deepseek-v4-flash-free",
+    "komodo": "mimo/mimo-v2.5-free",
+    "mimo/mimo-v2.5-free": "mimo/mimo-v2.5-free",
+    "ombak": "laguna/laguna-s-2.1-free",
+    "laguna/laguna-s-2.1-free": "laguna/laguna-s-2.1-free",
+    "petir": "ling/ling-3.0-flash-free",
+    "ling/ling-3.0-flash-free": "ling/ling-3.0-flash-free",
+    "kutub": "north/north-mini-code-free",
+    "north/north-mini-code-free": "north/north-mini-code-free",
+    "mecha": "nemotron/nemotron-3-ultra-free",
+    "nemotron/nemotron-3-ultra-free": "nemotron/nemotron-3-ultra-free",
     "auto-free": "Auto (free)",
   });
 });

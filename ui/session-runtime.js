@@ -3,13 +3,14 @@ import { builtinTools } from "../app/builtin-tools.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
+import { publicModelName } from "../config/khazai-free-models.js";
 export { streamViewportText } from "./stream-viewport.js";
 
 const MODEL_LABELS = { "auto-free": "Auto (free)", vibe: "Vibe" };
 let messageSequence = 0;
 
 export function displayModel(model) {
-  return MODEL_LABELS[model] || model;
+  return MODEL_LABELS[model] || publicModelName(model) || model;
 }
 
 export function buildRegistry(workspace, mcpTools = []) {

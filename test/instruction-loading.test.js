@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,6 +29,19 @@ test("nearest AGENTS.md is cached and reloaded only after it changes", () => {
   assert.doesNotMatch(service.getSystemPromptBlock(), /root instruction/);
   writeFileSync(nestedPath, "nested instruction changed");
   assert.match(service.getSystemPromptBlock(), /nested instruction changed/);
+});
+
+test("instructions reload when content changes even if mtime and size are unchanged", () => {
+  const { root, nested } = workspace();
+  const instructionPath = join(root, "AGENTS.md");
+  writeFileSync(instructionPath, "instruction one");
+  const service = new InstructionService(nested, root);
+  assert.match(service.getSystemPromptBlock(), /instruction one/);
+  const before = statSync(instructionPath);
+  writeFileSync(instructionPath, "instruction two");
+  utimesSync(instructionPath, before.atime, new Date(before.mtimeMs));
+  assert.match(service.getSystemPromptBlock(), /instruction two/);
+  assert.doesNotMatch(service.getSystemPromptBlock(), /instruction one/);
 });
 
 test("AGENTS.md is hidden system context before every agent request", async () => {

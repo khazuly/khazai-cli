@@ -4,9 +4,16 @@ import { performance } from "node:perf_hooks";
 const CANONICAL_ROLES = ["system", "user", "assistant", "tool"];
 const FRAME_ENTRY_LIMIT = 8;
 const PROJECTION_ENTRY_LIMIT = 8;
+const TOKEN_ENTRY_LIMIT = 2048;
 
 function tokensForLength(length) {
   return Math.max(1, Math.ceil(length / 4));
+}
+
+function trimEntries(entries, limit) {
+  while (entries.size > limit) {
+    entries.delete(entries.keys().next().value);
+  }
 }
 
 export class ContextCache {
@@ -29,6 +36,7 @@ export class ContextCache {
     for (const entry of state?.entries || []) {
       if (entry?.key && Number.isFinite(entry.size)) this._tokenEntries.set(entry.key, entry);
     }
+    trimEntries(this._tokenEntries, TOKEN_ENTRY_LIMIT);
   }
 
   reset() {
@@ -60,6 +68,7 @@ export class ContextCache {
       size: persisted?.size ?? tokensForLength(content.length) + tokensForLength(toolCalls.length),
     };
     this._tokenEntries.set(key, { key, size: meta.size });
+    trimEntries(this._tokenEntries, TOKEN_ENTRY_LIMIT);
     this._messageMeta.set(message, meta);
     this.stats.metaComputations++;
     return meta;

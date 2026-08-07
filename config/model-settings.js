@@ -134,13 +134,14 @@ export function settingIsAutoFreeOnly(key) {
 export function loadModelSettings(model) {
   if (!model) return {};
   const config = readConfigFile();
-  return config.modelSettings?.[model] || {};
+  return config.modelSettings?.[canonicalModelKey(model)] || {};
 }
 
 export function saveModelSettings(model, settings) {
   if (!model) return;
+  const canonical = canonicalModelKey(model);
   if (settings.contextLimit !== undefined && settings.contextLimit !== null) {
-    const validation = validateSetting("contextLimit", settings.contextLimit, model);
+    const validation = validateSetting("contextLimit", settings.contextLimit, canonical);
     if (!validation.valid) throw new Error(validation.message);
   }
   const cleaned = {};
@@ -153,30 +154,31 @@ export function saveModelSettings(model, settings) {
     ...config,
     modelSettings: {
       ...(config.modelSettings || {}),
-      [model]: cleaned,
+      [canonical]: cleaned,
     },
-  }), { reason: `model-settings:${model}` });
+  }), { reason: `model-settings:${canonical}` });
 }
 
 export function resetModelSettings(model, section) {
   if (!model) return;
+  const canonical = canonicalModelKey(model);
   updateConfigFile(config => {
     const modelSettings = { ...(config.modelSettings || {}) };
     if (section) {
       const sectionDef = SETTING_SECTIONS[section] || AUTO_FREE_SECTIONS[section];
       if (!sectionDef) return config;
-      const current = { ...(modelSettings[model] || {}) };
+      const current = { ...(modelSettings[canonical] || {}) };
       for (const setting of sectionDef.settings) delete current[setting.key];
-      modelSettings[model] = current;
+      modelSettings[canonical] = current;
     } else {
-      delete modelSettings[model];
+      delete modelSettings[canonical];
     }
     return { ...config, modelSettings };
-  }, { reason: `model-settings:${model}` });
+  }, { reason: `model-settings:${canonical}` });
 }
 
 function contextMetadata(model, config, providerMetadata) {
-  const requested = String(model || "");
+  const requested = canonicalModelKey(model);
   const providerId = resolveProviderId(requested);
   const modelId = requested.includes("/") ? requested.slice(requested.indexOf("/") + 1) : requested;
   const exactId = providerId === "opencode" && ["big-cock", "cock"].includes(requested.toLowerCase())
@@ -196,8 +198,9 @@ export function resolveEffectiveSettings(model, {
   providerMetadata = {},
 } = {}) {
   const persisted = config === undefined ? readConfigFile() : config;
-  const modelDefaults = persisted?.modelSettings?.[model] || {};
-  const pv = providerDefaults(resolveProviderId(model));
+  const canonical = canonicalModelKey(model);
+  const modelDefaults = persisted?.modelSettings?.[canonical] || {};
+  const pv = providerDefaults(resolveProviderId(canonical));
   const result = { ...GLOBAL_DEFAULTS };
 
   for (const [key, value] of Object.entries(pv)) {
@@ -221,8 +224,8 @@ export function resolveEffectiveSettings(model, {
 
   const sessionLimit = strictPositiveInt(sessionOverrides.contextLimit);
   const modelLimit = strictPositiveInt(modelDefaults.contextLimit)
-    || strictPositiveInt(persisted?.models?.[model]?.contextLimit);
-  const providerLimit = contextMetadata(model, persisted, providerMetadata);
+    || strictPositiveInt(persisted?.models?.[canonical]?.contextLimit);
+  const providerLimit = contextMetadata(canonical, persisted, providerMetadata);
   const applicationLimit = strictPositiveInt(persisted?.contextLimit)
     || strictPositiveInt(GLOBAL_DEFAULTS.contextLimit);
   result.contextLimit = sessionLimit || modelLimit || providerLimit || applicationLimit || null;

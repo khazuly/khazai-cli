@@ -4,7 +4,10 @@ import { useTheme } from "../theme.js";
 import { zenModels } from "../../config/khazai-free-models.js";
 
 export const MODEL_LABELS = {
-  ...Object.fromEntries(zenModels().map(model => [model.alias, model.displayName])),
+  ...Object.fromEntries(zenModels().flatMap(model => [
+    [model.alias, model.displayName],
+    [model.key, model.displayName],
+  ])),
   "auto-free": "Auto (free)",
 };
 

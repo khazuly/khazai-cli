@@ -5,10 +5,10 @@ import { deriveActivityLabel } from "./components/activity-bar.js";
 import { normalizeVerticalWhitespace } from "./text-layout.js";
 import { classifyToolState } from "./tool-presentation.js";
 import { removeAssistantProtocolText, removeEmoji } from "../lib/assistant-text.js";
-import { stealthModelDisplayName } from "../config/khazai-free-models.js";
+import { publicModelName } from "../config/khazai-free-models.js";
 
 const MODEL_LABELS = { "auto-free": "Auto (free)" };
-export const displayModel = model => MODEL_LABELS[model] || stealthModelDisplayName(model) || model;
+export const displayModel = model => MODEL_LABELS[model] || publicModelName(model) || model;
 
 export function buildRegistry(workspace, mcpTools = []) {
   const r = new Registry();

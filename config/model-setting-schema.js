@@ -95,10 +95,12 @@ export function resolveProviderId(model) {
   if (lower === "auto-free") return "auto-free";
   if (lower.startsWith("codex/")) return "codex";
   if (lower === "vibe" || lower === "mistral/vibe") return "mistral";
+  const zen = resolveZenModel(lower);
+  if (zen) return zen.alias === "big-cock" ? "opencode" : "khazai-free";
   if (lower.startsWith("khazai-free/")) return "khazai-free";
   const separator = lower.indexOf("/");
   if (separator > 0) return lower.slice(0, separator);
-  return resolveZenModel(lower) ? "khazai-free" : "opencode";
+  return "opencode";
 }
 
 export function providerIdFromModel(model) {

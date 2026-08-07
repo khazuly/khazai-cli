@@ -27,19 +27,22 @@ export async function modelStatusList({ force = false } = {}) {
 export async function selectableModels({ freeOnly = false, force = false } = {}) {
   const config = loadConfig();
   const list = await modelStatusList({ force });
-  const free = list.map(model => model.alias);
+  const free = list.map(model => model.key);
   if (freeOnly) return free;
-  const zenAliases = new Set(zenModels(config).map(model => model.alias));
+  const zenKeys = new Set(zenModels(config).map(model => model.key));
   return [
     ...free,
-    ...configuredModels().filter(model => model !== "auto-free" && !zenAliases.has(model)),
+    ...configuredModels().filter(model => model !== "auto-free" && !zenKeys.has(model)),
   ];
 }
 
 export async function modelDetails(alias) {
   const config = loadConfig();
   await refreshZenAvailability();
-  const model = zenModelStatusList(config).find(entry => entry.alias === String(alias).toLowerCase());
+  const requested = String(alias).toLowerCase();
+  const model = zenModelStatusList(config).find(entry => (
+    entry.key === requested || entry.alias === requested || String(entry.displayName).toLowerCase() === requested
+  ));
   if (!model) return null;
   const capabilities = resolveProviderCapabilities(model.alias, {
     capabilities: model.capabilities,
@@ -80,8 +83,8 @@ export function modelAliases({ debug = false } = {}) {
     "",
     ...zenModels(config).map(model => (
       debug && process.env.KHAZAI_DEBUG
-        ? `- ${model.alias} (${model.upstreamModel})`
-        : `- ${model.alias}`
+        ? `- ${model.key} (${model.upstreamModel})`
+        : `- ${model.displayName}`
     )),
   ].join("\n");
 }
@@ -94,7 +97,7 @@ export function modelSelectionDescription(alias) {
 export function formatModelStatusList(list) {
   const lines = list.map(model => {
     const status = EXCEPTIONAL_STATUSES.has(model.status) ? ` (${statusLabel(model.status)})` : "";
-    return `- ${model.alias}${status}`;
+    return `- ${model.displayName}${status}`;
   });
   return [KHAZAI_FREE_MODEL_CATEGORY, "", ...lines].join("\n");
 }

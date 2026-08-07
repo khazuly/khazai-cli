@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULTS } from "./defaults.js";
 import { isKnownTheme } from "../ui/theme.js";
-import { zenModels } from "./khazai-free-models.js";
+import { zenModels, canonicalModelKey } from "./khazai-free-models.js";
 import {
   GLOBAL_CONFIG_PATH,
   readConfigFile,
@@ -26,7 +26,7 @@ export function normalizeModel(model) {
   if (!value) return MODEL;
   if (value === AUTO_FREE_MODEL) return AUTO_FREE_MODEL;
   if (MODEL_ALIASES.has(value)) return MODEL;
-  return String(model);
+  return canonicalModelKey(model) || String(model);
 }
 
 function loadJSON(path) {
@@ -199,7 +199,7 @@ export { subscribeConfig };
 export function configuredModels() {
   const config = loadConfig();
   const aliases = zenModels(config)
-    .map(model => model.alias)
+    .map(model => model.key)
     .filter(alias => alias !== MODEL && alias !== AUTO_FREE_MODEL);
   return [
     MODEL,

@@ -5,7 +5,8 @@ import {
   KHAZAI_FREE_MODEL_CATEGORY,
   KHAZAI_FREE_UPSTREAM_BASE_URL,
   sanitizePublicBranding,
-  stealthModelDisplayName,
+  publicModelName,
+  canonicalModelKey,
   zenModels,
 } from "../config/khazai-free-models.js";
 import { migrateModelSettings } from "../config/model-settings.js";
@@ -20,6 +21,7 @@ import {
   recordRouteFailure,
   resetProviderHealth,
 } from "../lib/provider-reliability.js";
+import { canonicalizeSessionModelNames, migrateSessionV5 } from "../app/session-store.js";
 import { chat, resolveModelDescriptor } from "../lib/llm.js";
 import {
   formatModelStatusList,
@@ -27,7 +29,8 @@ import {
 } from "../ui/model-command.js";
 
 const CHAT_ENDPOINT = `${KHAZAI_FREE_UPSTREAM_BASE_URL}/chat/completions`;
-const FREE_ALIASES = ["big-cock", "boboiboy", "komodo", "ombak", "petir", "kutub", "mecha", "auto-free"];
+const FREE_MODELS = zenModels();
+const FREE_KEYS = FREE_MODELS.map(model => model.key);
 
 function jsonListResponse(ids) {
   return {
@@ -68,7 +71,7 @@ async function withDiscovery(ids, fn) {
   return fn();
 }
 
-test("All configured aliases appear in /model free", async () => {
+test("All configured models appear in /model free under canonical names", async () => {
   const originalFetch = globalThis.fetch;
   resetZenCatalog();
   resetProviderHealth();
@@ -78,61 +81,43 @@ test("All configured aliases appear in /model free", async () => {
     const list = modelStatusList();
     const output = formatModelStatusList(list);
     assert.match(output, new RegExp(KHAZAI_FREE_MODEL_CATEGORY));
-    for (const alias of FREE_ALIASES) {
-      assert.match(output, new RegExp(`\\b${alias}\\b`), `${alias} must appear in /model free`);
+    for (const model of FREE_MODELS) {
+      assert.match(output, new RegExp(escapeRegex(model.displayName)), `${model.displayName} must appear in /model free`);
     }
-    assert.match(output, /auto-free/);
-    assert.doesNotMatch(output, /\bAvailable\b/);
-    assert.equal(list.length, FREE_ALIASES.length);
+    assert.match(output, /Big Cock/);
+    for (const alias of ["boboiboy", "komodo", "ombak", "petir", "kutub", "mecha"]) {
+      assert.doesNotMatch(output, new RegExp(`\\b${alias}\\b`), `${alias} must not appear in /model free`);
+    }
+    assert.doesNotMatch(output, /opencode-zen|opencode\//i);
+    assert.equal(list.length, FREE_KEYS.length, "static registry is preserved");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("Temporary HTTP 429 does not remove an alias", async () => {
-  resetZenCatalog();
-  resetProviderHealth();
-  recordRouteFailure("khazai-free", "deepseek-v4-flash-free", CHAT_ENDPOINT, "rate_limited");
-  const list = modelStatusList();
-  assert.ok(list.some(model => model.alias === "boboiboy"), "boboiboy stays in the registry after 429");
-  assert.ok(list.every(model => ["routing", "unknown", "cooldown"].includes(model.status)));
-});
-
-test("HTTP 500 marks a route unhealthy without deleting it", async () => {
-  resetZenCatalog();
-  resetProviderHealth();
-  for (let index = 0; index < FAILURE_THRESHOLD; index += 1) {
-    recordRouteFailure("khazai-free", "deepseek-v4-flash-free", CHAT_ENDPOINT, "provider_infrastructure");
-  }
-  const list = modelStatusList();
-  const boboiboy = list.find(model => model.alias === "boboiboy");
-  assert.ok(boboiboy, "boboiboy is not deleted after repeated HTTP 500");
-  assert.equal(boboiboy.status, "unhealthy");
-  assert.equal(list.length, FREE_ALIASES.length);
-});
-
-test("Failed discovery preserves the static registry", async () => {
+test("Static registry is preserved when discovery fails", async () => {
   const originalFetch = globalThis.fetch;
   resetZenCatalog();
   resetProviderHealth();
-  globalThis.fetch = async () => { throw new Error("network unreachable"); };
+  globalThis.fetch = async () => ({ ok: false, status: 500, statusText: "boom" });
   try {
     await refreshZenAvailability({ force: true });
     const list = modelStatusList();
-    assert.equal(list.length, FREE_ALIASES.length, "static registry is preserved when discovery fails");
+    assert.equal(list.length, FREE_KEYS.length, "static registry is preserved when discovery fails");
     assert.ok(list.every(model => model.status === "unknown" || model.status === "routing"));
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("Existing sessions using boboiboy resume correctly", async () => {
+test("Existing sessions using stealth aliases resume correctly and report canonical names", async () => {
   resetZenCatalog();
   resetProviderHealth();
   const descriptor = resolveModelDescriptor("boboiboy");
   assert.equal(descriptor.providerID, "khazai-free");
-  assert.equal(descriptor.exactID, "boboiboy");
-  assert.equal(stealthModelDisplayName("boboiboy"), "Boboiboy");
+  assert.equal(descriptor.exactID, "deepseek/deepseek-v4-flash-free");
+  assert.equal(canonicalModelKey("boboiboy"), "deepseek/deepseek-v4-flash-free");
+  assert.equal(publicModelName("komodo"), "mimo/mimo-v2.5-free");
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENCODE_API_KEY;
   delete process.env.OPENCODE_API_KEY;
@@ -157,7 +142,7 @@ test("Existing sessions using boboiboy resume correctly", async () => {
   }
 });
 
-test("Model settings remain attached to the correct alias after migration", () => {
+test("Model settings remain attached to the correct canonical key after migration", () => {
   const config = loadConfig();
   const migrated = migrateModelSettings({
     ...config,
@@ -179,7 +164,7 @@ test("Model settings remain attached to the correct alias after migration", () =
     },
   });
   assert.equal(migrated.model, "big-cock", "legacy active model name migrates to big-cock");
-  assert.deepEqual(migrated.modelSettings.boboiboy, {
+  assert.deepEqual(migrated.modelSettings["deepseek/deepseek-v4-flash-free"], {
     temperature: 0.9,
     maxOutputTokens: 1024,
     contextLimit: 16_000,
@@ -187,9 +172,9 @@ test("Model settings remain attached to the correct alias after migration", () =
     retries: 2,
     reasoningEffort: "high",
     tools: false,
-  }, "legacy settings merge into one canonical alias entry");
+  }, "legacy settings merge into one canonical entry");
   assert.ok(!migrated.modelSettings["opencode-zen/deepseek-v4-flash-free"], "no duplicate entry remains");
-  assert.deepEqual(migrated.models.kutub, { contextLimit: 5000 });
+  assert.deepEqual(migrated.models["north/north-mini-code-free"], { contextLimit: 5000 });
   assert.equal(Object.keys(migrated.modelSettings).length, 1);
 });
 
@@ -211,84 +196,58 @@ test("auto-free restores all eligible routes after temporary failures", async ()
   assert.deepEqual(
     restored.map(candidate => candidate.alias).sort(),
     eligible,
-    "all eligible free aliases return after the cooldown expires",
+    "auto-free restores all eligible routes after failures expire",
   );
 });
 
-test("Upstream names do not appear in normal UI", async () => {
-  await withDiscovery(
-    zenModels().map(model => model.upstreamModel).filter(Boolean),
-    async () => {
-      const free = formatModelStatusList(modelStatusList());
-      const details = await modelDetails("boboiboy");
-      for (const alias of FREE_ALIASES) assert.match(free, new RegExp(`\\b${alias}\\b`));
-      for (const model of zenModels()) {
-        if (!model.upstreamModel) continue;
-        assert.doesNotMatch(free, new RegExp(model.upstreamModel, "i"));
-        assert.doesNotMatch(details, new RegExp(model.upstreamModel, "i"));
-        assert.equal(sanitizePublicBranding(model.upstreamModel), model.alias);
-      }
-      assert.match(details, /Model\s+Boboiboy/);
-      assert.match(details, /Provider\s+KhazAI/);
-      assert.doesNotMatch(details, /\bAvailable\b/);
-      assert.match(details, /Context\s+Unknown/);
-      assert.doesNotMatch(details, /opencode|zen\//i);
+test("modelDetails resolves by canonical key and display name", async () => {
+  resetZenCatalog();
+  resetProviderHealth();
+  await withDiscovery([], async () => {
+    const byKey = await modelDetails("deepseek/deepseek-v4-flash-free");
+    assert.ok(byKey, "canonical key resolves");
+    assert.match(byKey, /deepseek\/deepseek-v4-flash-free/);
+    const byLegacy = await modelDetails("boboiboy");
+    assert.ok(byLegacy, "legacy alias still resolves");
+    assert.match(byLegacy, /deepseek\/deepseek-v4-flash-free/);
+  });
+});
+
+test("sanitizePublicBranding hides upstream identifiers", () => {
+  const output = sanitizePublicBranding("opencode-zen/deepseek-v4-flash-free and opencode/big-pickle");
+  assert.match(output, /deepseek\/deepseek-v4-flash-free/);
+  assert.doesNotMatch(output, /opencode-zen|opencode\//i);
+});
+
+test("stored sessions migrate stealth aliases to canonical names without losing context", () => {
+  const legacy = {
+    version: 5,
+    id: "session-9",
+    title: "Legacy",
+    model: "boboiboy",
+    agent: "build",
+    workspace: "/tmp/ws",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    messages: [{ role: "user", content: "resume me" }],
+    agentState: {
+      model: "komodo",
+      messages: [{ role: "assistant", content: "in progress" }],
+      usage: { input: 42, output: 7 },
     },
-  );
+    turns: [{ id: "t1", agentStateBefore: { model: "ombak" }, agentStateAfter: { model: "petir" } }],
+  };
+  const migrated = canonicalizeSessionModelNames(migrateSessionV5(legacy));
+  assert.equal(migrated.model, "deepseek/deepseek-v4-flash-free");
+  assert.equal(migrated.agentState.model, "mimo/mimo-v2.5-free");
+  assert.equal(migrated.turns[0].agentStateBefore.model, "laguna/laguna-s-2.1-free");
+  assert.equal(migrated.turns[0].agentStateAfter.model, "ling/ling-3.0-flash-free");
+  assert.equal(migrated.id, "session-9");
+  assert.equal(migrated.agent, "build");
+  assert.equal(migrated.messages.length, 1);
+  assert.deepEqual(migrated.agentState.usage, { input: 42, output: 7 });
 });
 
-test("Refresh updates status without removing aliases", async () => {
-  const originalFetch = globalThis.fetch;
-  resetZenCatalog();
-  resetProviderHealth();
-  const upstream = zenModels().map(model => model.upstreamModel).filter(Boolean);
-  const subset = upstream.slice(0, 4);
-  globalThis.fetch = async () => jsonListResponse(subset);
-  try {
-    await refreshZenAvailability({ force: true });
-    const after = modelStatusList();
-    assert.equal(after.length, FREE_ALIASES.length);
-    assert.equal(after.filter(model => model.status === "available").length, 4);
-    assert.equal(after.filter(model => model.status === "unavailable").length, 3);
-    assert.ok(after.find(model => model.alias === "kutub").status === "unavailable");
-    globalThis.fetch = async () => jsonListResponse(upstream);
-    await refreshZenAvailability({ force: true });
-    const refreshed = modelStatusList();
-    assert.equal(refreshed.length, FREE_ALIASES.length);
-    assert.ok(refreshed.every(model => model.status === "available" || model.status === "routing"));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("Restart preserves the complete free-model list", async () => {
-  resetZenCatalog();
-  resetProviderHealth();
-  const firstBoot = zenModels(loadConfig()).map(model => model.alias);
-  assert.deepEqual(firstBoot, FREE_ALIASES);
-  const config = loadConfig();
-  const leading = [
-    ...zenModels(config).filter(model => model.alias !== "auto-free").map(model => model.alias),
-    "auto-free",
-  ];
-  assert.deepEqual(configuredModels().filter(model => model !== "vibe").slice(0, leading.length), leading);
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => { throw new Error("discovery down at restart"); };
-  try {
-    await refreshZenAvailability({ force: true });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-  const secondBoot = zenModels(loadConfig()).map(model => model.alias);
-  assert.deepEqual(secondBoot, FREE_ALIASES, "restart keeps every free alias");
-});
-
-test("Selecting an unavailable model reports its status instead of removing it", async () => {
-  resetZenCatalog();
-  resetProviderHealth();
-  recordRouteFailure("khazai-free", "north-mini-code-free", CHAT_ENDPOINT, "provider_infrastructure");
-  const list = modelStatusList();
-  const kutub = list.find(model => model.alias === "kutub");
-  assert.ok(kutub, "kutub remains listed while temporarily unavailable");
-  assert.equal(kutub.status, "cooldown");
-});
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

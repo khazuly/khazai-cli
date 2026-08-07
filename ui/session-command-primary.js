@@ -190,17 +190,21 @@ if (cmd === "/model" || cmd === "/models") {
   if (parts.length) {
     const alias = parts.join(" ");
     const list = await modelStatusList();
-    const entry = list.find(model => model.alias === alias.toLowerCase());
+    const entry = list.find(model => (
+      model.key === alias.toLowerCase()
+      || model.alias === alias.toLowerCase()
+      || String(model.displayName).toLowerCase() === alias.toLowerCase()
+    ));
     if (!entry) {
       await chooseModel(alias);
       return;
     }
-    await chooseModel(entry.alias);
+    await chooseModel(entry.key);
     if (entry.status !== "available") {
       appendArchived({
         id: nextId(),
         type: "answer",
-        content: `${entry.alias} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
+        content: `${entry.displayName} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
       });
     }
     return;
@@ -209,9 +213,11 @@ if (cmd === "/model" || cmd === "/models") {
   const list = await selectableModels();
   const zenList = await modelStatusList();
   const choices = list.map(alias => {
-    const entry = zenList.find(model => model.alias === alias);
+    const entry = zenList.find(model => model.key === alias || model.alias === alias);
     const label = entry
-      ? EXCEPTIONAL_STATUSES.has(entry.status) ? `${alias} (${entry.statusLabel})` : alias
+      ? EXCEPTIONAL_STATUSES.has(entry.status)
+        ? `${entry.displayName} (${entry.statusLabel})`
+        : entry.displayName
       : displayModel(alias);
     return { label, value: alias };
   });
@@ -220,13 +226,15 @@ if (cmd === "/model" || cmd === "/models") {
     values: choices,
   });
   if (!selected) return;
-  const entry = zenList.find(model => model.alias === selected);
+  const entry = zenList.find(model => (
+    model.key === selected || model.alias === selected
+  ));
   await chooseModel(selected);
   if (entry && entry.status !== "available") {
     appendArchived({
       id: nextId(),
       type: "answer",
-      content: `${entry.alias} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
+      content: `${entry.displayName} is ${entry.statusLabel.toLowerCase()}. It remains selected.`,
     });
   }
   return;

@@ -7,7 +7,7 @@ export const KHAZAI_FREE_MODEL_CATEGORY = "KhazAI Free Models";
 const MODELS = [
   {
     alias: "big-cock",
-    displayName: "Big Cock",
+    publicName: "Big Cock",
     upstreamModel: "big-pickle",
     description: "General coding",
     capabilities: {
@@ -18,7 +18,7 @@ const MODELS = [
   },
   {
     alias: "boboiboy",
-    displayName: "Boboiboy",
+    publicName: "deepseek/deepseek-v4-flash-free",
     upstreamModel: "deepseek-v4-flash-free",
     description: "Advanced reasoning and coding",
     capabilities: {
@@ -29,7 +29,7 @@ const MODELS = [
   },
   {
     alias: "komodo",
-    displayName: "Komodo",
+    publicName: "mimo/mimo-v2.5-free",
     upstreamModel: "mimo-v2.5-free",
     description: "Fast coding assistant",
     capabilities: {
@@ -40,7 +40,7 @@ const MODELS = [
   },
   {
     alias: "ombak",
-    displayName: "Ombak",
+    publicName: "laguna/laguna-s-2.1-free",
     upstreamModel: "laguna-s-2.1-free",
     description: "Balanced coding model",
     capabilities: {
@@ -51,7 +51,7 @@ const MODELS = [
   },
   {
     alias: "petir",
-    displayName: "Petir",
+    publicName: "ling/ling-3.0-flash-free",
     upstreamModel: "ling-3.0-flash-free",
     description: "Lightweight and fast",
     capabilities: {
@@ -62,7 +62,7 @@ const MODELS = [
   },
   {
     alias: "kutub",
-    displayName: "Kutub",
+    publicName: "north/north-mini-code-free",
     upstreamModel: "north-mini-code-free",
     description: "Compact coding model",
     capabilities: {
@@ -73,7 +73,7 @@ const MODELS = [
   },
   {
     alias: "mecha",
-    displayName: "Mecha",
+    publicName: "nemotron/nemotron-3-ultra-free",
     upstreamModel: "nemotron-3-ultra-free",
     description: "Tool-capable reasoning model",
     capabilities: {
@@ -84,7 +84,7 @@ const MODELS = [
   },
   {
     alias: "auto-free",
-    displayName: "KhazAI Auto Free",
+    publicName: KHAZAI_AUTO_FREE_NAME,
     upstreamModel: null,
     routing: true,
     description: "Automatic routing across healthy free models",
@@ -110,10 +110,14 @@ export function zenModels(config = {}) {
     if (aliases.has(alias)) return { ...model, enabled: false, alias: model.alias };
     aliases.add(alias);
     const capabilityOverrides = publicConfig.capabilities?.[model.upstreamModel] || {};
+    const publicName = model.publicName || model.alias;
     return {
       ...model,
       id: alias,
       alias,
+      publicName,
+      displayName: publicName,
+      key: model.alias === "big-cock" || !model.upstreamModel ? model.alias : publicName,
       provider: model.provider || "khazai-free",
       transportAdapter: "openai-compatible",
       tier: "free",
@@ -128,20 +132,24 @@ export function zenModels(config = {}) {
 
 export function resolveZenModel(value, config = {}) {
   const requested = String(value || "").trim().toLowerCase();
-  return zenModels(config).find(model => (
-    requested === model.alias
-    || requested === model.upstreamModel
-    || requested === `opencode/${model.upstreamModel}`
-    || requested === `opencode-zen/${model.upstreamModel}`
-    || requested === `khazai-free/${model.alias}`
-    || requested === MODELS.find(entry => entry.upstreamModel === model.upstreamModel)?.alias
-    || requested === "cock" && model.upstreamModel === "big-pickle"
-  )) || null;
+  return zenModels(config).find(model => {
+    const publicKey = String(model.publicName || "").trim().toLowerCase();
+    const normalizedPublic = publicKey.replace(/\s+/g, "-");
+    return requested === model.alias
+      || requested === model.upstreamModel
+      || requested === `opencode/${model.upstreamModel}`
+      || requested === `opencode-zen/${model.upstreamModel}`
+      || requested === `khazai-free/${model.alias}`
+      || requested === publicKey
+      || requested === normalizedPublic
+      || requested === MODELS.find(entry => entry.upstreamModel === model.upstreamModel)?.alias
+      || requested === "cock" && model.upstreamModel === "big-pickle";
+  }) || null;
 }
 
 export function canonicalModelKey(value, config = {}) {
   const model = resolveZenModel(value, config);
-  return model?.alias || String(value || "");
+  return model?.key || String(value || "");
 }
 
 export function legacyModelKeys(value, config = {}) {
@@ -154,34 +162,24 @@ export function legacyModelKeys(value, config = {}) {
   ];
 }
 
-export function stealthModelName(value, config = {}) {
-  return resolveZenModel(value, config)?.alias || String(value || "");
-}
-
-export function stealthModelDisplayName(value, config = {}) {
-  return resolveZenModel(value, config)?.displayName || String(value || "");
-}
-
 export function publicModelName(value, config = {}) {
-  return String(value || "").toLowerCase() === "auto-free"
-    ? KHAZAI_AUTO_FREE_NAME
-    : stealthModelName(value, config);
+  const model = resolveZenModel(value, config);
+  return model?.publicName || String(value || "");
 }
 
 export function sanitizePublicBranding(value, config = {}) {
   let output = String(value ?? "");
   for (const model of zenModels(config)) {
     if (!model.upstreamModel) continue;
+    const upstream = model.upstreamModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const alias = model.alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     output = output.replace(
-      new RegExp(
-        `(?:opencode(?:-zen)?/|khazai-free/)?${model.upstreamModel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-        "gi",
-      ),
-      model.alias,
+      new RegExp(`(?<![\\w/-])(?:opencode(?:-zen)?/|khazai-free/)?${upstream}`, "gi"),
+      model.publicName,
     );
     output = output.replace(
-      new RegExp(`(?:opencode(?:-zen)?/|khazai-free/)${model.alias}`, "gi"),
-      model.alias,
+      new RegExp(`(?<![\\w/-])(?:opencode(?:-zen)?/|khazai-free/)${alias}`, "gi"),
+      model.publicName,
     );
   }
   return output
@@ -200,12 +198,8 @@ export function sanitizePublicSerializable(value, config = {}) {
   ]));
 }
 
-export function zenModelOptions(config = {}) {
+export function zenUpstreamIds(config = {}) {
   return zenModels(config)
-    .filter(model => model.enabled)
-    .map(model => ({ name: model.alias, description: model.description }));
-}
-
-export function zenUpstreamIds() {
-  return MODELS.map(model => model.upstreamModel).filter(Boolean);
+    .map(model => model.upstreamModel)
+    .filter(Boolean);
 }

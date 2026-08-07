@@ -437,6 +437,81 @@ test("non-retryable provider errors are not retried", async () => {
   });
 });
 
+function hangingChatRoute(requests) {
+  return init => {
+    requests.push("chat");
+    if (init.signal?.aborted) throw init.signal.reason || new Error("Aborted");
+    return new Promise((resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason || new Error("Aborted")), { once: true });
+    });
+  };
+}
+
+function timeoutRoutes(requests) {
+  return [
+    { test: target => target.endsWith("/") && !target.includes("api"), landing: true, response: () => landingResponse() },
+    { test: target => target.includes("message.newChat"), response: () => newChatResponse() },
+    { test: target => target.endsWith("/api/chat"), response: hangingChatRoute(requests) },
+  ];
+}
+
+test("a queued request gets a fresh timeout window once it starts executing", async () => {
+  const requests = [];
+  const routes = timeoutRoutes(requests);
+  routes[2].response = init => {
+    if (init.signal?.aborted) throw init.signal.reason || new Error("Aborted");
+    const isFirst = requests.length === 0;
+    requests.push("chat");
+    if (isFirst) {
+      return new Promise((resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason || new Error("Aborted")), { once: true });
+      });
+    }
+    return sseResponse(chatStream([]));
+  };
+  await withFactory(routes, async tracker => {
+    delete process.env.MISTRAL_COOKIE;
+    const provider = new MistralLeChatProvider();
+    const first = provider.chat([{ role: "user", content: "one" }], { sessionId: "s-window", timeoutMs: 1000, onEvent: () => {} });
+    const second = provider.chat([{ role: "user", content: "two" }], { sessionId: "s-window", timeoutMs: 400, onEvent: () => {} });
+    await assert.rejects(first, error => error.message === "Request timed out");
+    const result = await second;
+    assert.equal(result, "Hello world");
+    assert.equal(requests.length, 2);
+    assert.equal(tracker.closes, 0);
+  });
+});
+
+test("a cancelled queued request never executes and leaves the transport intact", async () => {
+  const requests = [];
+  await withFactory(timeoutRoutes(requests), async tracker => {
+    delete process.env.MISTRAL_COOKIE;
+    const provider = new MistralLeChatProvider();
+    const first = provider.chat([{ role: "user", content: "one" }], { sessionId: "s-cancel", timeoutMs: 800, onEvent: () => {} });
+    const control = new AbortController();
+    const second = provider.chat([{ role: "user", content: "two" }], { sessionId: "s-cancel", timeoutMs: 5000, onEvent: () => {}, signal: control.signal });
+    control.abort(new Error("User cancelled"));
+    await assert.rejects(first, error => error.message === "Request timed out");
+    await assert.rejects(second, error => error.message === "User cancelled");
+    assert.equal(requests.length, 1);
+    assert.equal(tracker.closes, 0);
+  });
+});
+
+test("a timed-out request stops without retrying or rotating the transport", async () => {
+  const requests = [];
+  await withFactory(timeoutRoutes(requests), async tracker => {
+    delete process.env.MISTRAL_COOKIE;
+    const provider = new MistralLeChatProvider();
+    await assert.rejects(
+      provider.chat([{ role: "user", content: "Halo" }], { sessionId: "s-timeout", timeoutMs: 200, onEvent: () => {} }),
+      error => error.message === "Request timed out",
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(tracker.closes, 0);
+  });
+});
+
 test("MISTRAL_COOKIE seeds the session jar without a landing fetch", async () => {
   const requests = [];
   await withFactory(liveRoutes(requests), async tracker => {

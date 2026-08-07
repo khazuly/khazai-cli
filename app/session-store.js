@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { redactSecrets, redactSerializable } from "../lib/secrets.js";
 import { toProviderMessages } from "../lib/providers.js";
+import { canonicalModelKey } from "../config/khazai-free-models.js";
 import { emitPerformanceTimings, measurePhase } from "./performance-timings.js";
 import { indexPresentationMessages } from "./session-hydration.js";
 
@@ -167,6 +168,28 @@ export function migrateSessionV5(value) {
   return session;
 }
 
+export function canonicalizeSessionModelNames(session) {
+  if (!session || typeof session !== "object") return session;
+  const canonical = value => canonicalModelKey(value);
+  const migrated = { ...session, model: canonical(session.model) };
+  if (migrated.agentState && typeof migrated.agentState === "object") {
+    migrated.agentState = { ...migrated.agentState, model: canonical(migrated.agentState.model) };
+  }
+  if (Array.isArray(migrated.turns)) {
+    migrated.turns = migrated.turns.map(turn => {
+      const next = { ...turn };
+      for (const key of ["agentStateBefore", "agentStateAfter"]) {
+        const state = next[key];
+        if (state && typeof state === "object" && state.model !== undefined) {
+          next[key] = { ...state, model: canonical(state.model) };
+        }
+      }
+      return next;
+    });
+  }
+  return migrated;
+}
+
 function validateSessionSchema(session) {
   if (!session || typeof session !== "object") throw new Error("Session data is invalid.");
   if (!session.id || typeof session.workspace !== "string") throw new Error("Session identity is invalid.");
@@ -307,7 +330,7 @@ export class SessionStore {
     const timings = {};
     const raw = measurePhase(timings, "sessionFileReadMs", () => readFileSync(this.path(id), "utf-8"));
     const original = measurePhase(timings, "jsonParseMs", () => JSON.parse(raw));
-    const data = measurePhase(timings, "schemaMigrationMs", () => migrateSessionV5(original));
+    const data = measurePhase(timings, "schemaMigrationMs", () => canonicalizeSessionModelNames(migrateSessionV5(original)));
     measurePhase(timings, "schemaValidationMs", () => validateSessionSchema(data));
     if (resolve(data.workspace) !== this.workspace) throw new Error("Session belongs to a different workspace.");
     const indexes = measurePhase(timings, "messageToolIndexMs", () => indexPresentationMessages(data.messages));
@@ -344,7 +367,15 @@ export class SessionStore {
       })
       .filter(session => session?.id && typeof session.workspace === "string" && resolve(session.workspace) === this.workspace)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map(({ id, title, model, agent, createdAt, updatedAt, messages }) => ({ id, title, model, agent, createdAt, updatedAt, messageCount: Array.isArray(messages) ? messages.length : 0 }));
+      .map(({ id, title, model, agent, createdAt, updatedAt, messages }) => ({
+        id,
+        title,
+        model: canonicalModelKey(model),
+        agent,
+        createdAt,
+        updatedAt,
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+      }));
   }
 
   fork(id) {

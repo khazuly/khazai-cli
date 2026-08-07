@@ -38,7 +38,7 @@ function fileState(path) {
   } catch (error) {
     return { path, signature: `${path}:unreadable`, content: "", hash: "", warning: `Could not read workspace instructions at ${path}: ${error.message}` };
   }
-  const signature = `${path}:${stat.mtimeMs}:${stat.size}`;
+  const signature = `${path}:${stat.mtimeMs}:${stat.size}:${stat.ctimeMs}`;
   try {
     const content = readFileSync(path, "utf-8");
     const hash = createHash("sha256").update(content).digest("hex");
@@ -52,7 +52,7 @@ function cachedFile(path, previous) {
   if (!path) return fileState(null);
   try {
     const stat = statSync(path);
-    const signature = `${path}:${stat.mtimeMs}:${stat.size}`;
+    const signature = `${path}:${stat.mtimeMs}:${stat.size}:${stat.ctimeMs}`;
     if (previous?.signature === signature) return previous;
   } catch {}
   return fileState(path);
