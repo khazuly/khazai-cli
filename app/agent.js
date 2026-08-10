@@ -10,8 +10,10 @@ import { SkillService } from "./skills.js";
 import { workspaceMetadata } from "./agent/helpers/task.js";
 import { taskState } from "./agent/helpers/parser.js";
 import { StateMethods } from "./agent/state.js";
+import { compactedRevisionEntries } from "./agent/state.js";
 import { StatePromptMethods } from "./agent/state-prompt.js";
 import { ToolMethods } from "./agent/tools.js";
+import { CompactionMethods } from "./agent/compaction.js";
 import { RepositoryMethods } from "./agent/repository.js";
 import { PlanMethods } from "./agent/plan.js";
 import { LoopMethods } from "./agent/loop.js";
@@ -24,7 +26,7 @@ import { resolveEffectiveSettings } from "../config/model-settings.js";
 import { configRevision } from "../config/store.js";
 import { performance } from "node:perf_hooks";
 import { sanitizePublicBranding, sanitizePublicSerializable } from "../config/khazai-free-models.js";
-import { hydrateCanonicalMessages } from "./session-hydration.js";
+import { RuntimeMethods } from "./agent/runtime.js";
 
 const COMPACTION_TIMEOUT_MS = 30_000;
 
@@ -54,6 +56,7 @@ export class Agent {
     this._turn = 0;
     this._aborted = false;
     this._activeRun = null;
+    this._durableRun = null;
     this._taskEpoch = 0;
     this._modeState = {
       mode: this._agentProfile.name === "plan" ? "plan" : "build",
@@ -146,9 +149,13 @@ export class Agent {
     this._effectiveSettings = null;
     this._applyEffectiveSettings();
     this._historyRevision = 0;
-    this._compactedRevisions = new Set(opts.sessionState?.compactedRevisions || []);
+    this._compactedRevisions = new Map(opts.sessionState
+      ? compactedRevisionEntries(opts.sessionState.compactedRevisions)
+      : []);
     this._compactedCheckpoint = null;
+    this._tailStartIndex = 0;
     this._hydrationMetrics = null;
+    this._redactedMessagesCache = null;
     this._compactionThresholdCrossed = false;
     this._contextErrorCompactedRunId = null;
     this._compaction = {
@@ -182,8 +189,8 @@ export class Agent {
     if (opts.sessionState) this.restoreSessionState(opts.sessionState);
   }
 
-
   abort() {
+    this.markRunInterrupted();
     this._aborted = true;
     if (this._activeRun) this._activeRun.cancelled = true;
     this._abortController?.abort();
@@ -193,6 +200,10 @@ export class Agent {
     this._recoverableProviderRequest = null;
     this._activeScope = null;
     this._clearCompaction();
+  }
+
+  setBeforeToolExecute(handler) {
+    this._beforeToolExecute = typeof handler === "function" ? handler : null;
   }
   _isActiveRun(scope) {
     const run = this._activeRun;
@@ -276,9 +287,28 @@ export class Agent {
     return ["preparing", "summarizing", "committing", "recounting"].includes(this._compaction.status);
   }
   isCompactionPending() { return this._compaction.status === "scheduled"; }
-  compact() {
-    this._compactMessages(true);
-    return this.exportSessionState();
+  async compact() {
+    const sourceRevision = this._historyRevision;
+    const candidate = this._buildCompactedMessages(true);
+    if (!candidate) return this.exportSessionState();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error("Compaction timed out.")), COMPACTION_TIMEOUT_MS);
+    try {
+      try {
+        candidate.summary = await this._summarizeCompaction(candidate, controller.signal);
+      } catch {
+        candidate.summary = candidate.fallbackSummary;
+      }
+      candidate.estimatedTokens = Math.ceil(candidate.summary.length / 4)
+        + this._messages.slice(candidate.tailStartIndex).reduce(
+          (sum, message) => sum + this._contextCache.messageMeta(message).size,
+          0,
+        );
+      this._commitCompaction(candidate, sourceRevision);
+      return this.exportSessionState();
+    } finally {
+      clearTimeout(timer);
+    }
   }
   _clearCompaction() {
     this._compaction = {
@@ -298,9 +328,11 @@ export class Agent {
   _scheduleCompaction(run, reason = "threshold") {
     this._clearCompactionIfStale();
     if (!this._isActiveRun(run) || this._compaction.status !== "idle") return false;
-    if (this._compactedRevisions.has(this._historyRevision)) return false;
+    const revisionAttempt = this._compactedRevisions.get(this._historyRevision);
+    if (revisionAttempt?.attempt >= 1) return false;
     if (reason === "threshold" && !this._config.automaticCompaction) return false;
-    if (reason === "threshold" && !this._contextLimitKnown()) return false;
+    if (reason === "threshold" && !this._compactionTokenLimit()) return false;
+    if (!this._buildCompactedMessages(true)) return false;
     const usage = this.contextUsage();
     this._compaction = {
       status: "scheduled",
@@ -315,80 +347,6 @@ export class Agent {
     };
     if (reason === "context-error") this._contextErrorCompactedRunId = run.runId;
     return true;
-  }
-
-  _appendMessage(message) {
-    const candidate = message?.id ? message : { ...message, id: `message_${randomUUID()}` };
-    const hydrated = hydrateCanonicalMessages([candidate]).messages[0] || candidate;
-    this._messages.push(hydrated);
-    this._usageTracker.bumpHistoryRevision();
-    this._historyRevision = this._usageTracker.historyRevision;
-    this._lastFrameEntry = null;
-    return hydrated;
-  }
-
-  _storedOutputReference(callId) {
-    return `khazai-output:${String(callId || "")}`;
-  }
-
-  _conciseToolContent(name, callId, content) {
-    const preview = Math.max(0, Number(this._config.toolResultPreviewSize) || 0);
-    const text = String(content ?? "");
-    if (preview <= 0 || text.length <= preview) {
-      return { stored: text, concise: text, truncated: false };
-    }
-    const reference = this._storedOutputReference(callId);
-    const concise = `[Tool result: ${name} · stored output ${reference}]\n${text.slice(0, preview)}\n…(full output available as ${reference})`;
-    return { stored: text, concise, truncated: true, reference };
-  }
-
-  _pushToolMessage(name, callId, content) {
-    const { stored, concise, truncated, reference } = this._conciseToolContent(name, callId, content);
-    if (truncated) {
-      this._storedToolResults.set(String(callId || ""), stored);
-      if (this._storedToolResults.size > 200) {
-        const oldest = this._storedToolResults.keys().next().value;
-        if (oldest !== undefined) this._storedToolResults.delete(oldest);
-      }
-    }
-    void reference;
-    this._appendMessage({
-      role: "tool",
-      tool_call_id: callId,
-      name,
-      content: concise,
-    });
-    return stored;
-  }
-
-  _contextCacheKey() {
-    return [
-      `m:${this._model}`,
-      `t:chars4`,
-    ].join("|");
-  }
-
-  _frame() {
-    const effective = this._applyEffectiveSettings();
-    const sys = this._buildSystem();
-    const activeObjective = [
-      "ACTIVE TASK FOR THIS TURN:",
-      String(this._activeScope?.objective || this._currentRequest || ""),
-      "Treat every earlier task as completed historical context unless this user message explicitly requests continuation.",
-    ].join("\n");
-    const limit = effective.contextLimit || 0;
-    const key = this._contextCacheKey();
-    const entry = this._contextCache.buildFrame(key, {
-      messages: this._messages,
-      requestStartIndex: limit > 0 ? this._requestStartIndex : 0,
-      limit,
-      sys,
-      activeObjective,
-      summary: this._summary,
-    });
-    this._lastFrameEntry = entry;
-    this._lastFrameKey = key;
-    return entry;
   }
 
   _markLatencyDuration(name, startMs) {
@@ -412,6 +370,7 @@ export class Agent {
     return {
       contextTokens: usage.currentContextTokens,
       contextLimit: usage.contextLimit,
+      usableContextTokens: usage.usableContextTokens,
       messageCount: metrics.messageCount || 0,
       payloadBytes: metrics.serializedPayloadBytes || 0,
       instructionLoadingMs: metrics.instructionLoadingMs || 0,
@@ -420,6 +379,8 @@ export class Agent {
       tokenCountingMs: metrics.tokenCountingMs || 0,
       compactionCheckMs: metrics.compactionCheckMs || 0,
       compactionMs: metrics.compactionMs || 0,
+      compactionBeforeTokens: metrics.compactionBeforeTokens || 0,
+      compactionAfterTokens: metrics.compactionAfterTokens || 0,
       toolSchemaBuildMs: metrics.toolSchemaBuildMs || 0,
       serializationMs: metrics.serializationMs || 0,
       requestUploadMs: metrics.requestUploadMs || 0,
@@ -493,7 +454,7 @@ export class Agent {
   }
 }
 
-for (const source of [StateMethods, StatePromptMethods, ToolMethods, RepositoryMethods, PlanMethods, LoopMethods]) {
+for (const source of [StateMethods, StatePromptMethods, RuntimeMethods, ToolMethods, CompactionMethods, RepositoryMethods, PlanMethods, LoopMethods]) {
   const descriptors = Object.getOwnPropertyDescriptors(source.prototype);
   delete descriptors.constructor;
   Object.defineProperties(Agent.prototype, descriptors);

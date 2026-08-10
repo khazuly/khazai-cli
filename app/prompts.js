@@ -26,7 +26,8 @@ const BUILD = `# Build mode
 
 const PLAN = `# Plan mode
 - Read, search, analyze, and create a concise implementation plan.
-- Never modify the workspace.
+- Prefer analysis and planning before making changes.
+- File edits and Bash commands require user approval in this mode; use them only when they are necessary to answer the request.
 - Inspect only files relevant to the task.
 - Ask a question only when a missing decision materially changes implementation.
 - Do not expose chain-of-thought, evidence bookkeeping, safety analysis, or internal blocking decisions.

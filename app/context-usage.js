@@ -102,6 +102,7 @@ export class ContextUsageTracker {
     stableTokens = null,
     historyRevision,
     contextTokens = null,
+    outputHeadroom = 0,
   } = {}) {
     const recounted = Number.isFinite(contextTokens) && contextTokens >= 0
       ? contextTokens
@@ -114,9 +115,16 @@ export class ContextUsageTracker {
     const projectedRequestTokens = currentContextTokens
       + Math.max(512, Math.min(4_096, Math.ceil(currentContextTokens * 0.1)));
     const known = Boolean(positive(contextLimit));
+    const reservedOutputHeadroom = known
+      ? Math.max(0, Math.min(contextLimit - 1, Math.floor(Number(outputHeadroom) || 0)))
+      : 0;
+    const usableContextTokens = known ? Math.max(1, contextLimit - reservedOutputHeadroom) : null;
     const usageRatio = known ? currentContextTokens / contextLimit : null;
     const usagePercent = known
       ? Math.min(100, Math.max(0, usageRatio * 100))
+      : null;
+    const usableRatio = usableContextTokens !== null
+      ? projectedRequestTokens / usableContextTokens
       : null;
     return {
       currentContextTokens,
@@ -128,6 +136,9 @@ export class ContextUsageTracker {
       contextLimit: known ? contextLimit : null,
       contextLimitKnown: known,
       contextLimitSource: known ? (this._contextLimitSource || "unknown") : "unknown",
+      usableContextTokens,
+      reservedOutputHeadroom,
+      usableRatio,
       usageRatio,
       usagePercent,
       estimated,

@@ -14,8 +14,9 @@ const BUILT_INS = {
   plan: {
     name: "plan",
     role: "primary",
-    description: "Read-only planning and investigation agent.",
-    tools: ["read", "glob", "grep", "bash", "websearch", "webfetch", "question", "think", "skill", "todowrite", "mcp_*"],
+    description: "Planning and investigation agent that asks before edits or shell commands.",
+    tools: ["*"],
+    permission: { edit: "ask", bash: "ask" },
     instructions: "",
   },
   explore: {

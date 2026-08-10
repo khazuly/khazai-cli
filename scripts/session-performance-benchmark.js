@@ -26,7 +26,7 @@ function fixture(sessionId) {
   return {
     presentation,
     state: {
-      version: 5,
+      version: 6,
       sessionId,
       messages: canonical,
       summary: "",

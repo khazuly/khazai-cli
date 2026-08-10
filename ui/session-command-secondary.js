@@ -43,7 +43,7 @@ if (cmd === "/compact") {
   };
   setContextUsage(contextUsageRef.current);
   await Promise.resolve();
-  currentSessionRef.current.agentState = agentRef.current.compact();
+  currentSessionRef.current.agentState = await agentRef.current.compact();
   currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
   const after = agentRef.current.contextUsage();
   contextUsageRef.current = {
@@ -95,7 +95,9 @@ if (cmd === "/agent") {
       agent: selected,
       sessionState: { ...state, agent: selected },
       autoApprove: autoApproveRef.current,
-      partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+      partHandler: part => {
+        sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+      },
     });
   }
   currentSessionRef.current.agent = selected;
@@ -159,7 +161,9 @@ if (cmd === "/mcp") {
       agent: currentSessionRef.current.agent,
       sessionState: state,
       autoApprove: autoApproveRef.current,
-      partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+      partHandler: part => {
+        sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+      },
     });
   };
   await manageMcpCommand(arg, {

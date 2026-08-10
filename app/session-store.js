@@ -6,18 +6,24 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
 import { redactSecrets, redactSerializable } from "../lib/secrets.js";
-import { toProviderMessages } from "../lib/providers.js";
-import { canonicalModelKey } from "../config/khazai-free-models.js";
 import { emitPerformanceTimings, measurePhase } from "./performance-timings.js";
-import { indexPresentationMessages } from "./session-hydration.js";
+import { canonicalizeSessionModelNames, migrateSessionV6, validateSessionSchema } from "./session-schema.js";
+import { canonicalModelKey } from "../config/khazai-free-models.js";
+import { captureGitState, createJournal, journalMatches, restoreJournal } from "./session-snapshot.js";
+export {
+  canonicalizeSessionModelNames,
+  migrateSessionV2,
+  migrateSessionV3,
+  migrateSessionV4,
+  migrateSessionV5,
+  migrateSessionV6,
+} from "./session-schema.js";
 
 const DATA_DIR = join(homedir(), ".local", "share", "khazai-ai", "sessions");
 
@@ -33,264 +39,48 @@ function safeJSON(value) {
   return redactSerializable(value);
 }
 
-function legacyToolParts(session) {
-  const parts = [];
-  for (const message of session.messages || []) {
-    if (message?.type !== "tool") continue;
-    const failed = Boolean(message.failed);
-    const start = Number(message.startedAt || message.createdAt || Date.now());
-    const end = Number(message.endedAt || start + Number(message.duration || 0));
-    parts.push({
-      id: `part_${randomUUID()}`,
-      sessionId: String(session.id),
-      messageId: String(message.id || `message_${randomUUID()}`),
-      type: "tool",
-      callId: String(message.callId || `legacy_${randomUUID()}`),
-      tool: String(message.tool || "unknown"),
-      state: failed
-        ? {
-            status: "error",
-            input: { ...(message.args || {}) },
-            error: String(message.content || "Tool failed"),
-            metadata: { migrated: true },
-            time: { start, end },
-          }
-        : {
-            status: "completed",
-            input: { ...(message.args || {}) },
-            output: String(message.content || ""),
-            title: String(message.tool || "tool"),
-            metadata: { migrated: true },
-            attachments: [],
-            time: { start, end },
-          },
-    });
-  }
-  return parts;
-}
-
-export function migrateSessionV2(value) {
-  const session = safeJSON(value || {});
-  if (session.version === 2) return session;
-  const parts = Array.isArray(session.agentState?.parts)
-    ? session.agentState.parts
-    : legacyToolParts(session);
-  session.version = 2;
-  session.parts = Array.isArray(session.parts) ? session.parts : parts;
-  session.agentState = {
-    ...(session.agentState || {}),
-    version: 2,
-    sessionId: session.agentState?.sessionId || session.id,
-    parts,
-  };
-  session.turns = (session.turns || []).map(turn => ({
-    ...turn,
-    agentStateBefore: turn.agentStateBefore
-      ? { ...turn.agentStateBefore, version: 2, sessionId: turn.agentStateBefore.sessionId || session.id, parts: turn.agentStateBefore.parts || [] }
-      : null,
-    agentStateAfter: turn.agentStateAfter
-      ? { ...turn.agentStateAfter, version: 2, sessionId: turn.agentStateAfter.sessionId || session.id, parts: turn.agentStateAfter.parts || [] }
-      : null,
-  }));
-  return session;
-}
-
-export function migrateSessionV3(value) {
-  if (value?.version === 3) return safeJSON(value);
-  const session = migrateSessionV2(value);
-  if (session.version === 3) return session;
-  session.version = 3;
-  session.parts = Array.isArray(session.parts) ? session.parts : [];
-  session.agentState = session.agentState
-    ? { ...session.agentState, version: 3, parts: session.agentState.parts || session.parts }
-    : null;
-  session.runtime = {
-    version: 1,
-    lastPartAt: null,
-    ...(session.runtime || {}),
-  };
-  session.turns = (session.turns || []).map(turn => ({
-    ...turn,
-    agentStateBefore: turn.agentStateBefore
-      ? { ...turn.agentStateBefore, version: 3 }
-      : null,
-    agentStateAfter: turn.agentStateAfter
-      ? { ...turn.agentStateAfter, version: 3 }
-      : null,
-  }));
-  return session;
-}
-
-function migrateAgentStateV4(state, sessionId, parts = []) {
-  if (!state) return null;
-  const messages = toProviderMessages(
-    (Array.isArray(state.messages) ? state.messages : [])
-      .filter(message => !String(message?.content || "").startsWith("[INTERNAL STEERING]")),
-  );
-  return safeJSON({
-    version: 4,
-    sessionId: state.sessionId || sessionId,
-    messages,
-    summary: typeof state.summary === "string" ? state.summary : "",
-    model: state.model,
-    agent: state.agent,
-    parts: Array.isArray(state.parts) ? state.parts : parts,
-    permissionApprovals: Array.isArray(state.permissionApprovals) ? state.permissionApprovals : [],
-  });
-}
-
-export function migrateSessionV4(value) {
-  if (value?.version === 4) {
-    const session = safeJSON(value);
-    session.permissionMode = session.permissionMode === "allow-all" ? "allow-all" : "prompt";
-    return session;
-  }
-  const session = migrateSessionV3(value);
-  session.version = 4;
-  session.agentState = migrateAgentStateV4(session.agentState, session.id, session.parts);
-  session.turns = (session.turns || []).map(turn => ({
-    ...turn,
-    agentStateBefore: migrateAgentStateV4(turn.agentStateBefore, session.id),
-    agentStateAfter: migrateAgentStateV4(turn.agentStateAfter, session.id),
-  }));
-  session.runtime = { version: 2, lastPartAt: null, ...(session.runtime || {}) };
-  session.runtime.version = 2;
-  session.permissionMode = session.permissionMode === "allow-all" ? "allow-all" : "prompt";
-  return session;
-}
-
-export function migrateSessionV5(value) {
-  if (value?.version === 5) return value;
-  const session = migrateSessionV4(value);
-  session.version = 5;
-  session.runtime = { version: 3, lastPartAt: null, ...(session.runtime || {}) };
-  session.runtime.version = 3;
-  return session;
-}
-
-export function canonicalizeSessionModelNames(session) {
-  if (!session || typeof session !== "object") return session;
-  const canonical = value => canonicalModelKey(value);
-  const migrated = { ...session, model: canonical(session.model) };
-  if (migrated.agentState && typeof migrated.agentState === "object") {
-    migrated.agentState = { ...migrated.agentState, model: canonical(migrated.agentState.model) };
-  }
-  if (Array.isArray(migrated.turns)) {
-    migrated.turns = migrated.turns.map(turn => {
-      const next = { ...turn };
-      for (const key of ["agentStateBefore", "agentStateAfter"]) {
-        const state = next[key];
-        if (state && typeof state === "object" && state.model !== undefined) {
-          next[key] = { ...state, model: canonical(state.model) };
-        }
-      }
-      return next;
-    });
-  }
-  return migrated;
-}
-
-function validateSessionSchema(session) {
-  if (!session || typeof session !== "object") throw new Error("Session data is invalid.");
-  if (!session.id || typeof session.workspace !== "string") throw new Error("Session identity is invalid.");
-  if (!Array.isArray(session.messages) || !Array.isArray(session.turns) || !Array.isArray(session.parts)) {
-    throw new Error("Session history is invalid.");
-  }
-  return session;
-}
-
 function atomicWrite(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(safeJSON(value), null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+  writeFileSync(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf-8", mode: 0o600 });
   chmodSync(temporary, 0o600);
   renameSync(temporary, path);
   chmodSync(path, 0o600);
-}
-
-function git(workspace, args, options = {}) {
-  return execFileSync("git", args, {
-    cwd: workspace,
-    encoding: options.encoding || "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function fileState(path) {
-  if (!existsSync(path)) return { exists: false, hash: null, content: null, mode: null };
-  const content = readFileSync(path);
-  return {
-    exists: true,
-    hash: hash(content),
-    content: content.toString("base64"),
-    mode: statSync(path).mode & 0o777,
-  };
-}
-
-function statusPaths(workspace) {
-  try {
-    const output = git(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-    const entries = output.split("\0").filter(Boolean);
-    const paths = [];
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index];
-      const code = entry.slice(0, 2);
-      const path = entry.slice(3);
-      if (!path) continue;
-      if (/R|C/.test(code) && entries[index + 1]) {
-        paths.push(entries[++index]);
-      }
-      paths.push(path);
-    }
-    return [...new Set(paths)];
-  } catch {
-    return [];
-  }
-}
-
-function headState(workspace, path) {
-  try {
-    const content = git(workspace, ["show", `HEAD:${path}`], { encoding: "buffer" });
-    return {
-      exists: true,
-      hash: hash(content),
-      content: content.toString("base64"),
-      mode: 0o644,
-    };
-  } catch {
-    return { exists: false, hash: null, content: null, mode: null };
-  }
-}
-
-function materializeState(workspace, capture, path) {
-  return capture.files[path] || headState(workspace, path);
-}
-
-function sameState(left, right) {
-  return Boolean(left?.exists) === Boolean(right?.exists)
-    && (left?.hash || null) === (right?.hash || null);
-}
-
-function restoreState(workspace, files) {
-  for (const [relative, state] of Object.entries(files)) {
-    const path = resolve(workspace, relative);
-    if (!path.startsWith(`${resolve(workspace)}/`) && path !== resolve(workspace)) {
-      throw new Error("Session journal contains a path outside the workspace.");
-    }
-    if (!state.exists) {
-      rmSync(path, { recursive: true, force: true });
-      continue;
-    }
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, Buffer.from(state.content, "base64"), { mode: state.mode || 0o644 });
-  }
 }
 
 export class SessionStore {
   constructor(workspace, root = DATA_DIR) {
     this.workspace = resolve(workspace);
     this.directory = join(root, workspaceKey(this.workspace));
+    this._cached = new Map();
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+  }
+
+  partsPath(id) {
+    return join(this.directory, `${id}.parts.json`);
+  }
+
+  _writeParts(id, parts, runtime, activeRun = null) {
+    atomicWrite(this.partsPath(id), { version: 2, parts: parts || [], runtime: runtime || null, activeRun });
+  }
+
+  _mergeSidecar(data) {
+    const partsPath = this.partsPath(data.id);
+    if (!existsSync(partsPath)) return data;
+    try {
+      const sidecar = JSON.parse(readFileSync(partsPath, "utf-8"));
+      if (Array.isArray(sidecar.parts)) data.parts = sidecar.parts;
+      if (sidecar.runtime) data.runtime = sidecar.runtime;
+      if (sidecar.activeRun) data.activeRun = sidecar.activeRun;
+      if (data.agentState) {
+        data.agentState = {
+          ...data.agentState,
+          parts: data.parts.slice(-200),
+          activeRun: sidecar.activeRun || data.agentState.activeRun || null,
+        };
+      }
+    } catch {}
+    return data;
   }
 
   path(id) {
@@ -300,7 +90,7 @@ export class SessionStore {
   create({ title = "New session", model = "big-cock", agent = "build" } = {}) {
     const now = new Date().toISOString();
     const session = {
-      version: 5,
+      version: 6,
       id: randomUUID(),
       workspace: this.workspace,
       title,
@@ -314,7 +104,8 @@ export class SessionStore {
       turns: [],
       redo: [],
       permissionMode: "prompt",
-      runtime: { version: 3, lastPartAt: null },
+      runtime: { version: 4, lastPartAt: null },
+      activeRun: null,
     };
     this.save(session);
     return session;
@@ -322,46 +113,66 @@ export class SessionStore {
 
   save(session) {
     const next = { ...session, workspace: this.workspace, updatedAt: new Date().toISOString() };
+    const parts = Array.isArray(next.parts) ? next.parts : [];
+    this._writeParts(next.id, parts.slice(-1_000), next.runtime, next.agentState?.activeRun || next.activeRun);
     atomicWrite(this.path(next.id), next);
+    this._cached.set(next.id, next);
     return next;
   }
 
   load(id) {
+    const cached = this._cached.get(id);
+    if (cached) {
+      if (!Object.prototype.hasOwnProperty.call(cached, "hydrationTimings")) {
+        Object.defineProperty(cached, "hydrationTimings", {
+          value: { cacheHitMs: 0 },
+          enumerable: false,
+          configurable: true,
+        });
+      }
+      return cached;
+    }
     const timings = {};
     const raw = measurePhase(timings, "sessionFileReadMs", () => readFileSync(this.path(id), "utf-8"));
     const original = measurePhase(timings, "jsonParseMs", () => JSON.parse(raw));
-    const data = measurePhase(timings, "schemaMigrationMs", () => canonicalizeSessionModelNames(migrateSessionV5(original)));
+    const data = measurePhase(timings, "schemaMigrationMs", () => canonicalizeSessionModelNames(migrateSessionV6(original)));
     measurePhase(timings, "schemaValidationMs", () => validateSessionSchema(data));
     if (resolve(data.workspace) !== this.workspace) throw new Error("Session belongs to a different workspace.");
-    const indexes = measurePhase(timings, "messageToolIndexMs", () => indexPresentationMessages(data.messages));
-    Object.defineProperty(data, "hydrationTimings", { value: timings, enumerable: false });
-    Object.defineProperty(data, "presentationIndexes", { value: indexes, enumerable: false });
-    if (original.version !== 5) this.save(data);
+    measurePhase(timings, "sidecarMergeMs", () => this._mergeSidecar(data));
+    Object.defineProperty(data, "hydrationTimings", { value: timings, enumerable: false, configurable: true });
+    this._cached.set(id, data);
+    if (original.version !== 6) this.save(data);
     emitPerformanceTimings("session-resume", timings);
     return data;
   }
 
-  updatePart(sessionId, part) {
+  updatePart(sessionId, part, activeRun = undefined) {
     if (!sessionId || !part || !existsSync(this.path(sessionId))) return null;
-    const session = this.load(sessionId);
+    const session = this._cached.get(sessionId) ?? this.load(sessionId);
     const parts = Array.isArray(session.parts) ? [...session.parts] : [];
     const index = parts.findIndex(item => item.id === part.id);
     if (index === -1) parts.push(safeJSON(part));
     else parts[index] = safeJSON(part);
     session.parts = parts.slice(-1_000);
     session.runtime = {
-      version: 3,
+      version: 4,
       lastPartAt: new Date().toISOString(),
       activeMessageId: part.type === "step-finish" ? null : part.messageId,
     };
+    if (activeRun !== undefined) {
+      session.activeRun = activeRun;
+      if (session.agentState) session.agentState = { ...session.agentState, activeRun };
+    }
     if (session.agentState) session.agentState = { ...session.agentState, parts: session.parts.slice(-200) };
-    return this.save(session);
+    this._writeParts(sessionId, session.parts, session.runtime, session.agentState?.activeRun || session.activeRun);
+    this._cached.set(sessionId, session);
+    return session;
   }
 
   list() {
     if (!existsSync(this.directory)) return [];
     return readdirSync(this.directory)
-      .filter(name => name.endsWith(".json"))
+      .filter(name => name.endsWith(".json") && !name.endsWith(".parts.json"))
       .map(name => {
         try { return JSON.parse(readFileSync(join(this.directory, name), "utf-8")); } catch { return null; }
       })
@@ -386,22 +197,15 @@ export class SessionStore {
       agent: source.agent,
     });
     fork.messages = source.messages;
-    fork.agentState = source.agentState;
+    fork.agentState = source.agentState ? { ...source.agentState, activeRun: null } : null;
     fork.parts = source.parts || source.agentState?.parts || [];
+    fork.activeRun = null;
     fork.permissionMode = source.permissionMode === "allow-all" ? "allow-all" : "prompt";
     return this.save(fork);
   }
 
-  captureGitState() {
-    try {
-      if (git(this.workspace, ["rev-parse", "--is-inside-work-tree"]).trim() !== "true") return null;
-      const files = Object.fromEntries(
-        statusPaths(this.workspace).map(relative => [relative, fileState(resolve(this.workspace, relative))]),
-      );
-      return { head: git(this.workspace, ["rev-parse", "HEAD"]).trim(), files };
-    } catch {
-      return null;
-    }
+  captureGitState(paths) {
+    return captureGitState(this.workspace, paths);
   }
 
   recordTurn(session, { input, before, after, messages, agentState, agentStateBefore = null }) {
@@ -414,27 +218,25 @@ export class SessionStore {
         runtime: persisted.runtime,
       };
     }
-    let journal = null;
-    if (before && after && before.head === after.head) {
-      const paths = [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])];
-      journal = {
-        before: Object.fromEntries(paths.map(path => [path, materializeState(this.workspace, before, path)])),
-        after: Object.fromEntries(paths.map(path => [path, materializeState(this.workspace, after, path)])),
-      };
-      if (paths.every(path => sameState(journal.before[path], journal.after[path]))) journal = null;
-    }
+    const journal = createJournal(this.workspace, before, after);
+    const persistedMessages = Array.isArray(session.messages) ? session.messages : [];
+    const fullReset = !Array.isArray(messages) || messages.length < persistedMessages.length;
+    const delta = fullReset ? messages : messages.slice(persistedMessages.length);
     session.turns.push({
       id: randomUUID(),
       input: redactSecrets(input),
-      messageCountBefore: Math.max(0, session.messages.length),
-      messageDelta: safeJSON(messages.slice(session.messages.length)),
-      agentStateBefore: safeJSON(agentStateBefore),
-      agentStateAfter: safeJSON(agentState),
+      messageCountBefore: persistedMessages.length,
+      messageDelta: safeJSON(Array.isArray(delta) ? delta : []),
+      agentStateBefore: agentStateBefore || null,
+      agentStateAfter: agentState || null,
       journal,
       createdAt: new Date().toISOString(),
     });
-    session.messages = safeJSON(messages);
-    session.agentState = safeJSON(agentState);
+    session.messages = fullReset || (Array.isArray(delta) && delta.length === 0)
+      ? (Array.isArray(messages) ? safeJSON(messages) : persistedMessages)
+      : [...persistedMessages, ...safeJSON(delta)];
+    session.agentState = agentState || null;
+    session.activeRun = agentState?.activeRun || null;
     session.parts = safeJSON(agentState?.parts || session.parts || []);
     session.redo = [];
     return this.save(session);
@@ -444,12 +246,8 @@ export class SessionStore {
     const turn = session.turns.at(-1);
     if (!turn) return { session, warning: "There is no turn to undo." };
     if (turn.journal) {
-      for (const [path, expected] of Object.entries(turn.journal.after)) {
-        if (!sameState(fileState(resolve(this.workspace, path)), expected)) {
-          throw new Error(`Cannot undo because ${path} changed after the recorded turn.`);
-        }
-      }
-      restoreState(this.workspace, turn.journal.before);
+      if (!journalMatches(this.workspace, turn.journal, "after")) throw new Error("Cannot undo because a changed file no longer matches the recorded turn.");
+      restoreJournal(this.workspace, turn.journal, "before");
     }
     session.turns.pop();
     session.redo.push(turn);
@@ -466,12 +264,8 @@ export class SessionStore {
     const turn = session.redo.at(-1);
     if (!turn) return { session, warning: "There is no turn to redo." };
     if (turn.journal) {
-      for (const [path, expected] of Object.entries(turn.journal.before)) {
-        if (!sameState(fileState(resolve(this.workspace, path)), expected)) {
-          throw new Error(`Cannot redo because ${path} no longer matches the recorded preimage.`);
-        }
-      }
-      restoreState(this.workspace, turn.journal.after);
+      if (!journalMatches(this.workspace, turn.journal, "before")) throw new Error("Cannot redo because a changed file no longer matches the recorded preimage.");
+      restoreJournal(this.workspace, turn.journal, "after");
     }
     session.redo.pop();
     session.turns.push(turn);
@@ -492,6 +286,7 @@ export class SessionStore {
     for (const file of files) {
       rmSync(join(this.directory, file), { force: true });
     }
+    this._cached.clear();
     return files.length;
   }
 
@@ -503,6 +298,9 @@ export class SessionStore {
       try {
         const p = this.path(id);
         if (existsSync(p)) rmSync(p, { force: true });
+        const sidecar = this.partsPath(id);
+        if (existsSync(sidecar)) rmSync(sidecar, { force: true });
+        this._cached.delete(id);
         deleted++;
       } catch (error) {
         failed++;

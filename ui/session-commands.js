@@ -53,7 +53,9 @@ async function chooseModel(requested, context) {
     agent: currentSessionRef.current.agent,
     sessionState: { ...state, model: selected },
     autoApprove: autoApproveRef.current,
-    partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+    partHandler: part => {
+      sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+    },
   });
   setCurrentModel(selected);
   currentSessionRef.current.model = selected;
@@ -225,7 +227,9 @@ async function selectAgent(arg, context) {
     agent: selected,
     sessionState: { ...state, agent: selected },
     autoApprove: autoApproveRef.current,
-    partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+    partHandler: part => {
+      sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+    },
   });
   currentSessionRef.current.agent = selected;
   currentSessionRef.current.agentState = agentRef.current.exportSessionState();
@@ -260,7 +264,9 @@ async function manageMcp(arg, context) {
       agent: currentSessionRef.current.agent,
       sessionState: state,
       autoApprove: autoApproveRef.current,
-      partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+      partHandler: part => {
+        sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+      },
     });
   };
   await manageMcpCommand(arg, {
@@ -327,7 +333,7 @@ export async function handleSessionCommand(cmd, arg, context) {
     return manageSessions(cmd, arg, context);
   }
   if (cmd === "/compact") {
-    currentSessionRef.current.agentState = agentRef.current.compact();
+    currentSessionRef.current.agentState = await agentRef.current.compact();
     currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
     appendArchived({ id: nextId(), type: "answer", content: "Session context compacted." });
     return;

@@ -1,9 +1,21 @@
+function journalPaths(call) {
+  if (call.name === "bash") return null;
+  if (call.args?.path) return [String(call.args.path)];
+  if (call.name !== "apply_patch") return null;
+  const paths = [];
+  const patch = String(call.args?.patchText || "");
+  for (const match of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) paths.push(match[1]);
+  for (const match of patch.matchAll(/^\*\*\* Move to: (.+)$/gm)) paths.push(match[1]);
+  return paths.length ? paths : null;
+}
+
 export function createSessionSubmit(context) {
-  const { EMPTY_PLAN_STATE, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisActivityMessage, analysisEventIsCurrent, analysisRef, appendArchived, appendResponseDelta, applyPlanEventState, applyPlanUpdateState, buildStartedPlanIdRef, cancelledRunIdRef, classifyToolState, cleanPlanOutput, clearAnalysisActivity, clearPublicAnalysisActivity, commitResponseBuffer, completeAnalysisActivity, completedRef, consumeSessionEvents, contextUsageRef, createAnalysisActivity, createPlanModeState, createResponseBuffer, createSessionActivityController, currentSessionRef, discardResponseBuffer, failAnalysisActivity, finalizePlanMode, initRunRef, listWorkspaceFiles, messageQueueRef, normalizePlanState, openPlanApprovalRef, pendingPermissionCallIdRef, planRef, planWorkflowRef, planningQuestionRef, questionResolverRef, redactSecrets, removeAssistantProtocolText, removeEmoji, resetResponseBuffer, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setContextUsage, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, setQueuedCount, setRunning, setWorkspaceFiles, structuredCallsRef, submitRef, submittingRef, taskEpochRef, terminalRunResult, verifyInitTarget, workspace, nextId, planPanelAfterFinal, normalizeStreamText, toolResultFailed, isInternalAgentFailure, isCompletionClaim, readFileName, thinkActivityFromPlan, setSessionKey } = context;
+  const { EMPTY_PLAN_STATE, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisActivityMessage, analysisEventIsCurrent, analysisRef, appendArchived, appendResponseDelta, applyPlanEventState, applyPlanUpdateState, cancelledRunIdRef, classifyToolState, clearAnalysisActivity, clearPublicAnalysisActivity, commitResponseBuffer, completeAnalysisActivity, completedRef, consumeSessionEvents, contextUsageRef, createAnalysisActivity, createResponseBuffer, createSessionActivityController, currentSessionRef, discardResponseBuffer, failAnalysisActivity, initRunRef, listWorkspaceFiles, messageQueueRef, normalizePlanState, pendingPermissionCallIdRef, planRef, questionResolverRef, redactSecrets, removeAssistantProtocolText, removeEmoji, resetResponseBuffer, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setContextUsage, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, setQueuedCount, setRunning, setWorkspaceFiles, structuredCallsRef, submitRef, submittingRef, taskEpochRef, terminalRunResult, verifyInitTarget, workspace, nextId, planPanelAfterFinal, normalizeStreamText, toolResultFailed, isInternalAgentFailure, isCompletionClaim, readFileName, thinkActivityFromPlan, setSessionKey } = context;
   return async (input, options = {}) => {
 const retryProvider = Boolean(options.retryProvider);
 const approvedPlan = options.approvedPlan || null;
 const internalInput = Boolean(options.internalInput);
+const resumeRun = options.resumeRun || null;
 const queuedItemId = options.queuedItemId || null;
 const initialization = options.initialization || null;
 if (!retryProvider && !input.trim()) return;
@@ -28,31 +40,20 @@ const runState = {
   handedOffForQueue: false,
   finalResponse: "",
   latestPlan: [],
-  finalizedPlanningState: null,
-  planningState: null,
 };
 const sessionBefore = currentSessionRef.current;
 const runId = nextId();
 const turnId = options.turnId || `${sessionBefore?.id || "session"}-${runId}`;
 if (!retryProvider) taskEpochRef.current++;
-const planningRun = currentSessionRef.current.agent === "plan" && !approvedPlan;
+const planningRun = currentSessionRef.current.agent === "plan";
 const analysisScope = {
   sessionId: sessionBefore?.id,
   runId,
   turnId,
   taskEpoch: taskEpochRef.current,
   mode: planningRun ? "plan" : "build",
-  ...(approvedPlan?.planId ? { planId: approvedPlan.planId } : {}),
 };
-const previousPlan = planWorkflowRef.current;
-runState.planningState = planningRun
-  ? previousPlan?.mode === "plan" && ["ready", "exploring", "clarifying"].includes(previousPlan.status)
-    ? { ...previousPlan, ...analysisScope, status: "exploring" }
-    : createPlanModeState({ objective: input, ...analysisScope })
-  : null;
 if (planningRun) {
-  runState.planningState = { ...runState.planningState, status: "exploring" };
-  planWorkflowRef.current = runState.planningState;
   setModeStatus({ mode: "plan", status: "exploring" });
 } else if (approvedPlan) {
   setModeStatus({ mode: "build", status: "preparing" });
@@ -74,7 +75,7 @@ analysisRef.current = createAnalysisActivity({
   analysisId: `analysis-${turnId}`,
 });
 responseBufferRef.current = createResponseBuffer(analysisScope);
-const gitBefore = sessionStoreRef.current.captureGitState();
+let gitBefore = null;
 const agentStateBefore = agentRef.current?.exportSessionState?.() || null;
 const {
   activate, clearActive, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis,
@@ -89,16 +90,15 @@ const completeStreaming = () => {
   responseBufferRef.current = committed.state;
   if (!committed.response) return "";
   const content = normalizeStreamText(agent.redactForDisplay(committed.response.content));
-  const visibleContent = planningRun ? cleanPlanOutput(content) : content;
-  if (!visibleContent) return "";
+  if (!content) return "";
   if (initialization) {
     runState.finalCommitted = true;
-    return visibleContent;
+    return content;
   }
-  appendArchived({ id: committed.response.id, type: "answer", content: visibleContent });
+  appendArchived({ id: committed.response.id, type: "answer", content });
   runState.finalCommitted = true;
   cleanupCompletedPlan();
-  return visibleContent;
+  return content;
 };
 const resetStreaming = () => {
   responseBufferRef.current = resetResponseBuffer(responseBufferRef.current, analysisScope);
@@ -117,10 +117,33 @@ const updateUsage = () => {
 };
 
 const agent = agentRef.current;
+let snapshotPaths = new Set();
+let snapshotUsesFullState = false;
+agent.setBeforeToolExecute?.(call => {
+  const paths = journalPaths(call);
+  if (!paths) snapshotUsesFullState = true;
+  else paths.forEach(path => snapshotPaths.add(path));
+  const startedAt = performance.now();
+  const captured = sessionStoreRef.current.captureGitState(paths || undefined);
+  if (!captured) return;
+  gitBefore = gitBefore
+    ? { ...gitBefore, files: { ...captured.files, ...gitBefore.files } }
+    : captured;
+  if (agent._latency) agent._latency.snapshotBeforeMs = performance.now() - startedAt;
+});
+if (!retryProvider) {
+  const startedAt = performance.now();
+  agentSessionRef.current = agent.admitRun(input, { ...analysisScope, resumeRun });
+  currentSessionRef.current = sessionStoreRef.current.save({
+    ...currentSessionRef.current,
+    agentState: agentSessionRef.current,
+    activeRun: agentSessionRef.current.activeRun,
+  });
+  if (agent._latency) agent._latency.admissionPersistMs = performance.now() - startedAt;
+}
 agent.setQuestionHandler(request => new Promise(resolve => {
-  planningQuestionRef.current = request;
   questionResolverRef.current = {
-    kind: planningRun ? "plan-decision" : "question",
+    kind: "question",
     resolve,
     scope: analysisScope,
   };
@@ -151,6 +174,7 @@ try {
     analysisScope,
     retryProvider,
     approvedPlan,
+    resumeRun,
     initialization,
     runId,
     turnId,
@@ -195,7 +219,6 @@ try {
     clearPublicAnalysisActivity,
     failAnalysisActivity,
     discardResponseBuffer,
-    cleanPlanOutput,
     removeAssistantProtocolText,
     removeEmoji,
     EMPTY_PLAN_STATE,
@@ -206,8 +229,6 @@ try {
     isInternalAgentFailure,
     isCompletionClaim,
     nextId,
-    planWorkflowRef,
-    planningQuestionRef,
     questionResolverRef,
     setExpandedTool,
     setQueuedCount,
@@ -231,27 +252,7 @@ try {
 } finally {
   updateUsage();
   agentSessionRef.current = agent.exportSessionState?.() || null;
-  if (
-    planningRun
-    && runState.finishedNormally
-    && runState.finalCommitted
-    && cancelledRunIdRef.current !== runId
-  ) {
-    setModeStatus({ mode: "plan", status: "drafting" });
-    if (planWorkflowRef.current?.planId === runState.planningState?.planId) {
-      runState.planningState = planWorkflowRef.current;
-    }
-    const context = agent.planningContext();
-    runState.finalizedPlanningState = finalizePlanMode(runState.planningState, {
-      workspace: workspace.path,
-      summary: runState.finalResponse,
-      relevantFiles: context.relevantFiles,
-      steps: runState.latestPlan.length ? runState.latestPlan : context.plan,
-    });
-    planWorkflowRef.current = runState.finalizedPlanningState;
-    runState.planningState = runState.finalizedPlanningState;
-    setModeStatus({ mode: "plan", status: "ready" });
-  }
+  if (planningRun && runState.finishedNormally) setModeStatus({ mode: "plan", status: "ready" });
   let initializationOutcome = null;
   if (initialization) {
     const initState = initRunRef.current;
@@ -354,10 +355,15 @@ try {
         session.title = initialization ? "Create AGENTS.md" : redactSecrets(input).slice(0, 72);
       }
       session.savedPlan = runState.latestPlan.map(item => ({ ...item }));
+      const snapshotAfterStartedAt = performance.now();
+      const gitAfter = gitBefore
+        ? sessionStoreRef.current.captureGitState(snapshotUsesFullState ? undefined : [...snapshotPaths])
+        : null;
+      if (agent._latency && gitBefore) agent._latency.snapshotAfterMs = performance.now() - snapshotAfterStartedAt;
       currentSessionRef.current = sessionStoreRef.current.recordTurn(session, {
         input,
         before: gitBefore,
-        after: sessionStoreRef.current.captureGitState(),
+        after: gitAfter,
         messages: completedRef.current,
         agentState: agentSessionRef.current,
         agentStateBefore,
@@ -365,6 +371,7 @@ try {
     }
   }
   if (!runState.recoverableFailure) agent.clearTurnSecrets(analysisScope);
+  agent.setBeforeToolExecute?.(null);
   if (queuedItemId) {
     const cancelled = cancelledRunIdRef.current === runId && !runState.handedOffForQueue;
     if (cancelled) messageQueueRef.current.cancel(queuedItemId);
@@ -373,17 +380,10 @@ try {
   const nextQueued = messageQueueRef.current.startNext();
   setQueuedCount(messageQueueRef.current.pendingCount());
   if (nextQueued) {
-    planWorkflowRef.current = null;
     queueMicrotask(() => {
       if (messageQueueRef.current.exiting) return;
       submitRef.current?.(nextQueued.rawContent, { queuedItemId: nextQueued.id });
     });
-  } else if (runState.finalizedPlanningState) {
-    queueMicrotask(() => openPlanApprovalRef.current?.(runState.finalizedPlanningState));
-  } else if (approvedPlan) {
-    planWorkflowRef.current = null;
-    buildStartedPlanIdRef.current = null;
-    setModeStatus(null);
   }
 }
   };

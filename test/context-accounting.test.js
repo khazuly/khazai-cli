@@ -150,16 +150,17 @@ test("5. saving and resuming preserves context", async () => {
 
 test("6. real compaction reduces context", async () => {
   const agent = new Agent(new Registry(), agentOpts());
+  agent._config.contextLimit = 4000;
+  agent._config.tokenBudget = 1000;
 
   for (let i = 0; i < 8; i++) {
-    agent._messages.push({ role: "user", content: `Message ${i} ${"x".repeat(500)}` });
-    agent._messages.push({ role: "assistant", content: `Response ${i} ${"y".repeat(500)}` });
+    agent._appendMessage({ role: "user", content: `Message ${i} ${"x".repeat(500)}` });
+    agent._appendMessage({ role: "assistant", content: `Response ${i} ${"y".repeat(500)}` });
   }
+  agent._appendMessage({ role: "user", content: "Continue the current task without repeating completed work." });
   const before = agent.contextUsage().currentContextTokens;
   assert.ok(before > 2000, `Context before compaction (${before}) should be substantial`);
 
-
-  agent._config.tokenBudget = 1000;
   const compacted = agent._compactMessages(true);
   assert.ok(compacted, "Compaction should succeed");
 
@@ -167,6 +168,10 @@ test("6. real compaction reduces context", async () => {
   assert.ok(
     after < before,
     `Context after compaction (${after}) should be less than before (${before})`,
+  );
+  assert.ok(
+    agent._summary.includes("Message"),
+    "Summary should preserve user intent from compacted history",
   );
 });
 
@@ -235,8 +240,8 @@ test("10. stale recount callbacks cannot overwrite newer history", async () => {
   const rev3 = agent._historyRevision;
   assert.ok(rev3 > rev2, "Compaction bumps revision");
   assert.ok(
-    agent._messages.length < originalLen || agent._summary !== "",
-    "Compaction should have reduced messages or added summary",
+    agent._tailStartIndex > 0 && agent._summary !== "",
+    "Compaction should record tail start and summary",
   );
 });
 

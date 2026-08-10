@@ -54,16 +54,3 @@ export function hydrateCanonicalMessages(messages, { limit = Infinity } = {}) {
     },
   };
 }
-
-export function indexPresentationMessages(messages) {
-  const messageById = new Map();
-  const toolByCallId = new Map();
-  const source = Array.isArray(messages) ? messages : [];
-  for (let index = 0; index < source.length; index++) {
-    const message = source[index];
-    if (!message || typeof message !== "object") continue;
-    if (message.id) messageById.set(String(message.id), message);
-    if (message.callId) toolByCallId.set(String(message.callId), message);
-  }
-  return { messageById, toolByCallId };
-}

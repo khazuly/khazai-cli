@@ -96,10 +96,17 @@ export function prepareProviderRetry(agent, scope = null) {
 export async function initializeAgentRequest(agent, input, signal, authorizedInput = input, scope = null) {
   const synthetic = scope?.syntheticContinuation === true;
   const objective = synthetic
-    ? String(scope?.approvedPlan?.objective || agent._currentRequest || input)
+    ? String(scope?.resumeRun?.objective || scope?.approvedPlan?.objective || agent._currentRequest || input)
     : String(input);
   agent._recoverableProviderRequest = null;
-  agent._messages = completedConversationHistory(agent._messages);
+  const tailStart = Math.max(0, Number(agent._tailStartIndex) || 0);
+  if (tailStart === 0) {
+    agent._messages = completedConversationHistory(agent._messages);
+  } else {
+    agent._messages = agent._messages
+      .slice(0, tailStart)
+      .concat(completedConversationHistory(agent._messages.slice(tailStart)));
+  }
   agent._historyRevision++;
   agent._appendMessage({ role: synthetic ? "system" : "user", content: input });
   agent._requestStartIndex = synthetic

@@ -13,7 +13,7 @@ import { EMPTY_PLAN_STATE } from "../app/agent/plan.js";
 import { displayModel } from "./session-helpers.js";
 
 export function SessionView(context) {
-  const { themeName, sessionKey, staticItems, currentModel, workspace, currentSessionRef, autoApproveRef, displayedActiveMessage, expandedTool, running, completedMessages, activeMessage, pendingQuestion, plan, planState, sessionManagerSessions, handleResumeSession, handleDeleteSession, handleClearSessions, setSessionManagerSessions, showSettings, settingsSection, handleCloseSettings, handleSettingChange, queuedCount, modeStatus, contextUsage, activeScopeRef, answerQuestion, handlePromptSubmit, handleCommand, clearDisplay, handleAbort, messageQueueRef, cancelQuestion, workspaceFiles, handleThemePreview, handleThemeExitSub } = context;
+  const { themeName, sessionKey, staticItems, currentModel, workspace, currentSessionRef, autoApproveRef, displayedActiveMessage, expandedTool, running, completedMessages, activeMessage, pendingQuestion, plan, planState, sessionManagerSessions, handleResumeSession, handleDeleteSession, handleClearSessions, setSessionManagerSessions, showSettings, settingsSection, handleCloseSettings, handleSettingChange, queuedCount, modeStatus, contextUsage, activeScopeRef, answerQuestion, handlePromptSubmit, handleCommand, clearDisplay, handleAbort, messageQueueRef, cancelQuestion, workspaceFiles, handleThemePreview, handleThemeExitSub, toggleAgentProfile } = context;
 return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", width: "100%" },
   h(HistoricalTranscript, {
     items: staticItems,
@@ -90,6 +90,7 @@ return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", w
             fileItems: workspaceFiles,
             onPreviewChange: handleThemePreview,
             onExitSub: handleThemeExitSub,
+            onToggleAgent: toggleAgentProfile,
           },
         }),
   ),

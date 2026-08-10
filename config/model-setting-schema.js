@@ -135,10 +135,12 @@ export const GLOBAL_DEFAULTS = {
 
   contextLimit: null,
   automaticCompaction: true,
-  compactionThreshold: 0.8,
-  emergencyCompactionThreshold: 0.92,
-  preserveRecentTurns: 5,
-  maxCompactedSummarySize: 2_048,
+  compactionThreshold: 1,
+  emergencyCompactionThreshold: 1,
+  compactionSoftLimit: null,
+  preserveRecentTurns: 2,
+  maxCompactedSummarySize: 4_096,
+  reservedOutputHeadroom: null,
 
   requestTimeoutMs: 300_000,
   toolTimeoutMs: 60_000,
@@ -213,8 +215,10 @@ export const SETTING_SECTIONS = {
       { key: "automaticCompaction", label: "Automatic compaction enabled", type: "boolean" },
       { key: "compactionThreshold", label: "Compaction threshold", type: "float", min: 0.01, max: 1, step: 0.05 },
       { key: "emergencyCompactionThreshold", label: "Emergency compaction threshold", type: "float", min: 0.01, max: 1, step: 0.05 },
+      { key: "compactionSoftLimit", label: "Compaction soft token limit", type: "int", min: 2_000, max: 1_048_576 },
       { key: "preserveRecentTurns", label: "Preserve recent turns", type: "int", min: 0, max: 50 },
       { key: "maxCompactedSummarySize", label: "Maximum compacted-summary size", type: "int", min: 128, max: 16_384 },
+      { key: "reservedOutputHeadroom", label: "Reserved output headroom", type: "int", min: 0, max: 1_048_576 },
     ],
   },
   reliability: {
@@ -254,4 +258,3 @@ export const AUTO_FREE_SECTIONS = {
     ],
   },
 };
-

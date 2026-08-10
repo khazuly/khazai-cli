@@ -98,6 +98,8 @@ export function validateSetting(key, value, model) {
     case "maxToolsPerIteration": return VALIDATORS.defaultInt(value, null, 1, 50);
     case "maxCompactedSummarySize": return VALIDATORS.defaultInt(value, null, 128, 16_384);
     case "preserveRecentTurns": return VALIDATORS.defaultInt(value, null, 0, 50);
+    case "reservedOutputHeadroom": return VALIDATORS.defaultInt(value, null, 0, 1_048_576);
+    case "compactionSoftLimit": return VALIDATORS.defaultInt(value, null, 2_000, 1_048_576);
     case "toolResultPreviewSize": return VALIDATORS.defaultInt(value, null, 0, 50_000);
     case "maxModelAttempts": return VALIDATORS.defaultInt(value, null, 1, 10);
     default:
@@ -238,6 +240,19 @@ export function resolveEffectiveSettings(model, {
         : applicationLimit
           ? "config"
           : "unknown";
+  const reservedHeadroom = sessionOverrides.reservedOutputHeadroom
+    ?? modelDefaults.reservedOutputHeadroom
+    ?? persisted?.reservedOutputHeadroom;
+  result.reservedOutputHeadroom = Number.isFinite(Number(reservedHeadroom)) && Number(reservedHeadroom) > 0
+    ? Math.floor(Number(reservedHeadroom))
+    : null;
+  const softLimit = sessionOverrides.compactionSoftLimit
+    ?? modelDefaults.compactionSoftLimit
+    ?? persisted?.compactionSoftLimit
+    ?? GLOBAL_DEFAULTS.compactionSoftLimit;
+  result.compactionSoftLimit = Number.isFinite(Number(softLimit)) && Number(softLimit) > 0
+    ? Math.floor(Number(softLimit))
+    : null;
   result.settingsRevision = configRevision();
   return result;
 }

@@ -32,6 +32,14 @@ export class LoopMethods {
     const finalizeRun = () => {
       if (!isRunCurrent() || run.finalized) return false;
       run.finalized = true;
+      if (this._durableRun?.runId === run.runId || this._durableRun?.turnId === run.turnId) {
+        this._durableRun = {
+          ...this._durableRun,
+          status: run.cancelled ? "interrupted" : "completed",
+          phase: run.cancelled ? "interrupted" : "completed",
+          updatedAt: new Date().toISOString(),
+        };
+      }
       this._clearCompactionIfStale(run);
       return true;
     };
@@ -86,13 +94,14 @@ export class LoopMethods {
     const initialProjectedRatio = initialUsage.contextLimitKnown
       ? initialUsage.projectedRequestTokens / initialUsage.contextLimit
       : null;
-    if (initialProjectedRatio !== null && initialProjectedRatio < this._config.compactThreshold) {
+    const initialUsableRatio = initialUsage.usableContextTokens
+      ? initialUsage.projectedRequestTokens / initialUsage.usableContextTokens
+      : null;
+    if (initialUsableRatio !== null && initialUsableRatio < this._config.compactThreshold) {
       this._compactionThresholdCrossed = false;
     }
     const emergencyThreshold = Number(this._config.emergencyCompactThreshold) || 0.92;
-    const shouldScheduleCompaction = this._messages.length > 2
-      && initialProjectedRatio !== null
-      && !this._compactionThresholdCrossed;
+    const shouldScheduleCompaction = this._messages.length > 2 && !this._compactionThresholdCrossed;
     if (
       shouldScheduleCompaction
       && initialProjectedRatio >= emergencyThreshold
@@ -108,7 +117,7 @@ export class LoopMethods {
       });
     } else if (
       shouldScheduleCompaction
-      && initialProjectedRatio >= this._config.compactThreshold
+      && this._shouldCompactUsage(initialUsage)
       && this._scheduleCompaction(run)
     ) {
       this._compactionThresholdCrossed = true;
@@ -136,6 +145,7 @@ export class LoopMethods {
         : this._planningPhase || this._taskContract?.category === "MODIFICATION"
           ? "implementation"
           : "context";
+      this._updateDurableRun({ phase });
       yield scoped({ type: "thinking", turn: this._turn, phase });
       if (!isRunActive()) return;
       if (this._compaction.status === "scheduled" && this._compactionActiveFor(run)) {
@@ -162,6 +172,7 @@ export class LoopMethods {
         this._latency.serializedPayloadBytes = frameStats.payloadBytes;
       }
       this._latency.currentContextTokens = this._lastFrameEntry?.jsonTokens ?? null;
+      this._latency.headTokens = this._lastFrameEntry?.headTokens ?? null;
       const frameTokens = this._lastFrameEntry?.jsonTokens || 0;
       const contextLimitForPhase = this._applyEffectiveSettings().contextLimit || 0;
       if (
@@ -195,9 +206,8 @@ export class LoopMethods {
           continue;
         }
         if (
-          projected.contextLimit
-          && projected.ratio !== null
-          && projected.ratio >= this._config.compactThreshold
+          (projected.tokens >= (this._compactionTokenLimit() || Infinity)
+            || (projected.usableRatio !== null && projected.usableRatio >= this._config.compactThreshold))
           && this._scheduleCompaction(run)
         ) {
           this._compactionThresholdCrossed = true;

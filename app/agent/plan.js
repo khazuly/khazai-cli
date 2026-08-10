@@ -1,13 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-const INSPECTION_TOOLS = new Set(["read", "glob", "grep", "web", "webfetch", "websearch", "repo"]);
-const MUTATION_TOOLS = new Set(["edit", "write", "apply_patch"]);
-const VERIFICATION_TOOLS = new Set(["bash"]);
-const TERMINAL_FAILURES = /\b(?:timed out|timeout|cancelled|canceled|parser failure|parse error|no tests? (?:found|discovered)|tests? not found|all tests? skipped)\b/i;
-const ZERO_TESTS = /(?:\b0\s+passed\s*,?\s*0\s+failed\b|#\s*tests\s+0\b|#\s*pass\s+0\b[\s\S]*#\s*skipped\s+[1-9]\d*)/i;
-const VERIFICATION_COMMAND = /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|build|typecheck)\b|(?:npx\s+)?(?:eslint|tsc|vitest|jest)\b|pytest\b|python(?:3)?\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+test\b)/i;
-
-export const PLAN_STATUSES = ["pending", "active", "completed", "failed"];
+export const PLAN_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 
 export const EMPTY_PLAN_STATE = Object.freeze({
   planId: null,
@@ -20,56 +13,58 @@ export const EMPTY_PLAN_STATE = Object.freeze({
   steps: [],
 });
 
-function normalizedStepStatus(status) {
-  if (["done", "complete", "completed"].includes(status)) return "completed";
-  if (["active", "running", "in_progress"].includes(status)) return "active";
-  if (["failed", "blocked", "cancelled", "canceled", "error"].includes(status)) return "failed";
+function normalizedStatus(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (["done", "complete", "completed"].includes(value)) return "completed";
+  if (["active", "running", "in-progress", "in_progress", "in progress"].includes(value)) return "in_progress";
+  if (["cancelled", "canceled", "failed", "blocked", "error"].includes(value)) return "cancelled";
   return "pending";
 }
 
-function fallbackStepId(planId, item, occurrence) {
-  const text = String(item?.description || item?.text || item?.content || item?.title || "step");
+function itemText(item) {
+  return String(item?.description || item?.text || item?.content || item?.title || "").trim();
+}
+
+function itemId(planId, text, occurrence) {
   const digest = createHash("sha256").update(text).digest("hex").slice(0, 12);
   return `${planId || "plan"}:${digest}:${occurrence}`;
 }
 
+function normalizeItems(items, planId, scope = {}) {
+  const occurrences = new Map();
+  return (Array.isArray(items) ? items : []).map((item, index) => {
+    const description = itemText(item);
+    if (!description) return null;
+    const occurrence = (occurrences.get(description) || 0) + 1;
+    occurrences.set(description, occurrence);
+    const id = String(item?.id || item?.stepId || itemId(planId, description, occurrence));
+    return {
+      id,
+      stepId: id,
+      planId,
+      order: index + 1,
+      title: description,
+      description,
+      status: normalizedStatus(item?.status),
+      runId: scope.runId ?? item?.runId ?? null,
+      turnId: scope.turnId ?? item?.turnId ?? null,
+      taskEpoch: scope.taskEpoch ?? item?.taskEpoch ?? null,
+    };
+  }).filter(Boolean);
+}
+
 export function normalizePlanState(snapshot = {}) {
   const planId = snapshot.planId || null;
-  const source = Array.isArray(snapshot.steps) ? snapshot.steps : Array.isArray(snapshot.items) ? snapshot.items : [];
-  const occurrences = new Map();
-  const steps = source.map(item => {
-    const text = String(item?.description || item?.text || item?.content || item?.title || "step");
-    const occurrence = (occurrences.get(text) || 0) + 1;
-    occurrences.set(text, occurrence);
-    const id = String(item?.id || item?.stepId || fallbackStepId(planId, item, occurrence));
-    return { ...item, id, stepId: item?.stepId || id, status: normalizedStepStatus(item?.status) };
-  });
-  const requestedActive = String(snapshot.currentStepId || "");
-  const activeIndexes = steps.map((step, index) => step.status === "active" ? index : -1).filter(index => index >= 0);
-  const selectedActive = activeIndexes.find(index => steps[index].id === requestedActive || steps[index].stepId === requestedActive)
-    ?? activeIndexes[0]
-    ?? -1;
-  for (const index of activeIndexes) {
-    if (index !== selectedActive) steps[index] = { ...steps[index], status: "pending" };
-  }
-  const counts = planCounts(steps);
-  const completed = counts.total > 0 && counts.completed === counts.total && counts.active === 0 && counts.pending === 0;
-  const requestedStatus = snapshot.status || snapshot.planStatus;
-  const status = completed
-    ? "completed"
-    : requestedStatus === "cancelled"
-      ? "cancelled"
-      : requestedStatus === "failed" || counts.failed > 0 && counts.active === 0 && counts.pending === 0
-        ? "failed"
-        : "active";
+  const steps = normalizeItems(snapshot.steps || snapshot.items, planId, snapshot);
+  const completed = steps.length > 0 && steps.every(step => step.status === "completed");
   return {
     planId,
     revision: Number.isInteger(snapshot.revision) ? snapshot.revision : 0,
     runId: snapshot.runId || null,
     turnId: snapshot.turnId || null,
     taskEpoch: snapshot.taskEpoch ?? null,
-    status,
-    currentStepId: selectedActive >= 0 ? steps[selectedActive].id : null,
+    status: snapshot.status === "cancelled" ? "cancelled" : completed ? "completed" : "active",
+    currentStepId: null,
     steps,
   };
 }
@@ -78,396 +73,59 @@ export function applyPlanSnapshot(current = EMPTY_PLAN_STATE, snapshot = {}, all
   const incomingPlanId = snapshot.planId || current.planId;
   const samePlan = Boolean(current.planId && incomingPlanId === current.planId);
   if (current.planId && !samePlan && !allowNewPlan) return current;
-  if (current.planId && !samePlan) {
-    const currentEpoch = Number(current.taskEpoch);
-    const incomingEpoch = Number(snapshot.taskEpoch);
-    if (!Number.isFinite(incomingEpoch) || Number.isFinite(currentEpoch) && incomingEpoch <= currentEpoch) return current;
-  }
-  if (samePlan) {
-    if (["runId", "turnId", "taskEpoch"].some(key => current[key] != null && snapshot[key] !== current[key])) return current;
-    if (!Number.isInteger(snapshot.revision) || snapshot.revision <= current.revision) return current;
-  }
-  const next = normalizePlanState({
-    ...snapshot,
-    planId: incomingPlanId,
-    steps: Array.isArray(snapshot.items) ? snapshot.items : snapshot.steps,
-  });
-  return validatePlanState(next).ok ? next : current;
+  if (samePlan && Number.isInteger(snapshot.revision) && snapshot.revision <= current.revision) return current;
+  return normalizePlanState({ ...snapshot, planId: incomingPlanId });
 }
 
 export function planCounts(items) {
-  const list = Array.isArray(items) ? items : [];
-  const counts = { completed: 0, active: 0, pending: 0, failed: 0, total: list.length };
-  for (const item of list) {
-    const status = item?.status;
-    if (status === "completed") counts.completed += 1;
-    else if (status === "active") counts.active += 1;
-    else if (status === "pending") counts.pending += 1;
-    else if (status === "failed") counts.failed += 1;
+  const counts = { completed: 0, in_progress: 0, pending: 0, cancelled: 0, total: 0 };
+  for (const item of Array.isArray(items) ? items : []) {
+    counts.total++;
+    counts[normalizedStatus(item?.status)]++;
   }
   return counts;
 }
 
 export function validatePlanState(state = {}) {
-  const items = Array.isArray(state.steps) ? state.steps : [];
-  const counts = planCounts(items);
-  const activeIds = items.filter(item => item.status === "active").map(item => item.id);
-  const completedPlan = items.length > 0 && counts.completed === items.length;
-  const current = state.currentStepId ?? null;
-  const violations = [];
-  if (activeIds.length > 1) violations.push("multiple active steps");
-  if (completedPlan) {
-    if (activeIds.length > 0) violations.push("completed plan has active step");
-    if (current !== null) violations.push("completed plan has currentStepId");
-  }
-  if (state.status === "completed" && !completedPlan) violations.push("completed status without completed steps");
-  if (!completedPlan && activeIds.length === 1 && current !== activeIds[0]) {
-    violations.push("currentStepId mismatch");
-  }
-  if (activeIds.length === 0 && current !== null) violations.push("currentStepId without active step");
-  return { ok: violations.length === 0, violations, counts, completedPlan };
+  const steps = Array.isArray(state.steps) ? state.steps : [];
+  const ids = steps.map(step => step.id);
+  const violations = ids.length === new Set(ids).size ? [] : ["duplicate todo id"];
+  return { ok: violations.length === 0, violations, counts: planCounts(steps) };
 }
 
-function phaseFor(description) {
-  const text = String(description).toLowerCase();
-  if (/\b(?:explore|inspect|locate|read|search|investigate|discover|audit|design|architecture)\b/.test(text)) return "exploration";
-  if (/\b(?:implement|edit|write|patch|fix|add|create|register|integrate|update|modify|refactor|wire|generate)\b/.test(text)) return "implementation";
-  if (/\b(?:tests?|verify|verification|lint|typecheck|type check|build|check)\b/.test(text)) return "verification";
-  return "unclassified";
-}
-
-function requiredEvidenceFor(phase) {
-  if (phase === "exploration") return ["inspection"];
-  if (phase === "implementation") return ["mutation"];
-  if (phase === "verification") return ["verification"];
-  return ["inspection", "mutation", "verification"];
-}
-
-function toolEvidenceType(tool) {
-  const name = String(tool?.name || "");
-  if (INSPECTION_TOOLS.has(name)) return "inspection";
-  if (MUTATION_TOOLS.has(name)) return "mutation";
-  if (VERIFICATION_TOOLS.has(name)) return "verification";
-  return null;
-}
-
-function normalizedStepText(text) {
-  return String(text).trim().replace(/\s+/g, " ").replace(/[.,;:!?]+$/g, "").toLowerCase();
-}
-
-function matchingExisting(existing, description, claimedIds, scope) {
-  const key = normalizedStepText(description);
-  return existing.find(item => (
-    (item.taskEpoch ?? null) === (scope?.taskEpoch ?? null)
-    && normalizedStepText(item.description) === key
-    && !claimedIds.has(item.id)
-  )) || null;
-}
-
-function stepId(planId, description, index, usedIds) {
-  const digest = createHash("sha256").update(description).digest("hex").slice(0, 12);
-  let id = `${planId}:${digest}`;
-  let attempt = 2;
-  while (usedIds.has(id)) id = `${planId}:${digest}:${attempt++}`;
-  usedIds.add(id);
-  return id;
-}
-
-function scopeMatches(item, scope) {
-  return item.runId === scope?.runId
-    && item.turnId === scope?.turnId
-    && item.taskEpoch === scope?.taskEpoch;
-}
-
-function dependenciesComplete(step, plan) {
-  const ids = Array.isArray(step?.dependsOn) ? step.dependsOn : [];
-  if (ids.length === 0) return true;
-  const byId = new Map((Array.isArray(plan) ? plan : []).map(item => [item.id, item]));
-  return ids.every(id => byId.get(id)?.status === "completed");
-}
-
-function successfulVerification(tool, result) {
-  const output = String(result || "");
-  if (String(tool?.name) === "bash") {
-    if (!/^Exit:\s*0\b/im.test(output)) return false;
-    const command = String(tool?.args?.command || "");
-    if (!VERIFICATION_COMMAND.test(command)) return false;
-  }
-  if (TERMINAL_FAILURES.test(output) || ZERO_TESTS.test(output)) return false;
-  return true;
-}
-
-export function definePlanItems(todos, currentPlan, scope, planId = randomUUID()) {
-  const existing = Array.isArray(currentPlan) ? currentPlan : [];
-  if (!Array.isArray(todos) || todos.length === 0) return [];
-  const usedIds = new Set(existing.map(item => item.id));
-  const claimedIds = new Set();
-  const newItems = (Array.isArray(todos) ? todos : []).map((todo, index) => {
-    const description = String(todo?.content ?? todo?.description ?? "").trim();
-    if (!description) return null;
-    const previous = matchingExisting(existing, description, claimedIds, scope);
-    const phase = previous?.phase || phaseFor(description);
-    const completed = previous?.status === "completed"
-      && (previous?.evidenceIds?.length || 0) > 0;
-    const failed = previous?.status === "failed";
-    const active = previous?.status === "active";
-    const id = previous?.id || stepId(planId, description, index, usedIds);
-    usedIds.add(id);
-    if (previous) claimedIds.add(previous.id);
-    return {
-      id,
-      planId,
-      order: 0,
-      title: description,
-      description,
-      phase,
-      status: completed ? "completed" : failed ? "failed" : active ? "active" : "pending",
-      dependsOn: [],
-      requiredEvidence: previous?.requiredEvidence || requiredEvidenceFor(phase),
-      evidenceIds: [...(previous?.evidenceIds || [])],
-      startedAt: previous?.startedAt || null,
-      completedAt: previous?.completedAt || null,
-      runId: scope?.runId,
-      turnId: scope?.turnId,
-      taskEpoch: scope?.taskEpoch,
-      activeToolCallId: active ? previous?.activeToolCallId || null : null,
-    };
-  }).filter(Boolean);
-  const overlapsExisting = newItems.some(item => existing.some(previous => previous.id === item.id));
-  const retainedCompleted = existing.filter(previous => (
-    previous.status === "completed"
-    && !newItems.some(item => item.id === previous.id)
-    && (overlapsExisting || previous.taskEpoch === scope?.taskEpoch)
-  )).map(item => ({
-    ...item,
-    runId: scope?.runId,
-    turnId: scope?.turnId,
-    taskEpoch: scope?.taskEpoch,
-  }));
-  const items = [...retainedCompleted, ...newItems];
-  items.forEach((item, index) => {
-    item.order = index + 1;
-    item.dependsOn = index === 0 ? [] : [items[index - 1].id];
-  });
-  for (const item of items) {
-    if (item.status === "active" && !dependenciesComplete(item, items)) {
-      item.status = "pending";
-      item.activeToolCallId = null;
-    }
-  }
-  let activeSeen = false;
-  for (const item of items) {
-    if (item.status !== "active") continue;
-    if (activeSeen) {
-      item.status = "pending";
-      item.activeToolCallId = null;
-    }
-    activeSeen = true;
-  }
-  if (!activeSeen) {
-    const firstEligible = selectNextActiveStep(items);
-    if (firstEligible) {
-      firstEligible.status = "active";
-      firstEligible.startedAt ||= Date.now();
-    }
-  }
-  return items;
-}
-
-export function selectNextActiveStep(plan) {
-  if (!Array.isArray(plan)) return null;
-  if (plan.some(item => item.status === "active")) return null;
-  const eligible = plan
-    .filter(item => item.status === "pending" && dependenciesComplete(item, plan))
-    .sort((a, b) => a.order - b.order);
-  return eligible[0] || null;
-}
-
-export function canTransition(step, nextStatus, evidence = null) {
-  if (!step) return false;
-  if (step.status === "pending") return nextStatus === "active";
-  if (step.status === "active") {
-    if (nextStatus === "failed") return true;
-    if (nextStatus === "completed") {
-      return Boolean(
-        evidence?.valid === true
-        && evidence.stepId === step.id
-        && evidence.toolCallId === step.activeToolCallId,
-      );
-    }
-    return false;
-  }
-  if (step.status === "failed") return nextStatus === "active";
-  return false;
-}
-
-export function associatePlanStep(plan, tool, scope) {
-  if (!Array.isArray(plan) || plan.length === 0 || !scopeMatches(plan[0], scope)) return null;
-  const evidenceType = toolEvidenceType(tool);
-  if (!evidenceType) return null;
-  if (
-    evidenceType === "verification"
-    && String(tool?.name) === "bash"
-    && !VERIFICATION_COMMAND.test(String(tool?.args?.command || ""))
-  ) {
-    return null;
-  }
-  const active = plan.find(item => item.status === "active");
-  let step;
-  if (active) {
-    if (!active.requiredEvidence.includes(evidenceType)) return null;
-    step = active;
-  } else {
-    step = plan.find(item => (
-      ["pending", "failed"].includes(item.status)
-      && item.requiredEvidence.includes(evidenceType)
-      && dependenciesComplete(item, plan)
-    ));
-  }
-  if (!step) return null;
-  if (!dependenciesComplete(step, plan)) return null;
-  if (step.status !== "active" && !canTransition(step, "active")) return null;
-  step.status = "active";
-  step.startedAt ||= Date.now();
-  step.activeToolCallId = tool.id;
-  return {
-    plan,
-    planId: step.planId,
-    stepId: step.id,
-    toolCallId: tool.id,
-    runId: scope.runId,
-    turnId: scope.turnId,
-    taskEpoch: scope.taskEpoch,
-  };
-}
-
-export function settlePlanStep(tracker, tool, result, succeeded, scope) {
-  if (!tracker || !scopeMatches(tracker, scope) || tracker.toolCallId !== tool?.id) return null;
-  const step = tracker.plan.find(item => item.id === tracker.stepId);
-  if (!step || !scopeMatches(step, scope) || step.status !== "active") return null;
-  if (!dependenciesComplete(step, tracker.plan)) return null;
-  const evidenceType = toolEvidenceType(tool);
-  const valid = Boolean(
-    succeeded
-    && evidenceType
-    && step.requiredEvidence.includes(evidenceType)
-    && (evidenceType !== "verification" || successfulVerification(tool, result)),
-  );
-  const evidence = {
-    id: `${tracker.toolCallId}:${valid ? "success" : "failure"}`,
-    valid,
-    stepId: step.id,
-    toolCallId: tracker.toolCallId,
-    resultStatus: valid ? "completed" : "failed",
-  };
-  const nextStatus = valid ? "completed" : "failed";
-  if (!canTransition(step, nextStatus, evidence)) return null;
-  step.status = nextStatus;
-  step.activeToolCallId = null;
-  if (valid) {
-    step.evidenceIds.push(evidence.id);
-    step.completedAt = Date.now();
-  }
-  return { step, evidence };
+export function definePlanItems(todos, _currentPlan, scope, planId = randomUUID()) {
+  return normalizeItems(todos, planId, scope);
 }
 
 export class PlanMethods {
   _definePlan(todos, scope = this._activeRun, planId = this._planId || randomUUID()) {
     if (!this._isActiveRun(scope)) return null;
-    const replaced = !this._plan || this._planId !== planId;
     this._planId = planId;
-    this._plan = definePlanItems(todos, this._plan, scope, planId);
-    this._currentStepId = this._plan.find(item => item.status === "active")?.id || null;
-    this._planIndex = this._plan.findIndex(item => item.status !== "completed");
-    if (this._planIndex < 0) this._planIndex = this._plan.length;
-    const completedPlan = this._plan.length > 0 && this._plan.every(item => item.status === "completed");
-    this._planStatus = completedPlan ? "completed" : "active";
-    this._planRevision = replaced ? 1 : this._planRevision + 1;
+    this._plan = definePlanItems(todos, null, scope, planId);
+    this._currentStepId = null;
+    this._planIndex = 0;
+    this._planStatus = this._plan.length > 0 && this._plan.every(item => item.status === "completed")
+      ? "completed"
+      : "active";
+    this._planRevision += 1;
     if (this._activeScope?.taskEpoch === scope.taskEpoch) {
       this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
     }
     return this._plan;
   }
 
-  _planSnapshot(planId, extra = {}) {
+  _planSnapshot(planId) {
     return {
       planId,
       revision: this._planRevision,
       status: this._planStatus,
-      currentStepId: this._currentStepId,
+      currentStepId: null,
       counts: planCounts(this._plan),
       items: this._plan.map(item => ({ ...item })),
-      ...extra,
     };
   }
 
-  *_startPlanItem(tool, scope = this._activeRun) {
-    if (!this._isActiveRun(scope)) return null;
-    const tracker = associatePlanStep(this._plan, tool, scope);
-    if (!tracker) return null;
-    const step = this._plan.find(item => item.id === tracker.stepId);
-    if (!step) return null;
-    this._currentStepId = step.id;
-    this._planIndex = this._plan.indexOf(step);
-    this._planStatus = "active";
-    this._planRevision += 1;
-    if (this._activeScope?.taskEpoch === scope.taskEpoch) {
-      this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
-    }
-    yield this._scopedToolEvent({
-      type: "plan-update",
-      ...this._planSnapshot(tracker.planId, {
-        stepId: tracker.stepId,
-        index: this._plan.indexOf(step),
-        stepStatus: "active",
-        toolCallId: tracker.toolCallId,
-      }),
-    }, scope);
-    return tracker;
-  }
+  *_startPlanItem() {}
 
-  *_finishPlanItem(tracker, tool, result, succeeded, scope = this._activeRun) {
-    if (!this._isActiveRun(scope) || this._plan !== tracker?.plan) return;
-    const settled = settlePlanStep(tracker, tool, result, succeeded, scope);
-    if (!settled) return;
-    const step = settled.step;
-    const index = this._plan.indexOf(step);
-    let nextActive = null;
-    if (step.status === "completed") {
-      nextActive = selectNextActiveStep(this._plan);
-      if (nextActive) {
-        nextActive.status = "active";
-        nextActive.startedAt ||= Date.now();
-      }
-    }
-    const completedPlan = this._plan.length > 0 && this._plan.every(item => item.status === "completed");
-    if (completedPlan) {
-      this._currentStepId = null;
-      this._planStatus = "completed";
-      this._planIndex = this._plan.length;
-    } else if (nextActive) {
-      this._currentStepId = nextActive.id;
-      this._planStatus = "active";
-      this._planIndex = this._plan.findIndex(item => item.status !== "completed");
-      if (this._planIndex < 0) this._planIndex = this._plan.length;
-    } else {
-      this._currentStepId = null;
-      this._planStatus = "failed";
-      this._planIndex = index;
-    }
-    this._planRevision += 1;
-    if (this._activeScope?.taskEpoch === scope.taskEpoch) {
-      this._activeScope.currentPlan = this._plan.map(item => ({ ...item }));
-    }
-    yield this._scopedToolEvent({
-      type: "plan-update",
-      ...this._planSnapshot(tracker.planId, {
-        stepId: step.id,
-        index,
-        stepStatus: step.status,
-        evidence: settled.evidence,
-        toolCallId: tracker.toolCallId,
-      }),
-    }, scope);
-  }
+  *_finishPlanItem() {}
 }

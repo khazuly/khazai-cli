@@ -103,10 +103,10 @@ test("compaction lifecycle keeps stable usage until atomic recount", async () =>
     .filter(Number.isFinite);
   assert.equal(new Set(stable).size, 1);
   assert.ok(lifecycle.at(-1).usage.currentContextTokens < stable[0]);
-  assert.equal(requests, 1);
+  assert.equal(requests, 2);
 });
 
-test("failed recovery compaction retains history and does not loop", async () => {
+test("uncompactable context errors retain history and report the provider failure", async () => {
   const agent = new Agent(new Registry(), {
     workspace: mkdtempSync(join(tmpdir(), "khazai-context-failure-")),
     config: { modelSettings: {}, models: {}, contextLimit: null },
@@ -133,10 +133,7 @@ test("failed recovery compaction retains history and does not loop", async () =>
   const events = [];
   for await (const event of agent.loop("Keep this request intact")) events.push(event);
   assert.equal(requests, 1);
-  assert.deepEqual(
-    events.filter(event => event.type === "compaction-state").map(event => event.status),
-    ["scheduled", "preparing", "summarizing", "failed"],
-  );
-  assert.match(events.find(event => event.type === "error")?.content || "", /could not be completed/);
+  assert.deepEqual(events.filter(event => event.type === "compaction-state"), []);
+  assert.match(events.find(event => event.type === "error")?.content || "", /payload was rejected/);
   assert.equal(agent._messages.some(message => message.content?.includes("Keep this request intact")), true);
 });

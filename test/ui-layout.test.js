@@ -201,7 +201,7 @@ test("a long Plan title renders as one wrapped Plan item", async () => {
   const markers = lines.filter(line => /^\[[ ✓•×]\]/.test(line));
   assert.equal(markers.length, 1, frame);
   assert.match(markers[0], /^\[•\]/);
-  const contentLines = lines.filter(line => !/^\[[ ✓•×]\]/.test(line) && !/^Plan \d/.test(line) && line.trim());
+  const contentLines = lines.filter(line => !/^\[[ ✓•×]\]/.test(line) && !/^Todos \d/.test(line) && line.trim());
   assert.ok(contentLines.length >= 2, frame);
   assert.ok(contentLines.every(line => {
     const indent = line.search(/\S/);
@@ -248,7 +248,7 @@ test("PlanList renders one live panel without collapse controls", async () => {
     { status: "pending", description: "Step 3" },
   ];
   const frame = await renderComponent(h(PlanList, { plan }), 40, 30);
-  assert.equal((frame.match(/Plan 1\/3/g) || []).length, 1, frame);
+  assert.equal((frame.match(/Todos 1\/3/g) || []).length, 1, frame);
   assert.match(frame, /Step 1/);
   assert.match(frame, /Step 2/);
   assert.match(frame, /Step 3/);
@@ -267,7 +267,7 @@ test("completed Plan renders 10/10 with no live marker or collapse control", asy
     status: "completed",
   }));
   const frame = await renderComponent(h(PlanList, { plan }), 60, 30);
-  assert.match(frame, /Plan 10\/10/);
+  assert.match(frame, /Todos 10\/10/);
   const markers = frame.split("\n").filter(line => /^\[[ ✓•×]\]/.test(line));
   assert.equal(markers.length, 10, frame);
   assert.ok(markers.every(line => line.startsWith("[✓]")), frame);
@@ -282,8 +282,8 @@ test("narrow terminals keep one Plan heading and stable markers", async () => {
   ];
   for (const width of [16, 20, 26]) {
     const frame = await renderComponent(h(PlanList, { plan }), width, 30);
-    assert.match(frame, /Plan 1\/2/);
-    assert.equal((frame.match(/Plan 1\/2/g) || []).length, 1, frame);
+    assert.match(frame, /Todos 1\/2/);
+    assert.equal((frame.match(/Todos 1\/2/g) || []).length, 1, frame);
     assert.doesNotMatch(frame, /Hide|Show/);
     const lines = frame.split("\n").filter(Boolean);
     assert.ok(lines.every(line => line.length <= width), `${width}: ${frame}`);

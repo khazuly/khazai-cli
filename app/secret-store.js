@@ -117,6 +117,24 @@ export class SecretStore {
     return clone(value, text => this.redact(text));
   }
 
+  redactSerializableExcept(value, skipKeys = []) {
+    const skip = new Set(skipKeys);
+    const cloneSkipping = entry => {
+      if (typeof entry === "string") return this.redact(entry);
+      if (Array.isArray(entry)) return entry.map(cloneSkipping);
+      if (entry && typeof entry === "object") {
+        const output = {};
+        for (const [key, item] of Object.entries(entry)) {
+          if (skip.has(key)) output[key] = item;
+          else output[key] = cloneSkipping(item);
+        }
+        return output;
+      }
+      return entry;
+    };
+    return cloneSkipping(value);
+  }
+
   clear(runId, turnId) {
     if (runId && turnId && !this.isActive(runId, turnId)) return false;
     this.records.clear();

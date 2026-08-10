@@ -41,8 +41,8 @@ function agent(messages, extra = {}) {
 test("a 1,000-message resume renders only the bounded recent window", () => {
   const messages = Array.from({ length: 1_000 }, (_, index) => ({ id: `message-${index}`, type: "answer", content: `answer ${index}` }));
   const visible = recentHistoryWindow(messages);
-  assert.equal(visible.length, 81);
-  assert.equal(visible[0].hiddenCount, 920);
+  assert.equal(visible.length, 21);
+  assert.equal(visible[0].hiddenCount, 980);
   assert.equal(visible.at(-1), messages.at(-1));
 });
 
@@ -126,8 +126,13 @@ test("a compacted session resumes directly from its saved checkpoint", () => {
   assert.equal(original._compactMessages(true), true);
   const saved = original.exportSessionState();
   const resumed = agent(messages, saved);
-  assert.equal(resumed._messages.length, saved.compactedCheckpoint.messages.length);
   assert.equal(resumed._summary, saved.compactedCheckpoint.summary);
+  const last = resumed._messages.at(-1);
+  assert.ok(
+    String(last?.id) === "message-99" || last?.content === "Continue the active task.",
+    `last message should be recent (got ${JSON.stringify(last?.content?.slice(0, 30))})`,
+  );
+  assert.ok(resumed._messages.length >= 2, "active tail survives resume");
 });
 
 test("compaction runs at most once for one context revision", () => {
@@ -149,6 +154,24 @@ test("large tool results persist completely while initial rendering stays bounde
     const loaded = store.load(session.id);
     assert.equal(loaded.messages[0].content, content);
     assert.equal(recentHistoryWindow(loaded.messages)[0].content, content);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("repeated load of a cached session does not throw on hydrationTimings", () => {
+  const root = mkdtempSync(join(tmpdir(), "khazai-performance-store-"));
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-performance-workspace-"));
+  try {
+    const store = new SessionStore(workspace, root);
+    const session = store.create();
+    store.save(session);
+    const first = store.load(session.id);
+    assert.ok(Object.prototype.hasOwnProperty.call(first, "hydrationTimings"));
+    assert.equal(first.hydrationTimings.cacheHitMs, 0);
+    const second = store.load(session.id);
+    assert.equal(second.hydrationTimings.cacheHitMs, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });

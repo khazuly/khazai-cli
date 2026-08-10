@@ -178,10 +178,13 @@ test("shared provider retry exhausts once and cancellation stops backoff", async
 
 test("transient classification and retry timing exclude invalid requests", () => {
   assert.equal(isTransientProviderError({ status: 503 }), true);
+  assert.equal(isTransientProviderError({ status: 429 }), true);
   assert.equal(isTransientProviderError({ code: "ECONNRESET" }), true);
+  assert.equal(isTransientProviderError(new TypeError("fetch failed")), true);
   assert.equal(isTransientProviderError({ code: "PREMATURE_STREAM" }), true);
   assert.equal(isTransientProviderError({ status: 400 }), false);
   assert.equal(isTransientProviderError({ status: 401 }), false);
+  assert.equal(isTransientProviderError(new Error("Missing API key")), false);
   assert.equal(providerRetryDelay({ retryAfterMs: 4_000 }, 0, () => 0), 4_000);
   assert.equal(providerRetryDelay({}, 0, () => 0.5), 1_000);
   assert.equal(providerRetryDelay({}, 1, () => 0.5), 2_500);

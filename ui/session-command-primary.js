@@ -145,7 +145,9 @@ const chooseModel = async requested => {
     agent: currentSessionRef.current.agent,
     sessionState: { ...state, model: selected },
     autoApprove: autoApproveRef.current,
-    partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+    partHandler: part => {
+      sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+    },
   });
   setCurrentModel(selected);
   currentSessionRef.current.model = selected;

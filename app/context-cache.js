@@ -6,6 +6,8 @@ const FRAME_ENTRY_LIMIT = 8;
 const PROJECTION_ENTRY_LIMIT = 8;
 const TOKEN_ENTRY_LIMIT = 2048;
 
+export const OLD_TOOL_RESULT_MARKER = "[Old tool result cleared after compaction]";
+
 function tokensForLength(length) {
   return Math.max(1, Math.ceil(length / 4));
 }
@@ -60,14 +62,19 @@ export class ContextCache {
     const messageId = String(message?.id || contentHash);
     const key = `${messageId}:${contentHash}:${this._tokenizerProfile}`;
     const persisted = this._tokenEntries.get(key);
-    const json = JSON.stringify(message || {});
+    let jsonLength = persisted?.jsonLength;
+    let size = persisted?.size;
+    if (jsonLength === undefined) {
+      jsonLength = JSON.stringify(message || {}).length;
+      size = tokensForLength(content.length) + tokensForLength(toolCalls.length);
+    }
     meta = {
       key,
       hash: contentHash,
-      jsonLength: json.length,
-      size: persisted?.size ?? tokensForLength(content.length) + tokensForLength(toolCalls.length),
+      jsonLength,
+      size,
     };
-    this._tokenEntries.set(key, { key, size: meta.size });
+    this._tokenEntries.set(key, { key, size, jsonLength });
     trimEntries(this._tokenEntries, TOKEN_ENTRY_LIMIT);
     this._messageMeta.set(message, meta);
     this.stats.metaComputations++;
@@ -82,8 +89,9 @@ export class ContextCache {
     if (!CANONICAL_ROLES.includes(role)) {
       return { valid: false, issue: `unsupported role "${String(role)}"` };
     }
-    if (role === "assistant" && Array.isArray(message.tool_calls)) {
-      for (const call of message.tool_calls) {
+    if (role === "assistant") {
+      const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      for (const call of calls) {
         if (!call?.id) return { valid: false, issue: "tool call without an id" };
         try {
           JSON.parse(call.function?.arguments || "{}");
@@ -96,10 +104,11 @@ export class ContextCache {
     }
     if (role === "tool") {
       const id = String(message.tool_call_id || "");
-      if (!pendingCallIds.has(id)) {
-        return { valid: false, issue: `orphan tool result "${id}"` };
+      if (id && pendingCallIds.has(id)) {
+        pendingCallIds.delete(id);
+        return { valid: true, issue: null };
       }
-      pendingCallIds.delete(id);
+      if (!id) return { valid: false, issue: "tool message without tool_call_id" };
       return { valid: true, issue: null };
     }
     return { valid: true, issue: null };
@@ -108,6 +117,7 @@ export class ContextCache {
   buildFrame(key, {
     messages: rawMessages,
     requestStartIndex,
+    tailStartIndex = 0,
     limit,
     sys,
     activeObjective,
@@ -125,13 +135,15 @@ export class ContextCache {
     }
 
     this.stats.frameBuilds++;
-    const tokenCountingStart = performance.now();
-    const boundary = Math.max(0, Math.min(requestStartIndex, rawMessages.length));
+    const lowerBound = Math.max(0, Math.min(Number(tailStartIndex) || 0, rawMessages.length));
+    const boundary = Math.max(lowerBound, Math.min(requestStartIndex, rawMessages.length));
     const historical = [];
     const active = [];
+    const summaryText = summary ? `Earlier conversation summary:\n${summary}` : "";
     let used = tokensForLength(sys.length)
       + tokensForLength(activeObjective.length)
-      + tokensForLength(String(summary || "").length);
+      + tokensForLength(summaryText);
+    const headTokens = used;
 
     for (let index = boundary; index < rawMessages.length; index++) {
       const message = rawMessages[index];
@@ -139,7 +151,7 @@ export class ContextCache {
       active.push(message);
     }
     if (limit > 0) {
-      for (let index = boundary - 1; index >= 0; index--) {
+      for (let index = boundary - 1; index >= lowerBound; index--) {
         const message = rawMessages[index];
         if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
         const size = this.messageMeta(message).size;
@@ -149,11 +161,43 @@ export class ContextCache {
       }
       while (historical.length > 0 && historical[0]?.role === "tool") {
         const index = boundary - historical.length;
-        if (index > 0) historical.unshift(rawMessages[index - 1]);
+        if (index > lowerBound) historical.unshift(rawMessages[index - 1]);
         else historical.shift();
       }
     }
 
+    const context = [
+      { role: "system", content: sys },
+      { role: "system", content: activeObjective },
+      ...(summary ? [{ role: "assistant", content: `Earlier conversation summary:\n${summary}` }] : []),
+      ...historical,
+      ...active,
+    ];
+
+    return this._frameEntry(key, {
+      rawMessages,
+      lastMessage,
+      boundary,
+      historical,
+      active,
+      sys,
+      activeObjective,
+      summary,
+      headTokens,
+    });
+  }
+
+  _frameEntry(key, {
+    rawMessages,
+    lastMessage,
+    boundary,
+    historical,
+    active,
+    sys,
+    activeObjective,
+    summary,
+    headTokens = 0,
+  }) {
     const context = [
       { role: "system", content: sys },
       { role: "system", content: activeObjective },
@@ -169,39 +213,26 @@ export class ContextCache {
       wrapperJson += JSON.stringify(context[index]).length;
     }
     jsonLength += wrapperJson;
-    let hasPlaceholders = false;
     for (let index = wrapperCount; index < context.length; index++) {
+      jsonLength += this.messageMeta(context[index]).jsonLength;
+    }
+    let hasPlaceholders = false;
+    for (let index = 0; index < context.length; index++) {
       const message = context[index];
-      jsonLength += this.messageMeta(message).jsonLength;
       if (!hasPlaceholders && String(message.content || "").includes("{{secret:")) {
         hasPlaceholders = true;
       }
     }
-    if (!hasPlaceholders) {
-      for (let index = 0; index < wrapperCount; index++) {
-        if (String(context[index].content || "").includes("{{secret:")) {
-          hasPlaceholders = true;
-          break;
-        }
-      }
-    }
 
-    const tokenCountingMs = performance.now() - tokenCountingStart;
     const validationStart = performance.now();
-    const start = existing?.validatedUpTo ?? 0;
-    const issues = existing?.validation?.issues?.filter(issue => issue.index < start) || [];
-    let valid = issues.length === 0;
-    const pendingCallIds = new Set(existing?.pendingCallIds || []);
-    for (let index = start; index < rawMessages.length; index++) {
-      const result = this._validateMessage(rawMessages[index], pendingCallIds);
-      if (!result.valid) {
-        valid = false;
-        issues.push({ index, issue: result.issue });
-      }
+    const issues = [];
+    const pendingCallIds = new Set();
+    for (let index = 0; index < context.length; index++) {
+      const result = this._validateMessage(context[index], pendingCallIds);
+      if (!result.valid) issues.push({ index, issue: result.issue });
     }
     const validationMs = performance.now() - validationStart;
-    if (start === 0) this.stats.fullValidations++;
-    else this.stats.incrementalValidations++;
+    this.stats.fullValidations++;
 
     const entry = {
       key,
@@ -211,12 +242,12 @@ export class ContextCache {
       payloadBytes: jsonLength,
       messageCount: context.length,
       hasPlaceholders,
-      validation: { valid, issues },
+      validation: { valid: issues.length === 0, issues },
       validatedUpTo: rawMessages.length,
       pendingCallIds: [...pendingCallIds],
+      headTokens,
       stats: {
         validationMs,
-        tokenCountingMs,
         messageCount: context.length,
         payloadBytes: jsonLength,
       },

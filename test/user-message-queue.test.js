@@ -150,7 +150,7 @@ test("prompt draft and keyboard ownership survive working rerenders and a modal"
   stdin.destroy();
 });
 
-test("tool boundary records the first result before a queued handoff stops the batch", async () => {
+test("read-only batch records the first result before consumer cancellation", async () => {
   const registry = new Registry();
   const executed = [];
   for (const name of ["read", "glob"]) {
@@ -181,12 +181,11 @@ test("tool boundary records the first result before a queued handoff stops the b
     if (next.value.type === "tool-result") resultEvent = next.value;
   }
 
-  let boundary = await iterator.next();
-  while (!boundary.done && boundary.value.type === "context-usage") {
-    boundary = await iterator.next();
+  assert.ok(executed.includes("read"));
+  while (!agent._messages.some(message => message.tool_call_id === "read-first")) {
+    const next = await iterator.next();
+    assert.equal(next.done, false);
   }
-  assert.equal(boundary.value.type, "tool-call");
-  assert.deepEqual(executed, ["read"]);
   assert.ok(agent._messages.some(message => (
     message.role === "tool"
     && message.tool_call_id === "read-first"
@@ -194,5 +193,4 @@ test("tool boundary records the first result before a queued handoff stops the b
   )));
   agent.abort();
   await iterator.return();
-  assert.deepEqual(executed, ["read"]);
 });

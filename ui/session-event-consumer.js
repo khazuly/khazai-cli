@@ -1,7 +1,7 @@
 import { attachFileReferences } from "./file-reference.js";
 
 export async function consumeSessionEvents(context, runState) {
-  const { agent, input, analysisScope, retryProvider, approvedPlan, initialization, runId, turnId, planningRun, appendArchived, activeRef, analysisRef, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan, clearActive, activate, completeStreaming, resetStreaming, discardStreaming, updateUsage, responseBufferRef, completedRef, contextUsageRef, cancelledRunIdRef, pendingPermissionCallIdRef, structuredCallsRef, messageQueueRef, planRef, setContextUsage, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, appendResponseDelta, analysisActivityMessage, analysisEventIsCurrent, clearAnalysisActivity, clearPublicAnalysisActivity, failAnalysisActivity, discardResponseBuffer, cleanPlanOutput, removeAssistantProtocolText, removeEmoji, EMPTY_PLAN_STATE, classifyToolState, applyPlanEventState, applyPlanUpdateState, toolResultFailed, isInternalAgentFailure, isCompletionClaim, nextId, planWorkflowRef, planningQuestionRef, questionResolverRef, setExpandedTool, setQueuedCount, activeScopeRef, readFileName, thinkActivityFromPlan, workspace, setActiveMessage } = context;
+  const { agent, input, analysisScope, retryProvider, approvedPlan, resumeRun, initialization, runId, turnId, planningRun, appendArchived, activeRef, analysisRef, pauseAnalysis, resumeAnalysis, showAnalysis, updateAnalysis, showPublicAnalysis, finishReadBatch, recordReadResult, startRead, planMatchesRun, clearPlanActivity, cleanupCompletedPlan, clearActive, activate, completeStreaming, resetStreaming, discardStreaming, updateUsage, responseBufferRef, completedRef, contextUsageRef, cancelledRunIdRef, pendingPermissionCallIdRef, structuredCallsRef, messageQueueRef, planRef, setContextUsage, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, appendResponseDelta, analysisActivityMessage, analysisEventIsCurrent, clearAnalysisActivity, clearPublicAnalysisActivity, failAnalysisActivity, discardResponseBuffer, removeAssistantProtocolText, removeEmoji, EMPTY_PLAN_STATE, classifyToolState, applyPlanEventState, applyPlanUpdateState, toolResultFailed, isInternalAgentFailure, isCompletionClaim, nextId, questionResolverRef, setExpandedTool, setQueuedCount, activeScopeRef, readFileName, thinkActivityFromPlan, workspace, setActiveMessage } = context;
 updateUsage();
 const agentInput = retryProvider
   ? ""
@@ -12,7 +12,8 @@ for await (const ev of agent.loop(agentInput, undefined, {
   ...analysisScope,
   retryProvider,
   approvedPlan,
-  syntheticContinuation: Boolean(approvedPlan),
+  syntheticContinuation: Boolean(approvedPlan || resumeRun),
+  resumeRun,
 })) {
   if (ev.type === "compaction-state") {
     setContextUsage({
@@ -109,7 +110,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
       context: ev.context,
       options: ev.options,
       allowCustomAnswer: ev.allowCustomAnswer,
-      kind: planningRun ? "plan" : "question",
+      kind: "question",
     });
     continue;
   }
@@ -378,7 +379,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
     discardStreaming();
     finishReadBatch();
     const rawSafeContent = removeAssistantProtocolText(agent.redactForDisplay(removeEmoji(ev.content))).trim();
-    const safeContent = planningRun ? cleanPlanOutput(rawSafeContent) : rawSafeContent;
+    const safeContent = rawSafeContent;
     const thinkTimeout = ev.type === "error" && /Analysis timed out|timed out/i.test(safeContent);
     const providerFailure = ev.recoverable || /^\[×\]/.test(safeContent);
     if (ev.type === "answer") {

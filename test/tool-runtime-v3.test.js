@@ -361,12 +361,12 @@ test("legacy text parser stays disabled after a native tool-call event", async (
   assert.equal(executions, 0);
 });
 
-test("session v5 lifecycle updates persist incrementally", () => {
+test("session v6 lifecycle updates persist incrementally", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-v3-work-"));
   const data = mkdtempSync(join(tmpdir(), "khazai-v3-data-"));
   const store = new SessionStore(workspace, data);
   const session = store.create();
-  assert.equal(session.version, 5);
+  assert.equal(session.version, 6);
 
   const lifecycle = new ToolLifecycle({
     sessionId: session.id,
@@ -380,7 +380,7 @@ test("session v5 lifecycle updates persist incrementally", () => {
   lifecycle.finishStep("tool-calls");
 
   const loaded = store.load(session.id);
-  assert.equal(loaded.version, 5);
+  assert.equal(loaded.version, 6);
   assert.equal(loaded.parts.find(item => item.callId === "call-v3").state.status, "completed");
   assert.equal(loaded.runtime.activeMessageId, null);
   const migrated = migrateSessionV3({ version: 2, id: "old", parts: [], agentState: { version: 2, parts: [] } });
@@ -445,22 +445,12 @@ test("todowrite uses the unified runtime and emits a structured plan", async () 
   for await (const event of agent.loop("update the plan")) events.push(event);
   const plan = events.find(event => event.type === "plan");
   assert.deepEqual(plan.items.map(({ description, status }) => ({ description, status })), [
-    { description: "Inspect files", status: "active" },
-    { description: "Run tests", status: "pending" },
+    { description: "Inspect files", status: "completed" },
+    { description: "Run tests", status: "in_progress" },
   ]);
-  assert.deepEqual(events.filter(event => event.type === "plan-update").map(({ type, stepId, stepStatus }) => (
-    { type, stepId, stepStatus }
-  )), [
-    { type: "plan-update", stepId: plan.items[0].id, stepStatus: "active" },
-    { type: "plan-update", stepId: plan.items[0].id, stepStatus: "completed" },
-  ]);
-  const finalUpdate = events.filter(event => event.type === "plan-update").at(-1);
-  assert.deepEqual(finalUpdate.items.map(({ status }) => status), ["completed", "active"]);
-  assert.equal(finalUpdate.currentStepId, plan.items[1].id);
-  assert.equal(typeof finalUpdate.revision, "number");
-  assert.equal(finalUpdate.status, "active");
+  assert.equal(events.some(event => event.type === "plan-update"), false);
   assert.deepEqual(agent.planningContext().plan.map(({ description, status }) => ({ description, status })), [
     { description: "Inspect files", status: "completed" },
-    { description: "Run tests", status: "active" },
+    { description: "Run tests", status: "in_progress" },
   ]);
 });

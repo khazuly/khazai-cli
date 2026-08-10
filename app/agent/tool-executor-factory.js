@@ -18,7 +18,7 @@ export function createToolExecutor(agent, scope) {
     timeoutMs: agent._config.toolTimeout,
     signal: executionScope?.controller?.signal || agent._abortController?.signal,
     taskContext: agent._executionPolicy,
-    readOnly: agent._readOnly || agent._agentProfile?.name === "plan",
+    readOnly: agent._readOnly,
     readOnlyMessage: agent._readOnly
       ? "Repository initialization is read-only. This tool would modify the workspace."
       : undefined,
@@ -28,6 +28,7 @@ export function createToolExecutor(agent, scope) {
     isActiveRun: candidate => agent._isActiveRun(candidate),
     authorizeCall: call => agent._authorizeToolCall(call, executionScope),
     shellScheduler: agent._shellScheduler,
+    beforeExecute: call => agent._beforeToolExecute?.(call),
     protectOutput: value => agent._secretStore.protect(
       value,
       executionScope?.runId,

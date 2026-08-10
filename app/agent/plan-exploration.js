@@ -1,18 +1,17 @@
-import { planToolIsReadOnly } from "../plan-mode.js";
 import { toolMetadata } from "./helpers/task.js";
 
-const CONCURRENCY = 4;
-const SERIAL_TOOLS = new Set(["question", "think", "skill", "todowrite"]);
-
 export function planBatchCanRunConcurrently(agent, calls) {
-  return agent.mode() === "plan"
-    && calls.length > 1
+  return calls.length > 1
     && calls.every(call => {
       const definition = agent._registry.get(call.name);
       return definition
-        && !SERIAL_TOOLS.has(call.name)
-        && planToolIsReadOnly(call, definition);
+        && readOnlyBatchTool(call, definition);
     });
+}
+
+function readOnlyBatchTool(call, definition) {
+  if (["read", "glob", "grep", "websearch", "webfetch", "repo"].includes(call.name)) return true;
+  return call.name.startsWith("mcp__") && definition?.mcp?.readOnly === true;
 }
 
 function eventQueue(workerCount) {
@@ -39,15 +38,34 @@ function eventQueue(workerCount) {
 }
 
 export async function* runPlanExplorationBatch(agent, calls, scope) {
-  const workers = Math.min(CONCURRENCY, calls.length);
+  const workers = Math.min(Math.max(1, Number(agent._config.readConcurrency) || 4), calls.length);
   const queue = eventQueue(workers);
   const results = new Map();
   let cursor = 0;
+  let resultCursor = 0;
+  const rememberCompletedResults = () => {
+    while (resultCursor < calls.length) {
+      const outcome = results.get(calls[resultCursor].id);
+      if (!outcome) break;
+      agent._rememberToolOutcome(outcome.call, outcome.result, outcome.failed);
+      agent._toolEvidence.push({
+        tool: outcome.call.name,
+        args: agent._protectDataForContext(outcome.call.args, scope),
+        result: outcome.result,
+        failed: outcome.failed,
+        metadata: outcome.metadata,
+      });
+      agent._pushToolMessage(outcome.call.name, outcome.call.id, outcome.result);
+      agent._lastToolResult = outcome.result;
+      agent._activeTask.lastToolResult = outcome.result.slice(0, 1500);
+      resultCursor++;
+    }
+  };
   const runWorker = async () => {
     try {
       while (cursor < calls.length && agent._isActiveRun(scope)) {
         const call = calls[cursor++];
-        for await (const event of agent._toolExecutor(scope).execute(call, { agent: "plan" })) {
+        for await (const event of agent._toolExecutor(scope).execute(call, { agent: agent._agentProfile?.name })) {
           queue.push({ call, event });
         }
       }
@@ -86,6 +104,7 @@ export async function* runPlanExplorationBatch(agent, calls, scope) {
       failed: Boolean(event.failed),
       metadata: toolMetadata(event.call, agent.redactForDisplay(result)),
     });
+    rememberCompletedResults();
   }
   await Promise.all(tasks);
   if (!agent._isActiveRun(scope)) return;
@@ -94,17 +113,6 @@ export async function* runPlanExplorationBatch(agent, calls, scope) {
     const outcome = results.get(call.id);
     if (!outcome) continue;
     failed ||= outcome.failed;
-    agent._rememberToolOutcome(outcome.call, outcome.result, outcome.failed);
-    agent._toolEvidence.push({
-      tool: outcome.call.name,
-      args: agent._protectDataForContext(outcome.call.args, scope),
-      result: outcome.result,
-      failed: outcome.failed,
-      metadata: outcome.metadata,
-    });
-    agent._pushToolMessage(outcome.call.name, outcome.call.id, outcome.result);
-    agent._lastToolResult = outcome.result;
-    agent._activeTask.lastToolResult = outcome.result.slice(0, 1500);
   }
   yield agent._scopedToolEvent({ type: "context-usage", usage: agent.contextUsage() }, scope);
   for (const part of agent._lifecycle.finishStep(failed ? "tool-error" : "tool-calls")) {

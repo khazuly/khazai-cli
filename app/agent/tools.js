@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { planToolDefinitionAllowed } from "../plan-mode.js";
 import { planBatchCanRunConcurrently, runPlanExplorationBatch } from "./plan-exploration.js";
 import { publicToolArgs, toolMetadata } from "./helpers/task.js";
 
@@ -200,6 +199,7 @@ export class ToolMethods {
       stableTokens: this._compaction.stableTokens,
       historyRevision: this._historyRevision,
       contextTokens: entry.jsonTokens,
+      outputHeadroom: this._reservedOutputHeadroom(),
     });
     snapshot.contextLimitSource = source;
     return snapshot;
@@ -208,12 +208,12 @@ export class ToolMethods {
   compactIfNeeded() {
     const usage = this.contextUsage();
     if (!usage.contextLimitKnown) return false;
-    const ratio = usage.projectedRequestTokens / usage.contextLimit;
+    const usableRatio = usage.usableRatio ?? usage.projectedRequestTokens / usage.contextLimit;
     const emergency = Number(this._config.emergencyCompactThreshold) || 0.92;
-    if (ratio >= emergency) {
+    if (usableRatio >= emergency) {
       return this._compactMessages(true);
     }
-    if (ratio < this._config.compactThreshold) return false;
+    if (usableRatio < this._config.compactThreshold) return false;
     return this._compactMessages(false);
   }
 
@@ -239,6 +239,9 @@ export class ToolMethods {
         tokens: Number(projection.tokens) || 0,
         contextLimit: limit || null,
         ratio: limit > 0 ? (Number(projection.tokens) || 0) / limit : null,
+        usableRatio: limit > 0
+          ? (Number(projection.tokens) || 0) / Math.max(1, limit - this._reservedOutputHeadroom())
+          : null,
       };
       this._markLatencyDuration("serializationMs", serializationStart);
       this._contextCache.setProjection(projectionKey, result);
@@ -256,7 +259,7 @@ export class ToolMethods {
     if (cached) return cached;
     const schemaStart = performance.now();
     const available = await this._registry.definitions({ model, agent, mode, directory: this._workspace });
-    const definitions = mode === "plan" ? available.filter(planToolDefinitionAllowed) : available;
+    const definitions = available;
     const nativeTools = definitions.map(tool => ({
       type: "function",
       function: {
@@ -269,158 +272,6 @@ export class ToolMethods {
     this._contextCache.stats.toolSchemaBuilds++;
     this._toolSchemaCache.set(key, nativeTools);
     return nativeTools;
-  }
-
-  _buildCompactedMessages(force = false) {
-    const contextUsage = this.contextUsage();
-    const usage = contextUsage.currentContextTokens;
-    const contextLimit = this._applyEffectiveSettings().contextLimit
-      || Math.max(1, Number(this._config.tokenBudget) || 24_000);
-    if (!force) {
-      const threshold = contextLimit * this._config.compactThreshold;
-      if (contextUsage.projectedRequestTokens < threshold) return null;
-    }
-    if (this._messages.length < 2) return null;
-
-    const target = contextLimit * (force ? 0.2 : 0.45);
-    const preserveTurns = Math.max(0, Number(this._config.preserveRecentTurns) || 0);
-    let keptTokens = 0;
-    let keepFrom = this._messages.length;
-    if (!force && preserveTurns > 0) {
-      let turns = 0;
-      for (let index = this._messages.length - 1; index >= 0 && turns < preserveTurns; index--) {
-        const message = this._messages[index];
-        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-        keepFrom = index;
-        keptTokens += this._contextCache.messageMeta(message).size;
-        if (message.role === "assistant" && message.content) turns++;
-      }
-      if (keptTokens >= target) {
-        let index = keepFrom;
-        let tokens = 0;
-        for (; index < this._messages.length; index++) {
-          const message = this._messages[index];
-          if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-          const size = this._contextCache.messageMeta(message).size;
-          if (tokens > 0 && tokens + size > target) break;
-          tokens += size;
-        }
-        while (index < this._messages.length && this._messages[index]?.role === "tool") index++;
-        keepFrom = index;
-        keptTokens = tokens;
-      } else {
-        for (let index = keepFrom - 1; index >= 0; index--) {
-          const message = this._messages[index];
-          if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-          const size = this._contextCache.messageMeta(message).size;
-          if (keptTokens > 0 && keptTokens + size > target) break;
-          keptTokens += size;
-          keepFrom = index;
-        }
-        while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
-      }
-    } else {
-      for (let index = keepFrom - 1; index >= 0; index--) {
-        const message = this._messages[index];
-        if (String(message.content || "").startsWith("[INTERNAL STEERING]")) continue;
-        const size = this._contextCache.messageMeta(message).size;
-        if (keptTokens > 0 && keptTokens + size > target) break;
-        keptTokens += size;
-        keepFrom = index;
-      }
-      while (keepFrom > 0 && this._messages[keepFrom]?.role === "tool") keepFrom--;
-    }
-
-    const earlier = this._messages.slice(0, keepFrom);
-    const transcript = earlier
-      .filter(message => ["user", "assistant"].includes(message.role) && message.content)
-      .map(message => `${message.role === "user" ? "User" : "Assistant"}: ${String(message.content)}`)
-      .join("\n")
-      .slice(-6000);
-
-    const planBlock = this._preservePlanBlock();
-    const maxChars = Math.max(512, this._maxSummaryChars());
-    const head = [this._summary, planBlock].filter(Boolean).join("\n");
-    const headBudget = Math.floor(maxChars * 0.7);
-    const keptHead = head.length > headBudget ? head.slice(-headBudget) : head;
-    const transcriptBudget = Math.max(0, maxChars - keptHead.length - 1);
-    const keptTranscript = transcript ? transcript.slice(-transcriptBudget) : "";
-    const newSummary = [keptHead, keptTranscript].filter(Boolean).join("\n").slice(-maxChars);
-
-    const kept = this._messages.slice(keepFrom);
-    return {
-      messages: kept,
-      summary: newSummary,
-      requestStartIndex: Math.max(0, this._requestStartIndex - keepFrom),
-    };
-  }
-
-  _maxSummaryChars() {
-    return Math.max(512, (Number(this._config.maxCompactedSummarySize) || 2048) * 4);
-  }
-
-  _preservePlanBlock() {
-    const parts = [];
-    if (Array.isArray(this._plan) && this._plan.length) {
-      const step = this._currentStepId
-        ? this._plan.find(item => item.stepId === this._currentStepId)
-        : null;
-      parts.push(`Active plan: ${this._plan.length} step(s); current: ${step?.title || step?.description || this._currentStepId || "next"}`);
-    }
-    if (this._activeScope?.changedFiles?.length) {
-      parts.push(`Modified files: ${this._activeScope.changedFiles.join(", ")}`);
-    }
-    if (this._activeTask?.pendingProblem) {
-      parts.push(`Unresolved: ${String(this._activeTask.pendingProblem).slice(0, 500)}`);
-    }
-    return parts.length ? `\nContext state: ${parts.join(" · ")}` : "";
-  }
-
-  _clearCompactionIfStale(activeRun = this._activeRun) {
-    const compaction = this._compaction;
-    if (compaction.status === "idle") return;
-    const belongsToActiveRun = Boolean(
-      activeRun
-      && compaction.runId === activeRun.runId
-      && compaction.turnId === activeRun.turnId
-      && compaction.taskEpoch === activeRun.taskEpoch
-      && !activeRun.cancelled
-      && !activeRun.finalized,
-    );
-    if (!belongsToActiveRun) this._clearCompaction();
-  }
-
-  _recordCompactedRevision(sourceRevision) {
-    this._compactedRevisions.add(sourceRevision);
-    this._compactedRevisions.add(this._historyRevision);
-    while (this._compactedRevisions.size > 32) {
-      const oldest = this._compactedRevisions.values().next().value;
-      if (oldest === undefined) break;
-      this._compactedRevisions.delete(oldest);
-    }
-  }
-
-  _compactMessages(force = false) {
-    const sourceRevision = this._historyRevision;
-    if (this._compactedRevisions.has(sourceRevision)) return false;
-    const result = this._buildCompactedMessages(force);
-    if (!result) return false;
-    this._messages = result.messages;
-    this._summary = result.summary;
-    this._requestStartIndex = result.requestStartIndex;
-    this._usageTracker.bumpHistoryRevision();
-    this._historyRevision = this._usageTracker.historyRevision;
-    this._recordCompactedRevision(sourceRevision);
-    this._compactedCheckpoint = {
-      contextRevision: this._historyRevision,
-      sourceRevision,
-      messages: this._messages,
-      summary: this._summary,
-      requestStartIndex: this._requestStartIndex,
-    };
-    this._lastFrameEntry = null;
-    this._contextCache.reset();
-    return true;
   }
 
   _buildContext() {

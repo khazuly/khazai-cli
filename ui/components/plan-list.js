@@ -6,8 +6,8 @@ import { useTheme } from "../theme.js";
 
 export function planItemPresentation(status) {
   if (["done", "completed"].includes(status)) return { indicator: "[✓]", colorRole: "success" };
-  if (["running", "active"].includes(status)) return { indicator: "[•]", colorRole: "secondary" };
-  if (["failed", "blocked"].includes(status)) return { indicator: "[×]", colorRole: "error" };
+  if (["running", "active", "in_progress"].includes(status)) return { indicator: "[•]", colorRole: "secondary" };
+  if (["failed", "blocked", "cancelled"].includes(status)) return { indicator: "[×]", colorRole: "error" };
   return { indicator: "[ ]", colorRole: "muted" };
 }
 
@@ -45,7 +45,7 @@ function PlanListInner({ plan, planId: planIdProp }) {
   const columns = stdout?.columns || 80;
 
   return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Text, { bold: true, color: theme.primary }, `Plan ${finished}/${items.length}`),
+    h(Text, { bold: true, color: theme.primary }, `Todos ${finished}/${items.length}`),
     h(Box, { flexDirection: "column", marginTop: 1 },
       ...items.map(item => {
         const status = item.status === "active" && item.id !== state.currentStepId ? "pending" : item.status;

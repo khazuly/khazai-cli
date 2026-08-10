@@ -33,6 +33,7 @@ export function PromptInput({
   fileItems = [],
   onPreviewChange,
   onExitSub,
+  onToggleAgent,
   canAbort = false,
   question = "",
   questionContext = "",
@@ -300,6 +301,11 @@ export function PromptInput({
         commandViewport.resetSelection();
         return;
       }
+    }
+
+    if (key.tab && !input.value && !showFiles && !showCmd && !question && !questionKind) {
+      onToggleAgent?.();
+      return;
     }
 
     if (key.return) {

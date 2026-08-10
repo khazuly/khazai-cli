@@ -1,5 +1,3 @@
-const STATUSES = new Set(["pending", "in_progress", "completed", "cancelled"]);
-
 const STATUS_ALIASES = new Map([
   ["pending", "pending"],
   ["todo", "pending"],
@@ -29,7 +27,7 @@ export const todoWriteTool = {
           type: "object",
           properties: {
             content: { type: "string" },
-            status: { type: "string", enum: [...STATUSES] },
+            status: { type: "string" },
           },
           required: ["content"],
           additionalProperties: false,

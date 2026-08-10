@@ -86,7 +86,7 @@ if (["read", "glob", "grep"].includes(tool.name)) {
   this._progress.repeatedSearches = 0;
   this._progress.repeatedReads = 0;
 }
-if (this._progress.repeatedSearches > 10 || this._progress.repeatedReads > 10) {
+if (this._progress.repeatedSearches >= 2 || this._progress.repeatedReads >= 2) {
   this._finishLatency();
   if (finalizeRun()) {
     yield scoped({ type: "error", content: "No progress: repeated identical searches without meaningful change." });
@@ -97,7 +97,10 @@ const usage = this.contextUsage();
 const projectedRatio = usage.contextLimitKnown
   ? usage.projectedRequestTokens / usage.contextLimit
   : null;
-if (projectedRatio !== null && projectedRatio < this._config.compactThreshold) {
+if (
+  (projectedRatio === null || projectedRatio < this._config.compactThreshold)
+  && usage.projectedRequestTokens < (this._compactionTokenLimit() || Infinity)
+) {
   this._compactionThresholdCrossed = false;
 }
 if (
@@ -115,8 +118,8 @@ if (
     usage: this.contextUsage(),
   });
 } else if (
-  projectedRatio !== null
-  && projectedRatio >= this._config.compactThreshold
+  (projectedRatio !== null && projectedRatio >= this._config.compactThreshold
+    || usage.projectedRequestTokens >= (this._compactionTokenLimit() || Infinity))
   && !this._compactionThresholdCrossed
   && this._scheduleCompaction(run)
 ) {

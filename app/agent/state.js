@@ -7,6 +7,34 @@ import { completedConversationHistory } from "./request-state.js";
 import { hydrateCanonicalMessages } from "../session-hydration.js";
 import { emitPerformanceTimings } from "../performance-timings.js";
 
+export function compactedRevisionEntries(value) {
+  const entries = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    if (typeof entry === "string") {
+      entries.push([entry, { sourceRevision: entry, attempt: 1 }]);
+    } else if (entry && entry.sourceRevision !== undefined) {
+      entries.push([String(entry.sourceRevision), { ...entry, sourceRevision: String(entry.sourceRevision) }]);
+    }
+  }
+  return entries;
+}
+
+export function resolveTailStartIndex(messages, checkpoint) {
+  const tailId = checkpoint?.tailStartMessageId ? String(checkpoint.tailStartMessageId) : null;
+  if (tailId) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (String(messages[index]?.id || "") === tailId) return index;
+    }
+  }
+  const boundaryId = checkpoint?.boundaryMessageId ? String(checkpoint.boundaryMessageId) : null;
+  if (boundaryId) {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (String(messages[index]?.id || "") === boundaryId) return index + 1;
+    }
+  }
+  return -1;
+}
+
 
 export class StateMethods {
   _markLatency(name) {
@@ -27,9 +55,12 @@ export class StateMethods {
       historyPreparationMs: this._latency.historyPreparationMs ?? null,
       messageValidationMs: this._latency.messageValidationMs ?? null,
       tokenCountingMs: this._latency.tokenCountingMs ?? null,
+      headTokens: this._latency.headTokens ?? null,
       compactionCheckMs: this._latency.compactionCheckMs ?? null,
       compactionMs: this._latency.compactionMs ?? null,
       compactionPreparationMs: this._latency.compactionPreparationMs ?? null,
+      compactionBeforeTokens: this._latency.compactionBeforeTokens ?? null,
+      compactionAfterTokens: this._latency.compactionAfterTokens ?? null,
       toolSchemaBuildMs: this._latency.toolSchemaBuildMs ?? null,
       serializationMs: this._latency.serializationMs ?? null,
       requestUploadMs: this._latency.providerFirstByte !== undefined
@@ -43,9 +74,15 @@ export class StateMethods {
         : null,
       totalResponseMs: this._latency.completed - this._latency.inputReceived,
       messageCount: this._latency.messageCount ?? null,
-      serializedPayloadBytes: this._latency.serializedPayloadBytes ?? null,
+      serializedPayloadBytes: this._latency.serializedPayloadBytes ?? this._latency.requestBytes ?? null,
       currentContextTokens: this._latency.currentContextTokens ?? null,
       compactionLabel: this._latency.compactionLabel ?? "Not required",
+      requestBytes: this._latency.requestBytes ?? null,
+      providerMessageConversionMs: this._latency.providerMessageConversionMs ?? null,
+      providerRequestPreparationMs: this._latency.providerRequestPreparationMs ?? null,
+      admissionPersistMs: this._latency.admissionPersistMs ?? null,
+      snapshotBeforeMs: this._latency.snapshotBeforeMs ?? null,
+      snapshotAfterMs: this._latency.snapshotAfterMs ?? null,
     };
     this._lastRequestMetrics = metrics;
     emitPerformanceTimings("provider-request", {
@@ -54,11 +91,26 @@ export class StateMethods {
     });
   }
 
+  _redactedMessages() {
+    const fingerprint = [
+      this._historyRevision,
+      this._messages.length,
+      String(this._messages.at(-1)?.id || ""),
+      this._tailStartIndex,
+    ].join(":");
+    if (this._redactedMessagesCache?.fingerprint === fingerprint) {
+      return this._redactedMessagesCache.value;
+    }
+    const value = this._secretStore.redactSerializable(this._messages);
+    this._redactedMessagesCache = { fingerprint, value };
+    return value;
+  }
+
   exportSessionState() {
     const state = {
-      version: 5,
+      version: 6,
       sessionId: this._sessionId,
-      messages: this._messages,
+      messages: this._redactedMessages(),
       summary: this._summary,
       model: this._model,
       agent: this._agentProfile?.name || "build",
@@ -68,57 +120,117 @@ export class StateMethods {
       contextUsage: this._usageTracker.export(),
       historyRevision: this._historyRevision,
       contextRevision: this._historyRevision,
+      tailStartIndex: this._tailStartIndex,
       tokenCache: this._contextCache.exportTokenState(),
       compactedCheckpoint: this._compactedCheckpoint,
-      compactedRevisions: [...this._compactedRevisions].slice(-32),
+      compactedRevisions: [...this._compactedRevisions.values()].slice(-32),
       resolvedProvider: this._model,
       resolvedModel: this._model,
+      activeRun: this.activeRunState(),
     };
-    return this._secretStore.redactSerializable(state);
+    return this._secretStore.redactSerializableExcept(state, ["messages"]);
   }
 
   restoreSessionState(state) {
     if (!isObject(state)) return false;
+    const restoreStart = performance.now();
+    const metadataLoadMs = performance.now() - restoreStart;
     const candidateCheckpoint = isObject(state.compactedCheckpoint) ? state.compactedCheckpoint : null;
     const checkpoint = candidateCheckpoint?.contextRevision === (state.contextRevision ?? state.historyRevision)
       ? candidateCheckpoint
       : null;
-    const source = checkpoint?.messages || state.messages;
-    if (Array.isArray(source)) {
-      const hydrated = hydrateCanonicalMessages(completedConversationHistory(source));
-      this._messages = hydrated.messages;
-      this._messageIndexes = hydrated.indexes;
-      this._hydrationMetrics = process.env.KHAZAI_DEBUG_PERF
-        ? hydrated.timings
-        : { canonicalMessageHydrationMs: hydrated.hydrationMs };
+    const source = Array.isArray(state.messages) ? state.messages : [];
+    this._messages = source;
+    const checkpointLookupStart = performance.now();
+    let tailStartIndex = 0;
+    let hydrationSource = source;
+    if (checkpoint) {
+      const resolved = resolveTailStartIndex(source, checkpoint);
+      if (resolved >= 0) {
+        tailStartIndex = resolved;
+        hydrationSource = source.slice(tailStartIndex);
+      } else if (Array.isArray(checkpoint.messages)) {
+        hydrationSource = checkpoint.messages;
+      } else if (Number.isFinite(Number(checkpoint.requestStartIndex))) {
+        tailStartIndex = Math.max(0, Math.min(Number(checkpoint.requestStartIndex), source.length));
+        hydrationSource = source.slice(tailStartIndex);
+      }
     }
-    this._messages = this._messages.map(message => {
-      if (message?.role !== "tool") return message;
+    const checkpointLookupMs = performance.now() - checkpointLookupStart;
+    this._tailStartIndex = tailStartIndex;
+    const projectionStart = performance.now();
+    this._tailStartIndex = tailStartIndex;
+    const hydrationStart = performance.now();
+    const hydrated = hydrateCanonicalMessages(completedConversationHistory(hydrationSource));
+    this._messages = [...source.slice(0, tailStartIndex), ...hydrated.messages];
+    this._messageIndexes = hydrated.indexes;
+    const activeHydrationMs = performance.now() - hydrationStart;
+    const activeHistoryProjectionMs = performance.now() - projectionStart;
+    this._hydrationMetrics = process.env.KHAZAI_DEBUG_PERF
+      ? {
+          ...hydrated.timings,
+          checkpointLookupMs,
+          activeHydrationMs,
+          activeHistoryProjectionMs,
+          resumeMetadataLoadMs: metadataLoadMs,
+          tailStartIndex,
+          totalMessages: this._messages.length,
+        }
+      : {
+          canonicalMessageHydrationMs: hydrated.hydrationMs,
+          checkpointLookupMs,
+          activeHydrationMs,
+          activeHistoryProjectionMs,
+          resumeMetadataLoadMs: metadataLoadMs,
+          tailStartIndex,
+          totalMessages: this._messages.length,
+        };
+    for (let index = this._tailStartIndex; index < this._messages.length; index++) {
+      const message = this._messages[index];
+      if (message?.role !== "tool") continue;
       const { concise, truncated } = this._conciseToolContent(message.name, message.tool_call_id, message.content);
-      return truncated ? { ...message, content: concise } : message;
-    });
+      if (truncated) this._messages[index] = { ...message, content: concise };
+    }
     this._summary = typeof checkpoint?.summary === "string"
       ? checkpoint.summary
       : typeof state.summary === "string" ? state.summary : "";
-    this._requestStartIndex = Number(checkpoint?.requestStartIndex) || 0;
+    this._requestStartIndex = Math.max(this._tailStartIndex, Math.max(0, this._messages.length - 1));
     this._compactedCheckpoint = checkpoint;
-    this._compactedRevisions = new Set(state.compactedRevisions || []);
+    this._compactedRevisions = new Map(compactedRevisionEntries(state.compactedRevisions));
+    this._redactedMessagesCache = null;
     if (state.model) this._model = String(state.model);
     if (state.sessionId) {
       this._sessionId = String(state.sessionId);
       this._lifecycle.sessionId = this._sessionId;
     }
     if (Array.isArray(state.parts)) {
-      this._lifecycle.parts = state.parts
-        .filter(part => (
-          part?.type !== "tool"
-          || !["pending", "running"].includes(part.state?.status)
-        ))
-        .slice(-200);
+      const resumable = isObject(state.activeRun);
+      this._lifecycle.parts = state.parts.flatMap(part => {
+        if (part?.type !== "tool" || !["pending", "running"].includes(part.state?.status)) return [part];
+        if (!resumable) return [];
+        return [{
+          ...part,
+          state: {
+            ...part.state,
+            status: "error",
+            error: "Tool execution was interrupted when the session exited.",
+            time: { ...(part.state.time || {}), end: Date.now() },
+            metadata: { ...(part.state.metadata || {}), interrupted: true },
+          },
+        }];
+      }).slice(-200);
     }
     this._permissionService.restoreApprovals(state.permissionApprovals);
     this._recoverableProviderRequest = isObject(state.recoverableProviderRequest)
       ? state.recoverableProviderRequest
+      : null;
+    this._durableRun = isObject(state.activeRun)
+      ? {
+          ...state.activeRun,
+          status: ["running", "resuming"].includes(state.activeRun.status)
+            ? "interrupted"
+            : state.activeRun.status,
+        }
       : null;
     this._pendingAction = null;
     this._pendingGitPush = null;

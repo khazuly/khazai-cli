@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { redactSecrets } from "../lib/secrets.js";
 import { shellTimeoutMs } from "../lib/shell-command-policy.js";
 import { normalizeToolOutput } from "./tool-lifecycle.js";
-import { planToolIsReadOnly } from "./plan-mode.js";
+import { toolIsReadOnly } from "./plan-mode.js";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const MAX_OUTPUT_LINES = 2_000;
@@ -93,6 +93,7 @@ export class ToolExecutor {
     isActiveRun = null,
     authorizeCall = null,
     shellScheduler = null,
+    beforeExecute = null,
     protectOutput = redactSecrets,
     protectData = value => value,
     redactOutput = redactSecrets,
@@ -119,6 +120,7 @@ export class ToolExecutor {
     this.isActiveRun = typeof isActiveRun === "function" ? isActiveRun : null;
     this.authorizeCall = typeof authorizeCall === "function" ? authorizeCall : null;
     this.shellScheduler = shellScheduler;
+    this.beforeExecute = typeof beforeExecute === "function" ? beforeExecute : null;
     this.protectOutput = protectOutput;
     this.protectData = protectData;
     this.redactOutput = redactOutput;
@@ -232,7 +234,7 @@ export class ToolExecutor {
       yield* this._unknown(call);
       return;
     }
-    if (this.readOnly && !planToolIsReadOnly(call, tool)) {
+    if (this.readOnly && !toolIsReadOnly(call, tool)) {
       const part = this.lifecycle.invalid({
         callId: call.id,
         requestedTool: call.name,
@@ -349,6 +351,8 @@ export class ToolExecutor {
       this._recordApproval(call, permission, "persisted");
     }
 
+    if (!this._isActive()) return;
+    if (!toolIsReadOnly(call, tool)) await this.beforeExecute?.(call);
     if (!this._isActive()) return;
     this.lifecycle.running(part, this.protectData(call.args));
     this.shellScheduler?.running(call);

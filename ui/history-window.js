@@ -1,4 +1,4 @@
-export const INITIAL_HISTORY_LIMIT = 80;
+export const INITIAL_HISTORY_LIMIT = 20;
 
 export function recentHistoryWindow(messages, limit = INITIAL_HISTORY_LIMIT) {
   const source = Array.isArray(messages) ? messages : [];

@@ -3,6 +3,7 @@ import { createAssistantTextGuard, sanitizeAssistantIdentity } from "../../lib/a
 import { createPublicActivityChannel } from "../public-activity.js";
 import { streamDisposition } from "./helpers/task.js";
 import { LEGACY_PROTOCOL_HOLDBACK } from "./helpers/parser.js";
+import { emitRequestMetrics } from "../performance-timings.js";
 
 export async function* requestProviderTurn({ ctx, nativeTools, requestModel, controller, run, pendingProse, maxAttempts, isRunActive, isRunCurrent, scoped, runId, turnId, taskEpoch, retryProvider, phase, projected }) {
 let reply;
@@ -54,6 +55,12 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
     }
     if (event?.type === "request-prepared") {
       Object.assign(this._latency, event.timings || {});
+      if (this._latency.requestBytes !== undefined) {
+        emitRequestMetrics("request-serialization", {
+          requestBytes: this._latency.requestBytes,
+          serializationMs: this._latency.serializationMs ?? null,
+        });
+      }
       return;
     }
     if (event?.type === "provider-fallback") {

@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { appendVisibleHistory, recentHistoryWindow } from "./history-window.js";
 
 export function useSessionPersistence(context) {
-  const { Agent, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisRef, buildRegistry, buildStartedPlanIdRef, completedRef, currentSessionRef, exitStartedRef, loadConfig, mcpToolsRef, messageQueueRef, nextId, planRef, planWorkflowRef, planningQuestionRef, questionResolverRef, randomUUID, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setCompletedMessages, setCurrentModel, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setQueuedCount, setSessionKey, structuredCallsRef, taskEpochRef, mcpManager, exit, workspace, autoApproveRef, setContextUsage } = context;
+  const { Agent, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisRef, buildRegistry, buildStartedPlanIdRef, completedRef, currentSessionRef, exitStartedRef, loadConfig, mcpToolsRef, messageQueueRef, nextId, planRef, planWorkflowRef, planningQuestionRef, questionResolverRef, randomUUID, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setCompletedMessages, setCurrentModel, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setQueuedCount, setSessionKey, structuredCallsRef, submitRef, taskEpochRef, mcpManager, exit, workspace, autoApproveRef, setContextUsage } = context;
 const appendCompleted = useCallback(message => {
   const next = [...completedRef.current, message];
   completedRef.current = next;
@@ -44,7 +44,9 @@ const loadStoredSession = useCallback(session => {
     model: session.model,
     agent: session.agent,
     sessionState: session.agentState,
-    partHandler: part => sessionStoreRef.current.updatePart(part.sessionId, part),
+    partHandler: part => {
+      sessionStoreRef.current.updatePart(part.sessionId, part, agentRef.current?.activeRunState?.());
+    },
   });
   completedRef.current = session.messages || [];
   activeRef.current = null;
@@ -66,12 +68,20 @@ const loadStoredSession = useCallback(session => {
   setQueuedCount(0);
   structuredCallsRef.current.clear();
   setSessionKey(key => key + 1);
+  const interrupted = agentRef.current.interruptedRun();
+  if (interrupted) {
+    setModeStatus({ mode: interrupted.mode || session.agent || "build", status: "resuming" });
+    queueMicrotask(() => submitRef?.current?.(
+      "Continue the interrupted task from its saved checkpoint. Do not repeat completed tool calls.",
+      { internalInput: true, resumeRun: interrupted },
+    ));
+  }
 }, [workspace.path]);
 
 const freshSession = useCallback(() => {
   const now = new Date().toISOString();
   return {
-    version: 5,
+    version: 6,
     id: randomUUID(),
     workspace: resolve(workspace.path),
     title: "",
@@ -86,7 +96,8 @@ const freshSession = useCallback(() => {
     turns: [],
     redo: [],
     permissionMode: "prompt",
-    runtime: { version: 3, lastPartAt: null },
+    runtime: { version: 4, lastPartAt: null },
+    activeRun: null,
   };
 }, [workspace.path]);
 
@@ -100,11 +111,13 @@ const removeStoredSessions = useCallback(ids => {
 
 const persistBeforeExit = useCallback(() => {
   const session = currentSessionRef.current;
+  agentRef.current?.markRunInterrupted?.();
   const agentState = agentRef.current?.exportSessionState?.() || agentSessionRef.current;
   currentSessionRef.current = sessionStoreRef.current.save({
     ...session,
     messages: completedRef.current,
     agentState,
+    activeRun: agentState?.activeRun || null,
     savedPlan: planRef.current.steps.map(item => ({ ...item })),
   });
 }, []);

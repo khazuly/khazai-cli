@@ -133,7 +133,12 @@ export class ToolLifecycle {
       this.parts = this.parts.filter(entry => entry !== part);
       return part;
     }
-    try { this.onPart?.(JSON.parse(JSON.stringify(part))); } catch {}
+    try {
+      const partRef = part?.state?.output !== undefined
+        ? { ...part, state: { ...part.state, output: undefined } }
+        : part;
+      this.onPart?.(JSON.parse(JSON.stringify(partRef)));
+    } catch {}
     return part;
   }
 
