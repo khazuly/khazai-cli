@@ -62,7 +62,9 @@ if (cmd === "/export") {
 }
 if (cmd === "/details") {
   const detailArg = String(arg || "").trim().toLowerCase();
-  const latest = completedRef.current.findLast(message => message.type === "tool");
+  const latest = completedRef.current.findLast(message =>
+    message.type === "tool" || message.type === "read-group"
+  );
   if (detailArg === "on" || detailArg === "expand") {
     setExpandedTool(latest ? { ...latest, id: `expanded-${latest.id}`, expanded: true } : null);
   } else if (detailArg === "off" || detailArg === "collapse") {

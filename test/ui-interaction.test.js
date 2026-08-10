@@ -90,24 +90,29 @@ test("read groups keep one live row and finalize without a file name", async () 
   const running = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-active",
     type: "read-group",
-    count: 3,
-    currentFile: "status-bar.js",
+    total: 3,
+    completed: 1,
+    failed: 0,
+    entries: [],
+    startedAt: Date.now() - 8400,
     done: false,
   }] }), 60, 12);
-  assert.match(running, /Read 3 files · status-bar\.js/);
-  assert.doesNotMatch(running, /\d+ms/);
+  assert.match(running, /\[•\] Read 3 files\s+· 8\.\d+s/);
+  assert.doesNotMatch(running, /status-bar\.js/);
 
   const completed = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-finished",
     type: "read-group",
-    count: 3,
-    currentFile: "",
+    total: 3,
+    completed: 3,
+    failed: 0,
+    entries: [],
+    startedAt: 1000,
+    finishedAt: 1287,
     done: true,
-    duration: 287,
-    failed: false,
-    totalLines: 186,
   }] }), 60, 12);
   assert.match(completed, /\[✓\] Read 3 files · 287ms/);
+  assert.match(completed, /\/expand/);
   assert.doesNotMatch(completed, /status-bar\.js/);
 });
 
@@ -115,24 +120,29 @@ test("read group markers remain intact at narrow widths", async () => {
   const active = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-narrow-active",
     type: "read-group",
-    count: 3,
-    currentFile: "session.js",
+    total: 3,
+    completed: 0,
+    failed: 0,
+    entries: [],
+    startedAt: Date.now() - 1000,
     done: false,
     status: "running",
-  }] }), 16, 12);
-  assert.match(active, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+Read 3/);
+  }] }), 24, 12);
+  assert.match(active, /\[•\] Read 3/);
   assert.doesNotMatch(active, /^\s*\]\s*$/m);
 
   const completed = await renderComponent(h(MessageList, { messages: [{
     id: "read-group-narrow-completed",
     type: "read-group",
-    count: 1,
-    currentFile: "",
+    total: 1,
+    completed: 1,
+    failed: 0,
+    entries: [],
+    startedAt: 1000,
+    finishedAt: 1297,
     done: true,
-    duration: 297,
-    failed: false,
   }] }), 16, 12);
-  assert.match(completed, /\[✓\] Read 1/);
+  assert.match(completed, /\[✓\] Read/);
   assert.doesNotMatch(completed, /^\s*\]\s*$/m);
   assert.doesNotMatch(completed, /\[✓Read/);
 });

@@ -53,6 +53,22 @@ test("expand opens the latest tool and collapse closes the inspector", async () 
   assert.equal(state.inspected(), null);
 });
 
+test("expand opens the latest completed read batch", async () => {
+  const batch = {
+    id: "read-batch:run-1:turn-1:1:1",
+    type: "read-group",
+    total: 14,
+    completed: 13,
+    failed: 1,
+    done: true,
+  };
+  const state = detailContext([tool("first", "first.js"), batch]);
+
+  await handleSessionCommand("/expand", "", state.context);
+
+  assert.equal(state.inspected()?.id, batch.id);
+});
+
 test("details latest skips the selector and limits history choices to twenty", async () => {
   const messages = Array.from({ length: 25 }, (_, index) => tool(`tool-${index}`, `${index}.js`));
   let selectorCalls = 0;

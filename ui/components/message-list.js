@@ -195,12 +195,7 @@ const MessageRow = memo(function MessageRow({ message: m }) {
     case "read-group":
       return h(Box, { flexDirection: "column", marginBottom: 1 },
         h(ToolCall, {
-          readGroup: true, count: m.count, currentFile: m.currentFile,
-          done: m.done, duration: m.duration, failed: m.failed,
-          status: m.status, failedCount: m.failedCount,
-          startedAt: m.startedAt,
-          toolCallId: m.callIds?.join(":") || m.id,
-          scopeKey: `${m.runId || ""}:${m.turnId || ""}:${m.taskEpoch ?? ""}`,
+          readGroup: true, readBatch: m, expanded: m.expanded,
         }),
       );
     case "answer": return h(RoleMessage, { role: "KhazAI", content: m.content });

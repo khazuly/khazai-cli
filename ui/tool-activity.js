@@ -4,12 +4,17 @@ const MAX_TOOL_CHOICES = 20;
 
 export function recentToolMessages(messages, maximum = MAX_TOOL_CHOICES) {
   return messages
-    .filter(message => message.type === "tool" && message.done)
+    .filter(message => (message.type === "tool" || message.type === "read-group") && message.done)
     .slice(-maximum)
     .reverse();
 }
 
 export function toolChoice(message) {
+  if (message.type === "read-group") {
+    const count = message.total || 0;
+    const label = `Read ${count} ${count === 1 ? "file" : "files"}`;
+    return message.failed ? `${label} · ${message.failed} failed` : label;
+  }
   const presentation = presentTool({
     tool: message.tool,
     title: message.title,
@@ -28,6 +33,7 @@ export function toolChoice(message) {
 
 export function findToolMessage(messages, id) {
   return messages.find(message =>
-    message.type === "tool" && (message.id === id || message.callId === id)
+    (message.type === "tool" || message.type === "read-group")
+    && (message.id === id || message.callId === id)
   ) || null;
 }

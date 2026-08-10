@@ -1,6 +1,6 @@
 import { createElement as h } from "react";
 import { Box, Text, useStdout } from "ink";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import stringWidth from "string-width";
 import { formatDuration, presentTool } from "../tool-presentation.js";
 import { useTheme } from "../theme.js";
@@ -96,66 +96,61 @@ function DetailRows({ rows, state, theme, width, live = false }) {
   );
 }
 
-function ReadGroupCall({
-  count,
-  currentFile,
-  done,
-  duration,
-  failed,
-  status,
-  failedCount,
-  startedAt,
-  toolCallId,
-  scopeKey,
-}) {
-  const theme = useTheme();
-  const label = `Read ${count} ${count === 1 ? "file" : "files"}`;
-  const elapsed = duration ? ` · ${formatDuration(duration)}` : "";
-  let icon;
-  let heading;
-  if (failed) {
-    icon = "[×]";
-    const failurePart = failedCount ? ` · ${failedCount} failed` : "";
-    const filePart = currentFile ? ` · ${currentFile}` : "";
-    heading = `${label}${failurePart}${filePart}${elapsed}`;
-  } else if (done) {
-    icon = "[✓]";
-    heading = `${label}${elapsed}`;
-  } else {
-    icon = ["pending", "awaiting-approval"].includes(status) ? "[ ]" : "[•]";
-    heading = `${label} · ${currentFile || ""}`;
-  }
-  if (!done && !failed && !["pending", "awaiting-approval"].includes(status)) {
-    return h(StatusRail, { flexShrink: 0, width: "100%", tone: "muted" },
-      h(ToolSpinner, {
-        active: true,
-        color: theme.primary,
-        label: heading,
-        scopeKey: `${scopeKey}:${toolCallId}`,
-        startedAt,
-      }),
-    );
-  }
-  return h(StatusRail, { flexShrink: 0, width: "100%", tone: failed ? "error" : done ? "success" : "muted" },
-    h(PrefixRow, { prefix: icon, prefixColor: failed ? theme.error : done ? theme.success : theme.primary },
-      h(Text, { bold: true, color: failed ? theme.error : done ? theme.success : theme.primary, wrap: "wrap" }, heading),
-    ),
+function ReadBatchElapsed({ startedAt, finishedAt, color }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (finishedAt) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 100);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, [finishedAt]);
+  return h(Text, { bold: true, color, wrap: "truncate-end" },
+    ` · ${formatDuration(Math.max(0, (finishedAt || now) - startedAt))}`,
   );
 }
 
-export const ToolCall = memo(function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, count, currentFile, failed, status, totalLines, failurePreview, failedCount, toolCallId = "", scopeKey = "" }) {
-  if (readGroup) return h(ReadGroupCall, {
-    count,
-    currentFile,
-    done,
-    duration,
-    failed,
-    status,
-    failedCount,
-    startedAt,
-    toolCallId,
-    scopeKey,
-  });
+function ReadBatchDetails({ batch, theme }) {
+  return h(Box, { flexDirection: "column", marginTop: 1 },
+    h(Text, { bold: true, color: theme.toolRead }, `Read ${batch.total} ${batch.total === 1 ? "file" : "files"}`),
+    ...batch.entries.map(entry => {
+      const duration = entry.finishedAt ? formatDuration(entry.finishedAt - entry.startedAt) : "running";
+      const prefix = entry.finishedAt ? entry.failed ? "[!]" : "[✓]" : "[•]";
+      const color = entry.failed ? theme.error : entry.finishedAt ? theme.success : theme.primary;
+      return h(PrefixRow, {
+        key: entry.callId,
+        prefix,
+        prefixColor: color,
+      }, h(Text, { color, wrap: "wrap" }, `${entry.displayPath} · ${duration}`));
+    }),
+  );
+}
+
+export const ReadGroupCall = memo(function ReadGroupCall({ batch, expanded = false }) {
+  const theme = useTheme();
+  const hasFailures = batch.failed > 0;
+  const done = Boolean(batch.done);
+  const countLabel = hasFailures
+    ? `Read ${batch.completed}/${batch.total} ${batch.total === 1 ? "file" : "files"}`
+    : `Read ${batch.total} ${batch.total === 1 ? "file" : "files"}`;
+  const prefix = hasFailures ? "[!]" : done ? "[✓]" : "[•]";
+  const color = hasFailures ? theme.error : done ? theme.success : theme.primary;
+  return h(StatusRail, { flexShrink: 0, width: "100%", tone: hasFailures ? "error" : done ? "success" : "muted" },
+    h(PrefixRow, { prefix, prefixColor: color },
+      h(Box, { flexDirection: "row", width: "100%" },
+        h(Text, { bold: true, color, wrap: "truncate-end" }, countLabel),
+        h(ReadBatchElapsed, { startedAt: batch.startedAt, finishedAt: batch.finishedAt, color }),
+      ),
+      done && !expanded
+        ? h(Text, { color: hasFailures ? theme.error : theme.metadata, dimColor: !hasFailures },
+            `${hasFailures ? `${batch.failed} failed · ` : ""}/expand`)
+        : null,
+      done && expanded ? h(ReadBatchDetails, { batch, theme }) : null,
+    ),
+  );
+});
+
+export const ToolCall = memo(function ToolCall({ tool, args, done, duration, startedAt, resultSize, content, metadata, expanded = false, readGroup = false, readBatch, status, toolCallId = "", scopeKey = "" }) {
+  if (readGroup) return h(ReadGroupCall, { batch: readBatch, expanded });
   const { stdout } = useStdout();
   const theme = useTheme();
   if (tool === "unknown_tool") {

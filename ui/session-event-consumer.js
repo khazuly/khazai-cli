@@ -64,6 +64,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
   }
 
   if (ev.type === "public-activity") {
+    finishReadBatch();
     showPublicAnalysis(
       ev.toolCallId,
       agent.redactSerializableForDisplay(ev.publicActivity || {}),
@@ -116,6 +117,7 @@ for await (const ev of agent.loop(agentInput, undefined, {
   }
 
   if (ev.type === "permission") {
+    finishReadBatch();
     resetStreaming();
     pauseAnalysis();
     const currentTool = activeRef.current;
