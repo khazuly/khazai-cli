@@ -7,6 +7,7 @@ function publicField(value, maximum) {
 function matchesScope(state, scope) {
   return Boolean(
     state
+    && scope
     && state.runId === scope.runId
     && state.turnId === scope.turnId
     && state.taskEpoch === scope.taskEpoch

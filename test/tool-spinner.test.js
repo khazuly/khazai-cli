@@ -5,8 +5,7 @@ import { Box, render, Text } from "ink";
 import stringWidth from "string-width";
 import { ToolCall } from "../ui/components/tool-call.js";
 import {
-  TOOL_SPINNER_FRAMES,
-  TOOL_SPINNER_INTERVAL_MS,
+  TOOL_ACTIVE_MARKER,
 } from "../ui/components/tool-spinner.js";
 import {
   stripAnsi,
@@ -37,13 +36,11 @@ function visibleFrames(stdout) {
     .filter(frame => frame.trim());
 }
 
-test("tool spinner frames use one terminal cell and a fixed interval", () => {
-  assert.equal(TOOL_SPINNER_INTERVAL_MS, 100);
-  assert.ok(TOOL_SPINNER_FRAMES.length > 1);
-  assert.ok(TOOL_SPINNER_FRAMES.every(frame => stringWidth(frame) === 1));
+test("active tool marker uses one terminal cell", () => {
+  assert.equal(stringWidth(TOOL_ACTIVE_MARKER), 1);
 });
 
-test("spinner frames keep the active row, prompt, and footer layout stable", async () => {
+test("active tool marker does not append timer frames to the transcript", async () => {
   const stdout = new TerminalOutput(40, 12);
   const stdin = new TerminalInput();
   let siblingRenders = 0;
@@ -61,20 +58,17 @@ test("spinner frames keep the active row, prompt, and footer layout stable", asy
   });
   await new Promise(resolve => setTimeout(resolve, 360));
   const frames = visibleFrames(stdout);
-  assert.ok(frames.length >= 3);
-  const normalized = frames.slice(-3).map(frame => frame
-    .replace(new RegExp(`[${TOOL_SPINNER_FRAMES.join("")}]`, "g"), "S")
-    .replace(/· \d+s/g, "· TIME"));
-  assert.ok(normalized.every(frame => frame === normalized[0]));
-  assert.ok(normalized.every(frame => frame.includes("PROMPT STABLE")));
-  assert.ok(normalized.every(frame => frame.includes("FOOTER STABLE")));
+  assert.equal(frames.length, 1);
+  assert.match(frames[0], /•\s+Shell · running/);
+  assert.match(frames[0], /PROMPT STABLE/);
+  assert.match(frames[0], /FOOTER STABLE/);
   assert.equal(siblingRenders, 1);
   instance.unmount();
   instance.cleanup();
   stdin.destroy();
 });
 
-test("settling a tool clears its spinner interval", async () => {
+test("settling a tool does not leave a background timer", async () => {
   const stdout = new TerminalOutput(40, 12);
   const stdin = new TerminalInput();
   function StableSibling() {
@@ -100,7 +94,7 @@ test("settling a tool clears its spinner interval", async () => {
   }));
   await new Promise(resolve => setTimeout(resolve, 80));
   const settledWrites = stdout.frames.length;
-  await new Promise(resolve => setTimeout(resolve, 3 * TOOL_SPINNER_INTERVAL_MS));
+  await new Promise(resolve => setTimeout(resolve, 300));
   assert.equal(stdout.frames.length, settledWrites);
   instance.unmount();
   instance.cleanup();

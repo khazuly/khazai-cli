@@ -202,8 +202,6 @@ export const ToolCall = memo(function ToolCall({ tool, args, done, duration, sta
         active: true,
         color: accent,
         label: `${presentation.label} · ${stateLabel}`,
-        scopeKey: `${scopeKey}:${toolCallId}`,
-        startedAt,
       }, h(DetailRows, {
         rows,
         state: presentation.state,

@@ -71,6 +71,20 @@ const PROVIDER_CAPABILITIES = {
     temperatureRange: [0, 2],
     topPRange: [0, 1],
   },
+  aichat: {
+    supportsTemperature: false,
+    supportsTopP: false,
+    supportsMaxTokens: false,
+    supportsStreaming: true,
+    supportsReasoningEffort: false,
+    supportsParallelTools: false,
+    supportsToolCalling: true,
+    supportsToolChoice: false,
+    supportsStreamOptions: false,
+    outputLimit: null,
+    temperatureRange: [0, 2],
+    topPRange: [0, 1],
+  },
 };
 
 const DEFAULT_CAPABILITIES = {
@@ -95,6 +109,7 @@ export function resolveProviderId(model) {
   if (lower === "auto-free") return "auto-free";
   if (lower.startsWith("codex/")) return "codex";
   if (lower === "vibe" || lower === "mistral/vibe") return "mistral";
+  if (lower === "aichat/claude-haiku-4-5") return "aichat";
   const zen = resolveZenModel(lower);
   if (zen) return zen.alias === "big-cock" ? "opencode" : "khazai-free";
   if (lower.startsWith("khazai-free/")) return "khazai-free";

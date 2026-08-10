@@ -8,6 +8,7 @@ import { requiredMcpServer, usedMcpServer } from "./mcp-policy.js";
 import { runScheduledCompaction } from "./loop-compaction.js";
 import { requestProviderTurn } from "./loop-provider.js";
 import { executeAgentTool } from "./loop-tool.js";
+import { aichatToolContinuation, shouldSteerAIChatToTools } from "../../lib/aichat-context.js";
 export class LoopMethods {
   async *loop(input, signal, scope = {}) {
     await this._registryReady;
@@ -302,8 +303,9 @@ export class LoopMethods {
         }
         return;
       }
-      this._emptyResponses = 0;
-      let parsed = nativeToolStream ? this._extractNativeTool(reply) : this._extractTool(reply);
+    this._emptyResponses = 0;
+    this._aichatClarificationRecoveries = 0;
+    let parsed = nativeToolStream ? this._extractNativeTool(reply) : this._extractTool(reply);
       const commitProseBeforeTool = function* (tool) {
         if (!typedProviderStream) {
           const prose = extractProseBeforeTool(reply, tool);
@@ -334,6 +336,25 @@ export class LoopMethods {
       }
       if (parsed.error) {
         yield scoped({ type: "stream-discard" });
+        if (requestModel === "aichat/claude-haiku-4-5") {
+          this._invalidToolResponses++;
+          this._appendMessage({ role: "assistant", content: this._secretStore.protect(reply, runId, turnId) });
+          for (const lifecyclePart of this._lifecycle.finishStep("tool-error")) {
+            yield scoped({ type: "tool-part", part: lifecyclePart });
+          }
+          if (this._invalidToolResponses >= 2) {
+            this._finishLatency();
+            if (finalizeRun()) {
+              yield scoped({ type: "error", content: "AIChat could not produce a complete tool call. Retry the request with a smaller action." });
+            }
+            return;
+          }
+          this._appendMessage({
+            role: "user",
+            content: this._toolRecoveryInstruction(parsed.kind, this._invalidToolResponses, parsed.error),
+          });
+          continue;
+        }
         const part = this._lifecycle.pending({
           callId: randomUUID(),
           tool: "invalid_tool_call",
@@ -359,6 +380,16 @@ export class LoopMethods {
       }
       this._invalidToolResponses = 0;
       if (!tool) {
+        if (shouldSteerAIChatToTools({
+          model: requestModel, input: this._currentRequest, reply, hasTools: nativeTools.length > 0,
+          hasEvidence: this._toolEvidence.length > 0, attempt: this._aichatClarificationRecoveries,
+        })) {
+          this._aichatClarificationRecoveries++;
+          if (streamStarted || streamVisibleLength > 0) yield scoped({ type: "stream-discard" });
+          this._appendMessage({ role: "assistant", content: this._secretStore.protect(reply, runId, turnId) });
+          this._appendMessage({ role: "user", content: aichatToolContinuation });
+          continue;
+        }
         const requiredServer = requiredMcpServer(
           this._registry,
           this._currentRequest,

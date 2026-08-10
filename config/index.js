@@ -204,6 +204,7 @@ export function configuredModels() {
   return [
     MODEL,
     "vibe",
+    "aichat/claude-haiku-4-5",
     ...aliases,
     AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>

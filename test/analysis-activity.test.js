@@ -191,6 +191,7 @@ test("stale run and turn updates are ignored", () => {
   assert.equal(analysisEventIsCurrent({ type: "thinking" }, scope), true);
   assert.equal(clearAnalysisActivity(state, staleRun), state);
   assert.equal(clearAnalysisActivity(state, scope), null);
+  assert.equal(clearAnalysisActivity(state, undefined), state);
 });
 
 test("a stale step update cannot modify the current activity", () => {
