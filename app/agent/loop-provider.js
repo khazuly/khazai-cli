@@ -4,6 +4,7 @@ import { createPublicActivityChannel } from "../public-activity.js";
 import { streamDisposition } from "./helpers/task.js";
 import { LEGACY_PROTOCOL_HOLDBACK } from "./helpers/parser.js";
 import { emitRequestMetrics } from "../performance-timings.js";
+import { createToolCallBuffer } from "../../lib/tool-call-buffer.js";
 
 export async function* requestProviderTurn({ ctx, nativeTools, requestModel, controller, run, pendingProse, maxAttempts, isRunActive, isRunCurrent, scoped, runId, turnId, taskEpoch, retryProvider, phase, projected }) {
 let reply;
@@ -13,9 +14,12 @@ let streamVisibleLength = 0;
 let finalError = null;
 let nativeToolStream = false;
 let typedProviderStream = false;
+let partialToolCall = null;
+let providerFinishReason = "";
 const deferProse = Boolean(pendingProse);
 for (let attempt = 0; attempt < maxAttempts; attempt++) {
   const providerRequestId = randomUUID();
+  const toolCallBuffer = createToolCallBuffer({ requestId: providerRequestId, runId, turnId, taskEpoch });
   let chatErr;
   let receivedAnyToken = false;
   const publicActivity = createPublicActivityChannel(run, value => this.redactSerializableForDisplay(value));
@@ -67,6 +71,9 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
       queueEvent(event);
       return;
     }
+    if (event?.type === "tool-call-delta") toolCallBuffer.accept(event.delta);
+    if (event?.type === "partial-tool-call") toolCallBuffer.acceptPartial(event.partial);
+    if (event?.type === "finish") toolCallBuffer.finish(event.reason);
     typedProviderStream = true;
     if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
       this._markLatency("providerFirstDelta");
@@ -187,6 +194,8 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
   }
   await chatDone.catch(() => {});
   if (!isRunActive()) return;
+  partialToolCall ||= toolCallBuffer.incomplete();
+  providerFinishReason ||= partialToolCall?.finishReason || "";
   if (!chatErr) break;
   finalError = chatErr;
   if (streamStarted || receivedAnyToken || /request timed out|timeout|timed out/i.test(String(chatErr?.message || chatErr))) break;
@@ -206,5 +215,5 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
   }
   break;
 }
-  return { reply, streamMode, streamTail, streamStarted, streamVisibleLength, finalError, nativeToolStream, typedProviderStream };
+  return { reply, streamMode, streamTail, streamStarted, streamVisibleLength, finalError, nativeToolStream, typedProviderStream, partialToolCall, providerFinishReason };
 }

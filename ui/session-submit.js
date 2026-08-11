@@ -10,7 +10,7 @@ function journalPaths(call) {
 }
 
 export function createSessionSubmit(context) {
-  const { EMPTY_PLAN_STATE, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisActivityMessage, analysisEventIsCurrent, analysisRef, appendArchived, appendResponseDelta, applyPlanEventState, applyPlanUpdateState, cancelledRunIdRef, classifyToolState, clearAnalysisActivity, clearPublicAnalysisActivity, commitResponseBuffer, completeAnalysisActivity, completedRef, consumeSessionEvents, contextUsageRef, createAnalysisActivity, createResponseBuffer, createSessionActivityController, currentSessionRef, discardResponseBuffer, failAnalysisActivity, initRunRef, listWorkspaceFiles, messageQueueRef, normalizePlanState, pendingPermissionCallIdRef, planRef, questionResolverRef, redactSecrets, removeAssistantProtocolText, removeEmoji, resetResponseBuffer, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setContextUsage, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, setQueuedCount, setRunning, setWorkspaceFiles, structuredCallsRef, submitRef, submittingRef, taskEpochRef, terminalRunResult, verifyInitTarget, workspace, nextId, planPanelAfterFinal, normalizeStreamText, toolResultFailed, isInternalAgentFailure, isCompletionClaim, readFileName, thinkActivityFromPlan, setSessionKey } = context;
+  const { EMPTY_PLAN_STATE, activeRef, activeScopeRef, agentRef, agentSessionRef, analysisActivityMessage, analysisEventIsCurrent, analysisRef, appendArchived, appendResponseDelta, applyPlanEventState, applyPlanUpdateState, cancelledRunIdRef, classifyToolState, clearAnalysisActivity, clearPublicAnalysisActivity, commitResponseBuffer, completeAnalysisActivity, completedRef, consumeSessionEvents, contextUsageRef, createAnalysisActivity, createResponseBuffer, createSessionActivityController, currentSessionRef, discardResponseBuffer, failAnalysisActivity, initRunRef, listWorkspaceFiles, messageQueueRef, normalizePlanState, pendingPermissionCallIdRef, planRef, questionResolverRef, redactSecrets, removeAssistantProtocolText, removeEmoji, resetResponseBuffer, resolve, responseBufferRef, sessionStoreRef, setActiveMessage, setContextUsage, setExpandedTool, setModeStatus, setPendingQuestion, setPlan, setPlanVisibility, setQueuedCount, setRunning, setWorkspaceFiles, structuredCallsRef, submitRef, submittingRef, taskEpochRef, shouldAppendIssueSummary, terminalRunResult, verifyInitTarget, workspace, nextId, planPanelAfterFinal, normalizeStreamText, toolResultFailed, isInternalAgentFailure, isCompletionClaim, readFileName, thinkActivityFromPlan, setSessionKey } = context;
   return async (input, options = {}) => {
 const retryProvider = Boolean(options.retryProvider);
 const approvedPlan = options.approvedPlan || null;
@@ -333,7 +333,7 @@ try {
     finalCommitted: runState.finalCommitted,
     finishedNormally: runState.finishedNormally,
   });
-  if (!initialization && !planningRun && runResult?.status === "failed" && runResult.unresolvedIssues.length) {
+  if (!initialization && !planningRun && shouldAppendIssueSummary(runResult, runState.fatalError)) {
     appendArchived({
       id: nextId(),
       type: "summary",

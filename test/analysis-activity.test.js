@@ -25,6 +25,7 @@ import {
   discardResponseBuffer,
   prepareRunInterruption,
   resetResponseBuffer,
+  shouldAppendIssueSummary,
   terminalRunResult,
 } from "../ui/session-runtime.js";
 import { renderComponent, TerminalInput, TerminalOutput, stripAnsi } from "./helpers/ink-render.js";
@@ -54,6 +55,12 @@ test("analysis phases reuse one ID and aggregate only active segments", () => {
   assert.equal(summary.accumulatedDurationMs, 15_000);
   assert.equal(summary.text, "Analysis completed");
   assert.equal(summary.done, true);
+});
+
+test("terminal provider failures render one error block without an issue summary", () => {
+  const failed = terminalRunResult({ fatalError: "AIChat could not complete the tool call." });
+  assert.equal(shouldAppendIssueSummary(failed, "AIChat could not complete the tool call."), false);
+  assert.equal(shouldAppendIssueSummary(failed), true);
 });
 
 test("repeated active updates do not reset the phase timer", () => {

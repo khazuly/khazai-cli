@@ -111,21 +111,30 @@ if (cmd === "/allow-all" || cmd === "/auto") {
   const requested = cmd === "/auto" && !String(arg || "").trim()
     ? (autoApproveRef.current ? "off" : "on")
     : arg;
+  const permissionService = () => agentRef.current?._permissionService || new PermissionService(workspace.path);
   await handlePermissionCommand(cmd === "/auto" ? "/allow-all" : cmd, requested, {
     appendArchived,
     requestValue,
     workspacePath: workspace.path,
-    permissionService: () => agentRef.current?._permissionService || new PermissionService(workspace.path),
+    permissionService,
   });
+  const enabled = permissionService().permissionState().allowAll;
+  autoApproveRef.current = enabled;
+  agentRef.current?.setAutoApprove(enabled);
+  currentSessionRef.current.permissionMode = enabled ? "allow-all" : "prompt";
   return;
 }
 if (cmd === "/permissions") {
+  const permissionService = () => agentRef.current?._permissionService || new PermissionService(workspace.path);
   await handlePermissionCommand(cmd, arg, {
     appendArchived,
     requestValue,
     workspacePath: workspace.path,
-    permissionService: () => agentRef.current?._permissionService || new PermissionService(workspace.path),
+    permissionService,
   });
+  const enabled = permissionService().permissionState().allowAll;
+  autoApproveRef.current = enabled; agentRef.current?.setAutoApprove(enabled);
+  currentSessionRef.current.permissionMode = enabled ? "allow-all" : "prompt";
   return;
 }
 const chooseModel = async requested => {

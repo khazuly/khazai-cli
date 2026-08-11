@@ -193,3 +193,7 @@ export function terminalRunResult({
     finalCommitted: Boolean(finalCommitted),
   };
 }
+
+export function shouldAppendIssueSummary(runResult, fatalError = "") {
+  return !fatalError && runResult?.status === "failed" && runResult.unresolvedIssues?.length > 0;
+}

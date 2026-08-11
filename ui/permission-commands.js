@@ -43,7 +43,8 @@ export async function handlePermissionCommand(cmd, arg, context) {
         context: [
           `Workspace  ${workspacePath}`,
           "",
-          "KhazAI will run supported tools inside this workspace without asking for approval.",
+          "KhazAI will run approval-required tools without asking for approval.",
+          "Explicit deny rules and safety restrictions still apply.",
         ].join("\n"),
         values: [
           { label: "Cancel", value: "cancel" },
@@ -186,4 +187,3 @@ export async function handlePermissionCommand(cmd, arg, context) {
     return;
   }
 }
-

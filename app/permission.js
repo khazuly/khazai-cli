@@ -236,9 +236,9 @@ export class PermissionService {
     } else if (decision === "ask" && this._persistentAllowsPath(permission, toolName, args)) {
       decision = "allow";
       source = "persisted";
-    } else if (decision === "ask" && this.auto) {
+    } else if (decision === "ask" && (this.auto || this._store.allowAll)) {
       decision = "allow";
-      source = "auto";
+      source = this._store.allowAll ? "allow-all" : "auto";
     }
     const patterns = values.map(value => {
       if (toolName !== "bash") return value || "*";
@@ -292,7 +292,7 @@ export class PermissionService {
         selected = { ...match, value: path };
       }
     }
-    const autoAllowed = this.auto && selected.action === "ask";
+    const autoAllowed = (this.auto || this._store.allowAll) && selected.action === "ask";
     return {
       decision: autoAllowed ? "allow" : selected.action,
       permission: "external_directory",
@@ -300,7 +300,7 @@ export class PermissionService {
       patterns: paths,
       always: paths.map(path => path.endsWith(sep) ? `${path}**` : path),
       value: selected.value,
-      source: persisted ? "persisted" : (autoAllowed ? "auto" : "config"),
+      source: persisted ? "persisted" : (autoAllowed ? (this._store.allowAll ? "allow-all" : "auto") : "config"),
       reason: selected.action === "ask" && !autoAllowed
         ? `Approval required to access a path outside the workspace: ${selected.value}`
         : "",

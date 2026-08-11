@@ -98,7 +98,7 @@ test("allow once never persists a rule", async () => {
   assert.equal(second.events.filter(event => event.type === "permission").length, 1);
 });
 
-test("allow-all covers supported in-workspace actions but never external paths", async () => {
+test("allow-all enters yolo mode for approval-required actions", async () => {
   const workspace = workspaceDir("khazai-allow-all-");
   const permissions = new PermissionService(workspace, {
     permission: { edit: "ask", bash: { "*": "ask" } },
@@ -118,9 +118,9 @@ test("allow-all covers supported in-workspace actions but never external paths",
   }
   assert.equal(
     permissions.evaluateExternalDirectory("read", { path: join(outside, "file.txt") }).decision,
-    "ask",
+    "allow",
   );
-  assert.equal(permissions.evaluateExternalDirectory("write", { path: join(outside, "file.txt") }).decision, "ask");
+  assert.equal(permissions.evaluateExternalDirectory("write", { path: join(outside, "file.txt") }).decision, "allow");
 
   const events = [];
   const executor = new ToolExecutor({
@@ -138,8 +138,12 @@ test("allow-all covers supported in-workspace actions but never external paths",
   })) {
     events.push(event);
   }
-  assert.equal(events.some(event => event.type === "permission"), true);
-  assert.equal(events.find(event => event.type === "execution-result").failed, true);
+  assert.equal(events.some(event => event.type === "permission"), false);
+  assert.equal(events.find(event => event.type === "execution-result").failed, false);
+  const reloaded = new PermissionService(workspace, { permission: { edit: "ask" } }, {
+    storePath: storePath(workspace),
+  });
+  assert.equal(reloaded.evaluateExternalDirectory("read", { path: join(outside, "file.txt") }).decision, "allow");
 });
 
 test("disabling allow-all preserves individual rules", async () => {

@@ -55,6 +55,7 @@ import {
   discardResponseBuffer,
   prepareRunInterruption,
   resetResponseBuffer,
+  shouldAppendIssueSummary,
   terminalRunResult,
 } from "./session-runtime.js";
 import { handlePermissionCommand } from "./session-commands.js";
@@ -346,6 +347,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     submitRef,
     submittingRef,
     taskEpochRef,
+    shouldAppendIssueSummary,
     terminalRunResult,
     verifyInitTarget,
     workspace,

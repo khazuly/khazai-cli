@@ -48,6 +48,14 @@ function sse(content) {
   };
 }
 
+function sseParts(parts) {
+  return {
+    ok: true,
+    headers: headers({ "content-type": "text/event-stream" }),
+    body: stream([...parts.map(content => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`), "data: [DONE]\n\n"]),
+  };
+}
+
 function httpError(status) {
   return {
     ok: false,
@@ -133,6 +141,28 @@ test("AIChat unwraps a prose-wrapped synthetic tool call before it reaches the r
 
   assert.equal(result, '{"tool":"read","args":{"path":"lib/session.js"}}');
   assert.deepEqual(tokens, [result]);
+});
+
+test("AIChat reports a fragmented incomplete synthetic tool call without forwarding it", async () => {
+  const provider = providerWith([chatPage(1), usage(100), sseParts([
+    '{"tool":"Wr', 'ite","args":{"path":"pycompiler.py","content":"print(', '"',
+  ])]);
+  const events = [];
+  const tokens = [];
+  const result = await provider.chat([{ role: "user", content: "Create it." }], {
+    model: "anthropic/claude-haiku-4-5", sessionId: "session-partial", tools: [readTool],
+    requestId: "request-partial", runId: "run-partial", turnId: "turn-partial", taskEpoch: 5,
+    onToken: token => tokens.push(token), onEvent: event => events.push(event),
+  });
+
+  const partial = events.find(event => event.type === "partial-tool-call")?.partial;
+  assert.equal(result, "");
+  assert.deepEqual(tokens, []);
+  assert.deepEqual(partial, {
+    requestId: "request-partial", runId: "run-partial", turnId: "turn-partial", taskEpoch: 5,
+    toolCallId: "", providerStreamIndex: 0, toolNameComplete: true,
+    argumentsComplete: false, finishReason: "stop",
+  });
 });
 
 test("AIChat restores structured assistant tool calls as text-compatible JSON", () => {

@@ -113,6 +113,7 @@ export class Agent {
     this._postPlanToolRedirects = 0;
     this._requestStartIndex = 0;
     this._invalidToolResponses = 0;
+    this._incompleteToolRecovery = { attempts: 0, pending: false };
     this._debug = Boolean(opts.debug || process.env.KHAZAI_DEBUG);
     this._latency = null;
     this._emptyResponses = 0;

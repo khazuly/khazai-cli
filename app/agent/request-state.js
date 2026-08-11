@@ -149,6 +149,7 @@ export async function initializeAgentRequest(agent, input, signal, authorizedInp
   agent._planMismatches = 0;
   agent._postPlanToolRedirects = 0;
   agent._invalidToolResponses = 0;
+  agent._incompleteToolRecovery = { attempts: 0, pending: false };
   agent._emptyResponses = 0;
   agent._transportFailures = 0;
   agent._toolEvidence = [];
