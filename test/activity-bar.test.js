@@ -38,7 +38,7 @@ test("generic Working keeps fixed width while its highlight advances", () => {
   assert.notDeepEqual(first, second);
 });
 
-test("specific activity suppresses only the generic Working fallback", async () => {
+test("specific activity does not replace the generic Working shimmer", async () => {
   const frame = await renderComponent(h(SessionFooter, {
     running: true,
     hasSpecificActivity: true,
@@ -46,8 +46,20 @@ test("specific activity suppresses only the generic Working fallback", async () 
     contextUsage: { currentContextTokens: 14, contextLimit: 100 },
     promptProps,
   }), 72, 12);
-  assert.doesNotMatch(frame, /Working/);
+  assert.match(frame, /Working · \d+s/);
   assert.match(frame, /big-cock/);
+});
+
+test("resume status does not replace the generic Working shimmer", async () => {
+  const frame = await renderComponent(h(SessionFooter, {
+    running: true,
+    modeStatus: { mode: "build", status: "preparing" },
+    model: "big-cock",
+    contextUsage: { currentContextTokens: 14, contextLimit: 100 },
+    promptProps,
+  }), 72, 12);
+  assert.match(frame, /Working · \d+s/);
+  assert.doesNotMatch(frame, /Build Mode|Preparing approved plan/);
 });
 
 test("one hundred animation frames still produce only one ActivityBar row", async () => {

@@ -7,6 +7,7 @@ import { resolveModelDescriptor } from "../lib/llm.js";
 import { compactAIChatContext, prepareAIChatMessages, shouldSteerAIChatToTools } from "../lib/aichat-context.js";
 import { AIChatProvider, AIChatSessionPool } from "../lib/aichat-provider.js";
 import { streamDisposition } from "../app/agent/helpers/task.js";
+import { promptFamily } from "../app/prompts.js";
 
 function headers(values = {}, cookies = []) {
   return {
@@ -89,6 +90,8 @@ const readTool = {
 test("AIChat Claude is selectable with synthetic tool capability", () => {
   assert.equal(resolveProviderId("aichat/claude-haiku-4-5"), "aichat");
   assert.equal(resolveModelDescriptor("aichat/claude-haiku-4-5").modelID, "anthropic/claude-haiku-4-5");
+  assert.equal(resolveModelDescriptor("aichat/claude-haiku-4-5").definition.promptProfile, "bug-bounty");
+  assert.equal(promptFamily(resolveModelDescriptor("aichat/claude-haiku-4-5")), "bug-bounty");
   assert.equal(resolveProviderCapabilities("aichat/claude-haiku-4-5").supportsToolCalling, true);
   assert.ok(configuredModels().includes("aichat/claude-haiku-4-5"));
 });

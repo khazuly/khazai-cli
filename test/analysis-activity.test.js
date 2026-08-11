@@ -17,7 +17,6 @@ import {
 import { createPublicActivityChannel } from "../app/public-activity.js";
 import { MessageList } from "../ui/components/message-list.js";
 import { ThemeProvider } from "../ui/theme.js";
-import { render } from "ink";
 import {
   appendResponseDelta,
   commitResponseBuffer,
@@ -28,7 +27,7 @@ import {
   shouldAppendIssueSummary,
   terminalRunResult,
 } from "../ui/session-runtime.js";
-import { renderComponent, TerminalInput, TerminalOutput, stripAnsi } from "./helpers/ink-render.js";
+import { renderComponent } from "./helpers/ink-render.js";
 
 const scope = { runId: "run-1", turnId: "turn-1" };
 
@@ -93,10 +92,7 @@ test("structured public activity overrides fallback text without changing the st
 
   assert.equal(message.id, id);
   assert.equal(message.toolCallId, "think-call-1");
-  assert.match(frame, /Inspecting trust-directory input\s+handling/);
-  assert.match(frame, /ui\/trust-directory\.js/);
-  assert.match(frame, /Next: Update keyboard navigation and\s+  bordered layout · 2\/4/);
-  assert.doesNotMatch(frame, /Inspecting continuation|Preparing the implementation/);
+  assert.doesNotMatch(frame, /Working|Inspecting trust-directory|ui\/trust-directory|Update keyboard navigation|Preparing the implementation/);
 
   state = pauseAnalysisActivity(state, scope, 2_000);
   assert.equal(analysisActivityMessage(state), null);
@@ -225,31 +221,19 @@ test("a stale step update cannot modify the current activity", () => {
   assert.equal(message.id, "analysis-turn-1");
 });
 
-test("elapsed ticks update one live think row in place", async () => {
+test("think activity stays hidden while its state continues to update", async () => {
   const state = startAnalysisActivity(initialState(), scope, {
     text: "Finalizing init generation",
     step: "Step 2 of 7",
   }, Date.now() - 61_000);
   const message = analysisActivityMessage(state);
-  const stdout = new TerminalOutput(72, 20);
-  const stdin = new TerminalInput();
-  const instance = render(h(ThemeProvider, { name: "system" },
-    h(MessageList, { messages: [message] })
-  ), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
-  await new Promise(resolve => setTimeout(resolve, 1_350));
-  const frames = stdout.frames.map(frame => stripAnsi(frame).replace(/\r/g, "")).filter(frame => frame.trim());
-  assert.ok(frames.length >= 2, `expected elapsed ticks, got ${frames.length}`);
-  for (const frame of frames) {
-    assert.equal((frame.match(/Finalizing init generation/g) || []).length, 1, frame);
-    assert.equal((frame.match(/Step 2 of 7/g) || []).length, 1, frame);
-    assert.doesNotMatch(frame, /finish event, stop shimmer immediately/, "full Plan title must never appear");
-  }
-  instance.unmount();
-  instance.cleanup();
-  stdin.destroy();
+  const frame = await renderComponent(
+    h(ThemeProvider, { name: "system" }, h(MessageList, { messages: [message] }))
+  );
+  assert.doesNotMatch(frame, /Working|Finalizing init generation|Step 2 of 7/);
 });
 
-test("completed analysis renders one compact aggregate row", async () => {
+test("completed analysis remains out of the transcript", async () => {
   let state = startAnalysisActivity(initialState(), scope, {}, 0);
   state = pauseAnalysisActivity(state, scope, 180_000);
   state = startAnalysisActivity(state, scope, {}, 200_000);
@@ -260,9 +244,7 @@ test("completed analysis renders one compact aggregate row", async () => {
     )
   );
 
-  assert.match(frame, /\[✓\] Analysis completed · 4m 21s/);
-  assert.equal((frame.match(/Analysis completed/g) || []).length, 1);
-  assert.doesNotMatch(frame, /bytes|\/expand|Think/);
+  assert.doesNotMatch(frame, /Analysis completed|bytes|\/expand|Think/);
 });
 
 test("timeout finalizes once with the stable ID and accumulated duration", async () => {
@@ -278,8 +260,7 @@ test("timeout finalizes once with the stable ID and accumulated duration", async
 
   assert.equal(failed.id, "analysis-turn-1");
   assert.equal(finalizedAgain, state);
-  assert.match(frame, /\[×\] Analysis timed out · 5m 00s/);
-  assert.equal((frame.match(/Analysis timed out/g) || []).length, 1);
+  assert.doesNotMatch(frame, /Analysis timed out/);
 });
 
 test("response deltas remain private until one scoped completion", () => {

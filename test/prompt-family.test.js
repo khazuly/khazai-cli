@@ -74,6 +74,15 @@ test("Big Cock adds authorized security research without replacing developer beh
   assert.equal(promptFamily({ definition: { promptProfile: "anthropic" } }), "anthropic");
 });
 
+test("AIChat Claude uses the dedicated bug bounty profile", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-aichat-bounty-profile-"));
+  const system = new Agent(new Registry(), { workspace, model: "aichat/claude-haiku-4-5" })._buildSystem();
+  assert.match(system, /# Cybersecurity bug bounty behavior/);
+  assert.match(system, /professional application security researcher/i);
+  assert.match(system, /require the user to state that they own it or are authorized to test it/i);
+  assert.match(system, /Label findings Critical, High, Medium, Low, or Informational/);
+});
+
 test("system prompts keep environment, workspace, MCP, and skill layers ordered", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-prompt-layers-"));
   writeFileSync(join(workspace, "AGENTS.md"), "# Test instructions\n\nFollow the workspace rule.");

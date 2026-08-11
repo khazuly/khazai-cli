@@ -1,7 +1,5 @@
 import { createElement as h, memo } from "react";
-import { useEffect, useState } from "react";
 import { Text, Box } from "ink";
-import { SPINNER_FRAMES } from "./status-bar.js";
 import { ToolCall } from "./tool-call.js";
 import { CodePreview } from "./code-preview.js";
 import { Markdown } from "./markdown.js";
@@ -30,64 +28,6 @@ function RoleMessage({ role, content }) {
     h(Box, { flexDirection: "column", width: "100%" },
       h(FormattedAnswer, { content }),
     )
-  );
-}
-
-function formatElapsed(ms) {
-  const total = Math.max(0, Math.floor(Number(ms) || 0));
-  const minutes = Math.floor(total / 60000);
-  const seconds = Math.floor((total % 60000) / 1000);
-  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
-}
-
-function ThinkStatus({ message }) {
-  const theme = useTheme();
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (message.done) return undefined;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    timer.unref?.();
-    return () => clearInterval(timer);
-  }, [message.done]);
-  const accumulated = message.accumulatedDurationMs
-    ?? (message.done ? Math.max(0, (message.completedAt || 0) - (message.startedAt || 0)) : 0);
-  const activeStartedAt = message.activeStartedAt ?? message.startedAt;
-  const elapsed = formatElapsed(
-    Number(accumulated || 0)
-    + (!message.done && activeStartedAt ? Math.max(0, now - activeStartedAt) : 0)
-  );
-  const activity = message.text || "Analyzing the execution context";
-  if (message.done) {
-    return h(Box, { flexDirection: "column", marginBottom: 1 },
-      h(Text, { color: message.failed ? theme.error : theme.success }, `${message.failed ? "[×]" : "[✓]"} ${activity} · ${elapsed}`),
-    );
-  }
-  const frame = Math.floor(now / 120) % SPINNER_FRAMES.length;
-  const next = [message.nextAction ? `Next: ${message.nextAction}` : "", message.progress]
-    .filter(Boolean)
-    .join(" · ");
-  return h(Box, { flexDirection: "column", marginBottom: 1 },
-    h(Box, { flexDirection: "row", width: "100%" },
-      h(Text, { color: theme.metadata }, SPINNER_FRAMES[frame], " "),
-      h(Box, { flexShrink: 1 },
-        h(Text, { color: theme.metadata, wrap: "wrap" }, activity, " · ", elapsed),
-      ),
-    ),
-    message.target
-      ? h(Box, { marginLeft: 2, width: "100%" },
-          h(Text, { color: theme.metadata, dimColor: true, wrap: "wrap" }, message.target),
-        )
-      : null,
-    next
-      ? h(Box, { marginLeft: 2, width: "100%" },
-          h(Text, { color: theme.metadata, dimColor: true, wrap: "wrap" }, next),
-        )
-      : null,
-    !message.target && !next && message.step
-      ? h(Box, { marginLeft: 2 },
-          h(Text, { color: theme.metadata, dimColor: true }, message.step),
-        )
-      : null,
   );
 }
 
@@ -199,7 +139,7 @@ const MessageRow = memo(function MessageRow({ message: m }) {
         }),
       );
     case "answer": return h(RoleMessage, { role: "KhazAI", content: m.content });
-    case "think": return h(ThinkStatus, { message: m });
+    case "think": return null;
     case "error": return h(ErrorDisplay, { content: m.content });
     case "provider-error": return h(ProviderErrorDisplay, { content: m.content });
     case "summary": return h(SummaryDisplay, { message: m });

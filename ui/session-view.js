@@ -65,9 +65,7 @@ return h(ThemeProvider, { name: themeName }, h(Box, { flexDirection: "column", w
           waitingForAnswer: Boolean(pendingQuestion),
           queueCount: queuedCount,
           model: displayModel(currentModel),
-          modeStatus,
           contextUsage,
-          hasSpecificActivity: Boolean(displayedActiveMessage),
           activityScope: activeScopeRef.current,
           promptProps: {
             onSubmit: pendingQuestion ? answerQuestion : handlePromptSubmit,

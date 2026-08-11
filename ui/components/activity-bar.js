@@ -110,9 +110,7 @@ export function ActivityBar({
   running = false,
   waitingForAnswer = false,
   queueCount = 0,
-  modeStatus = null,
   contextUsage = {},
-  hasSpecificActivity = false,
   activityScope = null,
 }) {
   const theme = useTheme();
@@ -130,9 +128,7 @@ export function ActivityBar({
     .includes(compactionStatus);
   const genericWorking = running
     && !waitingForAnswer
-    && !compacting
-    && !modeStatus
-    && !hasSpecificActivity;
+    && !compacting;
   const animating = compacting || genericWorking;
   const scopeKey = [
     activityScope?.runId || "",
@@ -179,23 +175,6 @@ export function ActivityBar({
       ? Math.max(0, Math.floor((now - compactionStartedAt) / 1_000))
       : null;
     activityText = elapsed !== null ? `${label} · ${elapsed}s` : label;
-  } else if (modeStatus?.mode === "plan") {
-    if (["ready", "awaiting"].includes(modeStatus.status)) return null;
-    const phase = modeStatus.status === "clarifying"
-      ? "Waiting for decision"
-      : modeStatus.status === "drafting"
-        ? "Drafting plan"
-        : modeStatus.status === "entering"
-          ? "Preparing"
-          : "Exploring";
-    activityText = `Plan Mode · ${phase}${queue}`;
-  } else if (modeStatus?.mode === "build") {
-    const phase = modeStatus.status === "verifying"
-      ? "Running verification"
-      : modeStatus.status === "implementing"
-        ? "Implementing approved plan"
-        : "Preparing approved plan";
-    activityText = `Build Mode · ${phase}${queue}`;
   } else if (waitingForAnswer) {
     activityText = `Action required · Waiting for approval${queue}`;
   } else if (genericWorking) {

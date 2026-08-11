@@ -197,7 +197,7 @@ test("default transport matches the OpenCode Zen Big Pickle request contract", a
   }
 });
 
-test("Auto Free routes through free aliases and retries anonymously when an authenticated BYOK route fails", async () => {
+test("Auto Free uses Kilo first and falls back to free aliases after gateway failure", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.KILO_API_KEY;
   const originalOpenCodeKey = process.env.OPENCODE_API_KEY;
@@ -211,30 +211,22 @@ test("Auto Free routes through free aliases and retries anonymously when an auth
     if (!String(url).includes("api.kilo.ai")) {
       zenCalls++;
       return {
-        ok: false,
-        status: 520,
-        statusText: "Unknown Error",
-        async text() { return '{"error":{"metadata":{"is_byok":true}}}'; },
+        ok: true,
+        headers: { get: () => "application/json" },
+        async json() { return { choices: [{ message: { content: "zen fallback" } }] }; },
       };
     }
     kiloHeaders.push(options.headers);
-    if (kiloHeaders.length === 1) {
-      return {
-        ok: false,
-        status: 520,
-        statusText: "Unknown Error",
-        async text() { return '{"error":{"metadata":{"is_byok":true}}}'; },
-      };
-    }
     return {
-      ok: true,
-      headers: { get: () => "application/json" },
-      async json() { return { choices: [{ message: { content: "fallback ok" } }] }; },
+      ok: false,
+      status: 520,
+      statusText: "Unknown Error",
+      async text() { return '{"error":{"metadata":{"is_byok":true}}}'; },
     };
   };
   try {
-    assert.equal(await chat([{ role: "user", content: "test" }], { model: "auto-free" }), "fallback ok");
-    assert.ok(zenCalls >= 3, "free aliases are tried before the gateway fallback");
+    assert.equal(await chat([{ role: "user", content: "test" }], { model: "auto-free" }), "zen fallback");
+    assert.equal(zenCalls, 1, "the first fallback route succeeds after Kilo fails");
     assert.equal(kiloHeaders.length, 2);
     assert.equal(kiloHeaders[0].Authorization, "Bearer kilo-account-key");
     assert.equal("Authorization" in kiloHeaders[1], false);
