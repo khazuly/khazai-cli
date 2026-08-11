@@ -29,6 +29,7 @@ export function usePlanSessionActions(context) {
     setModeStatus,
     setPendingQuestion,
     submittingRef,
+    terminalTitle,
     clearPublicAnalysisActivity,
     clearAnalysisActivity,
     nextId,
@@ -80,12 +81,13 @@ export function usePlanSessionActions(context) {
     }
     questionResolverRef.current = null;
     setPendingQuestion(null);
+    terminalTitle?.start(pending.scope);
     if (pending.kind === "permission") pendingPermissionCallIdRef.current = null;
     if (pending.kind !== "permission" && pending.archive !== false) {
       appendArchived({ id: nextId(), type: "user", content: value });
     }
     pending.resolve(selected.id ? selected : value);
-  }, [activeScopeRef, appendArchived, nextId, pendingPermissionCallIdRef, pendingQuestion, questionResolverRef, setPendingQuestion]);
+  }, [activeScopeRef, appendArchived, nextId, pendingPermissionCallIdRef, pendingQuestion, questionResolverRef, setPendingQuestion, terminalTitle]);
 
   const cancelQuestion = useCallback(() => {
     const pending = questionResolverRef.current;
@@ -107,6 +109,7 @@ export function usePlanSessionActions(context) {
     activeRef.current = null;
     setActiveMessage(null);
     cancelledRunIdRef.current = interruption.runId;
+    terminalTitle?.finish(interruption.scope);
     activeScopeRef.current = null;
     const pending = questionResolverRef.current;
     questionResolverRef.current = null;
@@ -118,7 +121,7 @@ export function usePlanSessionActions(context) {
     setPendingQuestion(null);
     agentRef.current?.abort();
     appendArchived({ id: nextId(), type: "answer", content: "Interrupted by user." });
-  }, [activeRef, activeScopeRef, agentRef, analysisRef, appendArchived, cancelledRunIdRef, clearAnalysisActivity, clearPublicAnalysisActivity, nextId, pendingPermissionCallIdRef, prepareRunInterruption, questionResolverRef, responseBufferRef, setActiveMessage, setPendingQuestion, submittingRef]);
+  }, [activeRef, activeScopeRef, agentRef, analysisRef, appendArchived, cancelledRunIdRef, clearAnalysisActivity, clearPublicAnalysisActivity, nextId, pendingPermissionCallIdRef, prepareRunInterruption, questionResolverRef, responseBufferRef, setActiveMessage, setPendingQuestion, submittingRef, terminalTitle]);
 
   abortRef.current = handleAbort;
   return { replaceAgentProfile, toggleAgentProfile, answerQuestion, cancelQuestion, handleAbort };

@@ -68,7 +68,7 @@ import {
   readFileName, thinkActivityFromPlan, toolResultFailed,
 } from "./session-helpers.js";
 export { applyPlanEventState, applyPlanUpdateState, formatInteractiveQuestion, normalizeStreamText, planPanelAfterFinal, toolResultFailed, isInternalAgentFailure, isCompletionClaim } from "./session-helpers.js";
-export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) {
+export function Session({ workspace, mcpManager = null, initialMcpTools = [], terminalTitle = null }) {
   const { exit } = useApp();
   const initialConfig = useRef(loadConfig());
   const sessionStoreRef = useRef(null);
@@ -129,6 +129,9 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     contextUsageRef.current = usage;
     setContextUsage(usage);
   }, [sessionKey]);
+  useEffect(() => {
+    terminalTitle?.setWorkspace(currentSessionRef.current?.workspace || workspace.path);
+  }, [sessionKey, terminalTitle, workspace.path]);
   useEffect(() => subscribeConfig(event => {
     if (event.reason === "theme" && themePreviewRef.current === null) {
       setThemeName(loadConfig(workspace.path).theme);
@@ -360,6 +363,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     readFileName,
     thinkActivityFromPlan,
     setSessionKey,
+    terminalTitle,
   }), [appendArchived]);
   submitRef.current = submit;
   const handlePromptSubmit = useCallback((input, options) => submit(input, options), [submit]);
@@ -384,6 +388,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [] }) 
     setModeStatus,
     setPendingQuestion,
     submittingRef,
+    terminalTitle,
     clearPublicAnalysisActivity,
     clearAnalysisActivity,
     nextId,

@@ -93,7 +93,7 @@ test("Big Cock resolves to the exact Big Pickle provider descriptor", () => {
       env: "OPENCODE_API_KEY",
       headers: {},
       family: "unknown",
-      promptProfile: "default",
+      promptProfile: "big-cock",
     },
   });
   assert.equal(resolveModelDescriptor("cock").exactID, "opencode/big-pickle");

@@ -48,6 +48,32 @@ test("explicit model metadata controls the shared prompt profile", () => {
   assert.equal(getFamilyPrompt(descriptor), family);
 });
 
+test("Big Cock adds authorized security research without replacing developer behavior", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "khazai-big-cock-profile-"));
+  const registry = new Registry().register({
+    name: "read",
+    description: "Read",
+    parameters: { type: "object", properties: {}, required: [] },
+    async execute() { return "source"; },
+  });
+  const build = new Agent(registry, { workspace, model: "big-cock" });
+  const system = build._buildSystem();
+  assert.equal(promptFamily({ definition: { promptProfile: "big-cock" } }), "big-cock");
+  assert.match(system, /Senior Software Engineer/);
+  assert.match(system, /clean architecture, correct implementation, debugging, performance, maintainability/);
+  assert.match(system, /recon, attack-surface mapping, hypothesis, controlled validation, evidence, impact assessment, and remediation/);
+  assert.match(system, /require the user to state that they own it or are authorized to test it/i);
+  assert.match(system, /distinguish confirmed vulnerabilities from suspected issues/i);
+  assert.match(system, /# Build mode/);
+  assert.deepEqual(build._registry.list().map(tool => tool.name), ["read"]);
+
+  const plan = new Agent(registry, { workspace, model: "big-cock", agent: "plan" });
+  assert.match(plan._buildSystem(), /keep security analysis read-only unless existing Plan permissions explicitly allow otherwise/i);
+  assert.equal(plan._permissionService.evaluate("write", { path: join(workspace, "a.js") }).decision, "ask");
+  assert.deepEqual(plan._registry.list().map(tool => tool.name), ["read"]);
+  assert.equal(promptFamily({ definition: { promptProfile: "anthropic" } }), "anthropic");
+});
+
 test("system prompts keep environment, workspace, MCP, and skill layers ordered", () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-prompt-layers-"));
   writeFileSync(join(workspace, "AGENTS.md"), "# Test instructions\n\nFollow the workspace rule.");

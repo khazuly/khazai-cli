@@ -9,8 +9,9 @@ import { getWorkspace, markTrusted } from "../config/workspace.js";
 import { shutdownAllLsp } from "../app/lsp.js";
 import { getMcpManager, shutdownAllMcp } from "../app/mcp.js";
 import { shutdownWebSearch } from "../tools/websearch.js";
+import { createTerminalTitle } from "./terminal-title.js";
 
-function TrustedSession({ workspace }) {
+function TrustedSession({ workspace, terminalTitle }) {
   const [ready, setReady] = useState(null);
 
   useEffect(() => {
@@ -29,6 +30,7 @@ function TrustedSession({ workspace }) {
     workspace,
     mcpManager: ready.manager,
     initialMcpTools: ready.tools,
+    terminalTitle,
   });
 }
 
@@ -50,8 +52,8 @@ function MissingDir({ path }) {
   );
 }
 
-function App() {
-  const [ws] = useState(() => getWorkspace());
+function App({ terminalTitle, initialWorkspace }) {
+  const [ws] = useState(() => initialWorkspace || getWorkspace());
   const [trusted, setTrusted] = useState(ws.trusted);
 
   if (!existsSync(ws.path)) {
@@ -68,14 +70,17 @@ function App() {
     });
   }
 
-  return h(TrustedSession, { workspace: { ...ws, trusted: true } });
+  return h(TrustedSession, { workspace: { ...ws, trusted: true }, terminalTitle });
 }
 
 export async function startUI() {
+  const workspace = getWorkspace();
+  const terminalTitle = createTerminalTitle({ workspacePath: workspace.path });
   prepareScrollableTerminal(process.stdout);
   try {
-    await render(h(App), { stdout: process.stdout }).waitUntilExit();
+    await render(h(App, { terminalTitle, initialWorkspace: workspace }), { stdout: process.stdout }).waitUntilExit();
   } finally {
+    terminalTitle.dispose();
     await Promise.all([shutdownAllLsp(), shutdownAllMcp(), shutdownWebSearch()]);
   }
 }
