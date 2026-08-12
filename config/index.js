@@ -177,6 +177,14 @@ export function saveProvider(id, provider) {
   }), { reason: `provider:${id}` });
 }
 
+export function removeProvider(id) {
+  updateConfigFile(config => {
+    const providers = { ...(config.providers || {}) };
+    delete providers[id];
+    return { ...config, providers };
+  }, { reason: `provider:${id}:remove` });
+}
+
 export function saveMcpServer(id, definition, path = CONFIG_PATH) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(String(id || ""))) {
     throw new Error("MCP server names may contain only letters, numbers, hyphens, and underscores.");
@@ -208,7 +216,9 @@ export function configuredModels() {
     ...aliases,
     AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>
-      (value.models || []).map(model => `${provider}/${model}`)),
+      (value.models || []).map(model => typeof model === "string"
+        ? `${provider}/${model}`
+        : model.publicName).filter(Boolean)),
   ];
 }
 

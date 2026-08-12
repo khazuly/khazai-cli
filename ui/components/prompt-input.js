@@ -29,6 +29,7 @@ export function PromptInput({
   permissionRequest = null,
   onSelectOption,
   onCancelOption,
+  onCancelInput,
   secret = false,
   fileItems = [],
   onPreviewChange,
@@ -299,6 +300,7 @@ export function PromptInput({
         setInput({ value: "", cursor: 0 });
         setPastePreview(null);
         commandViewport.resetSelection();
+        onCancelInput?.();
         return;
       }
     }
@@ -325,11 +327,15 @@ export function PromptInput({
         } else {
           onSubmit(value);
         }
-        setHistory(current => [value, ...current].slice(0, 50));
+        if (!secret) setHistory(current => [value, ...current].slice(0, 50));
         setInput({ value: "", cursor: 0 });
         setPastePreview(null);
         setHistIdx(-1);
       }
+      return;
+    }
+    if ((ch === "\u001b" || key.escape) && onCancelInput) {
+      onCancelInput();
       return;
     }
     if ((ch === "\u001b" || key.escape) && canAbort) {

@@ -18,7 +18,7 @@ const requestValue = useCallback((question, options = [], settings = {}) => new 
   const values = new Map((settings.values || []).map(entry => [entry.label, entry.value]));
   questionResolverRef.current = {
     kind: settings.kind || "command",
-    archive: settings.archive !== false,
+    archive: !settings.secret && settings.archive !== false,
     resolve: answer => resolveValue(values.get(answer) ?? answer),
     scope: null,
   };

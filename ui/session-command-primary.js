@@ -1,4 +1,5 @@
-export const PRIMARY_SESSION_COMMANDS = new Set(["/exit", "/queue", "/cancel", "/init", "/retry", "/allow-all", "/auto", "/permissions", "/model", "/models", "/reasoning", "/usage", "/setting", "/connect", "/new", "/sessions"]);
+export const PRIMARY_SESSION_COMMANDS = new Set(["/exit", "/queue", "/cancel", "/init", "/retry", "/allow-all", "/auto", "/permissions", "/model", "/models", "/reasoning", "/usage", "/setting", "/connect", "/connections", "/new", "/sessions"]);
+import { connectProvider, manageProviderConnections } from "./provider-command.js";
 
 export async function handlePrimarySessionCommand(context, cmd, arg) {
   const { Agent, PermissionService, abortRef, agentRef, appendArchived, autoApproveRef, buildRegistry, buildStartedPlanIdRef, completedRef, configuredModels, contextUsageRef, currentModel, currentSessionRef, displayModel, formatCommandHelp, formatSessionList, formatUsageReport, handlePermissionCommand, initRunRef, listModels, listSkills, loadAgentProfiles, loadConfig, loadStoredSession, loginCodex, lspStatus, manageMcpCommand, mcpToolsRef, messageQueueRef, pendingQuestion, performExit, planRef, planWorkflowRef, planningQuestionRef, prepareInit, removeStoredSessions, requestValue, resolve, running, saveModel, saveProvider, saveProviderCredential, saveReasoningEffort, saveTheme, sessionManagerSessions, sessionStoreRef, setContextUsage, setCurrentModel, setExpandedTool, setModeStatus, setQueuedCount, setSessionManagerSessions, setSettingsSection, setShowSettings, setThemeName, showSettings, submitRef, submittingRef, themePreviewRef, workspace, nextId, randomUUID, setCompletedMessages, setActiveMessage, setPlanVisibility, setSessionKey, responseBufferRef, activeScopeRef } = context;
@@ -314,57 +315,8 @@ if (cmd === "/setting") {
   setShowSettings(true);
   return;
 }
-if (cmd === "/connect") {
-  try {
-    const provider = String(arg || await requestValue(
-      "Select a provider",
-      ["Codex · ChatGPT OAuth", "Custom OpenAI-compatible"],
-      { values: [{ label: "Codex · ChatGPT OAuth", value: "codex" }, { label: "Custom OpenAI-compatible", value: "custom" }] },
-    )).toLowerCase();
-    if (!provider) return;
-    if (provider === "codex") {
-      await loginCodex({
-        onAuthorize: url => appendArchived({
-          id: nextId(),
-          type: "answer",
-          content: `Open this URL to connect Codex:\n${url}`,
-        }),
-      });
-      const models = await listModels("codex");
-      if (models.length === 0) throw new Error("Codex did not return any models for this account.");
-      saveProvider("codex", { type: "codex-responses", models });
-      const selected = await requestValue("Select a Codex model", models, {
-        values: models.map(model => ({ label: model, value: model })),
-      });
-      if (selected) await chooseModel(`codex/${selected}`);
-      return;
-    }
-    if (provider !== "custom") throw new Error(`Unknown provider "${provider}".`);
-    const customID = await requestValue("Provider ID");
-    if (!customID) return;
-    const baseURL = await requestValue("OpenAI-compatible base URL");
-    if (!/^https?:\/\//i.test(baseURL)) throw new Error("The provider base URL must use HTTP or HTTPS.");
-    const env = `${customID.replace(/[^a-z0-9]/gi, "_").toUpperCase()}_API_KEY`;
-    const apiKey = await requestValue("API key", [], { secret: true });
-    saveProvider(customID, { type: "openai-compatible", baseURL, env: env || undefined, models: [] });
-    if (apiKey) saveProviderCredential(customID, apiKey);
-    let models = [];
-    try { models = await listModels(customID); } catch {}
-    if (models.length === 0) {
-      const manual = await requestValue("Model ID");
-      if (manual) models = [manual];
-    }
-    saveProvider(customID, { type: "openai-compatible", baseURL, env: env || undefined, models });
-    appendArchived({
-      id: nextId(),
-      type: "answer",
-      content: `Connected provider ${customID}${models.length ? ` with ${models.length} model${models.length === 1 ? "" : "s"}` : ""}.`,
-    });
-  } catch (error) {
-    appendArchived({ id: nextId(), type: "error", content: error.message });
-  }
-  return;
-}
+if (cmd === "/connect") return connectProvider(arg, { ...context, chooseModel });
+if (cmd === "/connections") return manageProviderConnections(arg, context);
 if (cmd === "/new") {
   const session = sessionStoreRef.current.create({
     title: arg || "New session",

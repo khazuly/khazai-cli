@@ -8,18 +8,15 @@ import {
   configuredModels,
   loadConfig,
   saveModel,
-  saveProvider,
   saveReasoningEffort,
   saveTheme,
 } from "../config/index.js";
-import { saveProviderCredential } from "../lib/auth.js";
-import { loginCodex } from "../lib/codex-auth.js";
-import { listModels } from "../lib/llm.js";
 import { formatCommandHelp } from "./commands.js";
 import { manageMcpCommand } from "./mcp-command.js";
 import { handlePermissionCommand } from "./permission-commands.js";
 import { findToolMessage, recentToolMessages, toolChoice } from "./tool-activity.js";
 import { buildRegistry, displayModel, nextId } from "./session-runtime.js";
+import { connectProvider } from "./provider-command.js";
 
 async function chooseModel(requested, context) {
   const {
@@ -62,63 +59,6 @@ async function chooseModel(requested, context) {
   currentSessionRef.current.agentState = agentRef.current.exportSessionState();
   currentSessionRef.current = sessionStoreRef.current.save(currentSessionRef.current);
   appendArchived({ id: nextId(), type: "answer", content: `Model changed to ${displayModel(selected)}.` });
-}
-
-async function connectProvider(arg, context) {
-  const { appendArchived, requestValue } = context;
-  try {
-    const provider = String(arg || await requestValue(
-      "Select a provider",
-      ["Codex · ChatGPT OAuth", "Custom OpenAI-compatible"],
-      {
-        values: [
-          { label: "Codex · ChatGPT OAuth", value: "codex" },
-          { label: "Custom OpenAI-compatible", value: "custom" },
-        ],
-      },
-    )).toLowerCase();
-    if (!provider) return;
-    if (provider === "codex") {
-      await loginCodex({
-        onAuthorize: url => appendArchived({
-          id: nextId(),
-          type: "answer",
-          content: `Open this URL to connect Codex:\n${url}`,
-        }),
-      });
-      const models = await listModels("codex");
-      if (models.length === 0) throw new Error("Codex did not return any models for this account.");
-      saveProvider("codex", { type: "codex-responses", models });
-      const selected = await requestValue("Select a Codex model", models, {
-        values: models.map(model => ({ label: model, value: model })),
-      });
-      if (selected) await chooseModel(`codex/${selected}`, context);
-      return;
-    }
-    if (provider !== "custom") throw new Error(`Unknown provider "${provider}".`);
-    const customID = await requestValue("Provider ID");
-    if (!customID) return;
-    const baseURL = await requestValue("OpenAI-compatible base URL");
-    if (!/^https?:\/\//i.test(baseURL)) throw new Error("The provider base URL must use HTTP or HTTPS.");
-    const env = `${customID.replace(/[^a-z0-9]/gi, "_").toUpperCase()}_API_KEY`;
-    const apiKey = await requestValue("API key", [], { secret: true });
-    saveProvider(customID, { type: "openai-compatible", baseURL, env, models: [] });
-    if (apiKey) saveProviderCredential(customID, apiKey);
-    let models = [];
-    try { models = await listModels(customID); } catch {}
-    if (models.length === 0) {
-      const manual = await requestValue("Model ID");
-      if (manual) models = [manual];
-    }
-    saveProvider(customID, { type: "openai-compatible", baseURL, env, models });
-    appendArchived({
-      id: nextId(),
-      type: "answer",
-      content: `Connected provider ${customID}${models.length ? ` with ${models.length} model${models.length === 1 ? "" : "s"}` : ""}.`,
-    });
-  } catch (error) {
-    appendArchived({ id: nextId(), type: "error", content: error.message });
-  }
 }
 
 async function manageSessions(cmd, arg, context) {
@@ -328,7 +268,10 @@ export async function handleSessionCommand(cmd, arg, context) {
     appendArchived({ id: nextId(), type: "answer", content: `Codex reasoning set to ${value}.` });
     return;
   }
-  if (cmd === "/connect") return connectProvider(arg, context);
+  if (cmd === "/connect") return connectProvider(arg, {
+    ...context,
+    chooseModel: requested => chooseModel(requested, context),
+  });
   if (["/new", "/sessions", "/continue", "/fork", "/undo", "/redo"].includes(cmd)) {
     return manageSessions(cmd, arg, context);
   }

@@ -49,6 +49,9 @@ const FAMILIES = {
   default: `# Default model behavior
 - Use native tool calls when tools are available.
 - State uncertainty briefly and inspect evidence instead of guessing.`,
+  deepseek: `# DeepSeek behavior
+- Use native tool calls when tools are available.
+- Inspect repository evidence before deciding on a change.`,
   "big-cock": `# Big Cock professional behavior
 - Act as a Senior Software Engineer, Software Architect, Debugging and Performance Specialist, and Professional Application Security Researcher.
 - For normal development work, prioritize clean architecture, correct implementation, debugging, performance, maintainability, targeted changes, and relevant tests.
@@ -83,6 +86,7 @@ const PROFILE_NAMES = new Set(Object.keys(FAMILIES));
 const FAMILY_PROFILES = {
   anthropic: "anthropic",
   codex: "codex",
+  deepseek: "deepseek",
   gemini: "gemini",
   google: "gemini",
   gpt: "gpt",

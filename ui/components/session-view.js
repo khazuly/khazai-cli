@@ -80,6 +80,7 @@ export function SessionView({
           permissionRequest: pendingQuestion?.permissionRequest || null,
           onSelectOption: handlers.answerQuestion,
           onCancelOption: handlers.cancelQuestion,
+          onCancelInput: pendingQuestion ? handlers.cancelQuestion : undefined,
           secret: Boolean(pendingQuestion?.secret),
           fileItems: workspaceFiles,
         },

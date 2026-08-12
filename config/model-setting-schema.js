@@ -1,4 +1,5 @@
 import { resolveZenModel } from "./khazai-free-models.js";
+import { findQwenCloudModel } from "../lib/qwen-cloud.js";
 
 const PROVIDER_CAPABILITIES = {
   "khazai-free": {
@@ -85,6 +86,20 @@ const PROVIDER_CAPABILITIES = {
     temperatureRange: [0, 2],
     topPRange: [0, 1],
   },
+  "qwen-cloud": {
+    supportsTemperature: true,
+    supportsTopP: true,
+    supportsMaxTokens: true,
+    supportsStreaming: true,
+    supportsReasoningEffort: false,
+    supportsParallelTools: true,
+    supportsToolCalling: true,
+    supportsToolChoice: true,
+    supportsStreamOptions: true,
+    outputLimit: null,
+    temperatureRange: [0, 2],
+    topPRange: [0, 1],
+  },
 };
 
 const DEFAULT_CAPABILITIES = {
@@ -110,6 +125,7 @@ export function resolveProviderId(model) {
   if (lower.startsWith("codex/")) return "codex";
   if (lower === "vibe" || lower === "mistral/vibe") return "mistral";
   if (lower === "aichat/claude-haiku-4-5") return "aichat";
+  if (findQwenCloudModel(lower)) return "qwen-cloud";
   const zen = resolveZenModel(lower);
   if (zen) return zen.alias === "big-cock" ? "opencode" : "khazai-free";
   if (lower.startsWith("khazai-free/")) return "khazai-free";

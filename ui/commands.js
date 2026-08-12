@@ -88,6 +88,7 @@ export const COMMANDS = [
   { name: "/theme", description: "Change the interface theme", category: "core", aliases: [], visible: true, group: "view", openSubmenu: true, sub: THEMES },
   { name: "/mcp", description: "Manage MCP servers", category: "core", aliases: [], visible: true, group: "workspace", sub: MCP_COMMANDS },
   { name: "/connect", description: "Connect a provider", category: "workspace", aliases: [], visible: false, group: "workspace" },
+  { name: "/connections", description: "Manage provider connections", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/skills", description: "List workspace skills", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/lsp", description: "Show language server status", category: "workspace", aliases: [], visible: false, group: "workspace" },
   { name: "/reasoning", description: "Set Codex reasoning effort", category: "core", aliases: [], visible: false, group: "view" },
