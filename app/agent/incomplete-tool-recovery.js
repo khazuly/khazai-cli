@@ -1,4 +1,5 @@
-const RECOVERY_PROMPT = "Continue the current task. Your previous tool call was incomplete. Reissue the intended action using one complete native tool call with valid arguments. Do not repeat the user request or explain the failure.";
+const MAX_RECOVERY_ATTEMPTS = 2;
+const RECOVERY_PROMPT = "Continue the current task. Your previous tool JSON was incomplete. If the latest tool result already answers the request, reply with a concise normal answer. Otherwise reply with exactly one complete JSON object in the form {\"tool\":\"name\",\"args\":{...}} using one available tool and valid arguments. Do not include markdown or repeat the user request.";
 
 function diagnostic(partial, recoveryAttempt, result = "pending") {
   return {
@@ -20,7 +21,7 @@ function diagnostic(partial, recoveryAttempt, result = "pending") {
 export function recoverIncompleteToolCall(agent, model, partial) {
   if (model !== "aichat/claude-haiku-4-5" || !partial) return { handled: false };
   const attempts = Number(agent._incompleteToolRecovery?.attempts) || 0;
-  if (attempts >= 1) {
+  if (attempts >= MAX_RECOVERY_ATTEMPTS) {
     agent._incompleteToolRecovery = { attempts, pending: false };
     return { handled: true, terminal: true, diagnostic: diagnostic(partial, attempts, "failed") };
   }

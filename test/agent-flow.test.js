@@ -88,6 +88,24 @@ test("normal model prose remains streamed", async () => {
   assert.equal(visible.join(""), response);
 });
 
+test("compatibility streams flush their guarded tail after a finish event", async () => {
+  const response = "The final guarded characters must remain visible to the user.";
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-compatibility-finish-")),
+    intentResolver: intent(),
+    chat: async (_messages, options) => {
+      options.onToken?.(response);
+      options.onEvent?.({ type: "finish", reason: "stop" });
+      return response;
+    },
+  });
+  const visible = [];
+  for await (const event of agent.loop("explain streaming")) {
+    if (event.type === "stream") visible.push(event.token);
+  }
+  assert.equal(visible.join(""), response);
+});
+
 test("empty provider responses are retried before surfacing an error", async () => {
   let calls = 0;
   const agent = new Agent(new Registry(), {

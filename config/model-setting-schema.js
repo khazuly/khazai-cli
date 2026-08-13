@@ -8,7 +8,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: true,
     supportsStreaming: true,
     supportsReasoningEffort: false,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: false,
     supportsStreamOptions: false,
@@ -22,7 +22,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: true,
     supportsStreaming: true,
     supportsReasoningEffort: false,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: false,
     supportsStreamOptions: true,
@@ -36,7 +36,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: false,
     supportsStreaming: true,
     supportsReasoningEffort: true,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: true,
     supportsStreamOptions: false,
@@ -50,7 +50,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: true,
     supportsStreaming: true,
     supportsReasoningEffort: false,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: true,
     supportsStreamOptions: false,
@@ -64,7 +64,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: true,
     supportsStreaming: true,
     supportsReasoningEffort: false,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: false,
     supportsStreamOptions: false,
@@ -78,7 +78,7 @@ const PROVIDER_CAPABILITIES = {
     supportsMaxTokens: false,
     supportsStreaming: true,
     supportsReasoningEffort: false,
-    supportsParallelTools: false,
+    supportsParallelTools: true,
     supportsToolCalling: true,
     supportsToolChoice: false,
     supportsStreamOptions: false,
@@ -182,7 +182,7 @@ export const GLOBAL_DEFAULTS = {
   invalidToolCallRetry: true,
 
   toolCallingEnabled: true,
-  parallelToolCalls: false,
+  parallelToolCalls: true,
   maxToolsPerIteration: 8,
   toolResultPreviewSize: 2_000,
   duplicateToolProtection: true,
@@ -202,6 +202,12 @@ export function providerDefaults(providerId) {
       requestTimeoutMs: 120_000,
       maxProviderRetries: 1,
       maxAgentIterations: 50,
+    };
+  }
+  if (providerId === "codex") {
+    return {
+      maxProviderRetries: 3,
+      requestTimeoutMs: 300_000,
     };
   }
   if (providerId === "opencode") {

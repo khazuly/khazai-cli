@@ -12,7 +12,7 @@ const MODELS = [
     description: "General coding",
     capabilities: {
       streaming: true, tools: true, reasoning: true, usage: true, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -23,7 +23,7 @@ const MODELS = [
     description: "Advanced reasoning and coding",
     capabilities: {
       streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -34,7 +34,7 @@ const MODELS = [
     description: "Fast coding assistant",
     capabilities: {
       streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -45,7 +45,7 @@ const MODELS = [
     description: "Balanced coding model",
     capabilities: {
       streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -56,7 +56,7 @@ const MODELS = [
     description: "Lightweight and fast",
     capabilities: {
       streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -67,7 +67,7 @@ const MODELS = [
     description: "Compact coding model",
     capabilities: {
       streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -78,7 +78,7 @@ const MODELS = [
     description: "Tool-capable reasoning model",
     capabilities: {
       streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },
@@ -90,7 +90,7 @@ const MODELS = [
     description: "Automatic routing across healthy free models",
     capabilities: {
       streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: false, maxOutputTokens: true, parallelTools: false,
+      temperature: true, topP: false, maxOutputTokens: true, parallelTools: true,
       toolChoice: false, reasoningEffort: false,
     },
   },

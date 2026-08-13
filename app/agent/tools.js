@@ -75,7 +75,7 @@ export class ToolMethods {
   async *_runSequentialBatch(tools) {
     const executionScope = this._activeRun;
     if (!this._isActiveRun(executionScope)) return true;
-    const candidates = tools.slice(0, 8).map(tool => this._normalizeTool(tool));
+    const candidates = tools.slice(0, this._toolBatchLimit()).map(tool => this._normalizeTool(tool));
     const calls = this._schedulableShellCalls(this._filterRepeatedBatchTools(candidates));
     if (this._loopRecoveryExhausted || calls.length === 0) {
       this._lifecycle.finishStep("tool-calls");

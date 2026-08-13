@@ -74,7 +74,6 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (event?.type === "tool-call-delta") toolCallBuffer.accept(event.delta);
     if (event?.type === "partial-tool-call") toolCallBuffer.acceptPartial(event.partial);
     if (event?.type === "finish") toolCallBuffer.finish(event.reason);
-    typedProviderStream = true;
     if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
       this._markLatency("providerFirstDelta");
       receivedAnyToken = true;
@@ -82,6 +81,9 @@ for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (event?.type === "text-delta" && event.text) queueEvent(event);
     if (event?.type === "reasoning-delta" && event.text) queueEvent(event);
     if (event?.type === "tool-call-delta") nativeToolStream = true;
+    if (["text-delta", "reasoning-delta", "tool-call-delta"].includes(event?.type)) {
+      typedProviderStream = true;
+    }
     for (const activity of publicActivity.accept(event)) queueEvent(activity);
   };
   if (!isRunActive()) return;

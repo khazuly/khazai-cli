@@ -13,6 +13,8 @@ test("command reference and palette use the same grouped metadata", () => {
   assert.match(help, /\*\*Settings\*\*[\s\S]*`\/help`/);
   assert.match(help, /`\/exit` — Exit KhazAI/);
   assert.equal(canonicalCommand("/quit")?.name, "/exit");
+  assert.equal(visibleCommands().some(command => command.name === "/connect"), true);
+  assert.equal(visibleCommands().some(command => command.name === "/connections"), true);
   assert.equal(visibleCommands().some(command => command.name === "/quit"), false);
   assert.deepEqual(
     COMMANDS.find(command => command.name === "/sessions").sub.map(command => command.name),

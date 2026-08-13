@@ -20,7 +20,7 @@ const BUILD = `# Build mode
 - After a test timeout, inspect cleanup or open handles before one evidence-based retry. Never repeat the same full suite without a concrete change.
 - Never use git stash, git reset, or git checkout to prepare or isolate test verification. Verify the active working tree unchanged.
 - After completing work, provide a concise implementation summary: state what changed, what was verified, and any remaining issue. Do not include the full investigation, architecture analysis, internal reasoning, tool history, or long code excerpts unless the user explicitly requests a detailed report. Keep the default final response within 8–15 short lines.
-- Make independent read-only tool calls in parallel when possible.
+- Batch independent read-only tool calls in one response when possible. Keep write, edit, apply_patch, bash, and permission-gated actions serial; wait for each result before issuing a dependent call.
 - When referring to code, use \`path/to/file:line\`.
 - Use GitHub-flavored Markdown when it improves clarity. Do not use emojis unless asked.`;
 

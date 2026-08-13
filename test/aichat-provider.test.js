@@ -93,6 +93,7 @@ test("AIChat Claude is selectable with synthetic tool capability", () => {
   assert.equal(resolveModelDescriptor("aichat/claude-haiku-4-5").definition.promptProfile, "bug-bounty");
   assert.equal(promptFamily(resolveModelDescriptor("aichat/claude-haiku-4-5")), "bug-bounty");
   assert.equal(resolveProviderCapabilities("aichat/claude-haiku-4-5").supportsToolCalling, true);
+  assert.equal(resolveProviderCapabilities("aichat/claude-haiku-4-5").supportsParallelTools, true);
   assert.ok(configuredModels().includes("aichat/claude-haiku-4-5"));
 });
 
@@ -126,8 +127,23 @@ test("AIChat sends text-compatible messages and synthetic tool instructions with
   assert.equal(Object.hasOwn(body, "tools"), false);
   assert.equal(body.messages.some(message => message.role === "system"), false);
   assert.match(body.messages.at(-1).content, /TOOL CALL PROTOCOL/);
+  assert.match(body.messages.at(-1).content, /JSON array only for independent read-only calls/);
   assert.match(body.messages.at(-1).content, /concrete URL, path, identifier, or command/);
   assert.match(JSON.stringify(body.messages), /---TOOL RESULT: read---/);
+});
+
+test("AIChat retains a synthetic array of independent tool calls", async () => {
+  const calls = [
+    { tool: "read", args: { path: "README.md" } },
+    { tool: "glob", args: { pattern: "*.js" } },
+  ];
+  const provider = providerWith([chatPage(1), usage(100), sse(JSON.stringify(calls))]);
+  assert.equal(
+    await provider.chat([{ role: "user", content: "Inspect the project." }], {
+      model: "anthropic/claude-haiku-4-5", sessionId: "session-array", tools: [readTool],
+    }),
+    JSON.stringify(calls),
+  );
 });
 
 test("AIChat unwraps a prose-wrapped synthetic tool call before it reaches the runtime", async () => {
@@ -144,6 +160,20 @@ test("AIChat unwraps a prose-wrapped synthetic tool call before it reaches the r
 
   assert.equal(result, '{"tool":"read","args":{"path":"lib/session.js"}}');
   assert.deepEqual(tokens, [result]);
+});
+
+test("AIChat unwraps a tool JSON object embedded in prose", async () => {
+  const provider = providerWith([
+    chatPage(1),
+    usage(100),
+    sse('I will inspect it now.\n<tool_call>{"tool":"read","args":{"path":"lib/session.js"}}</tool_call>'),
+  ]);
+  assert.equal(
+    await provider.chat([{ role: "user", content: "Inspect it." }], {
+      model: "anthropic/claude-haiku-4-5", sessionId: "session-tool-embedded", tools: [readTool],
+    }),
+    '{"tool":"read","args":{"path":"lib/session.js"}}',
+  );
 });
 
 test("AIChat reports a fragmented incomplete synthetic tool call without forwarding it", async () => {

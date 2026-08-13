@@ -63,10 +63,59 @@ test("AIChat automatically recovers an incomplete Write without duplicate state"
   assert.equal(agent._messages.filter(message => message.role === "user" && message.content === "Create pycompiler.py").length, 1);
   assert.equal(agent._messages.some(message => String(message.content || "").includes("partial-code")), false);
   assert.equal(contexts[1].filter(message => message.role === "user" && message.content === "Create pycompiler.py").length, 1);
+  assert.match(contexts[1].at(-1).content, /latest tool result already answers/);
   assert.equal(events.some(event => event.type === "provider-diagnostic" && event.diagnostic?.recoveryResult === "succeeded"), true);
 });
 
-test("AIChat fails once after a second incomplete call", async () => {
+test("AIChat recovers after two incomplete tool calls", async () => {
+  const registry = new Registry();
+  let writes = 0;
+  registry.register({
+    name: "write",
+    description: "Write a file",
+    parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
+    async execute() { writes++; return "Written 20 bytes to pycompiler.py"; },
+  });
+  let requests = 0;
+  const agent = new Agent(registry, {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-aichat-recovery-fail-")),
+    model: "aichat/claude-haiku-4-5",
+    intentResolver: async ({ input }) => intent(input),
+    chat: async (_messages, options) => {
+      requests++;
+      if (requests < 3) return incompleteWrite(options);
+      if (requests === 3) return '{"tool":"write","args":{"path":"pycompiler.py","content":"final-code"}}';
+      return "Created pycompiler.py.";
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("Create pycompiler.py")) events.push(event);
+
+  assert.equal(requests, 4);
+  assert.equal(writes, 1);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.equal(events.filter(event => event.type === "tool-call" && event.tool === "write").length, 1);
+});
+
+test("AIChat accepts a final answer after a partial tool call", async () => {
+  let requests = 0;
+  const agent = new Agent(new Registry(), {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-aichat-recovery-answer-")),
+    model: "aichat/claude-haiku-4-5",
+    intentResolver: async ({ input }) => intent(input),
+    chat: async (_messages, options) => {
+      requests++;
+      return requests === 1 ? incompleteWrite(options) : "The previous command completed successfully.";
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("Run the command")) events.push(event);
+
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /completed successfully/);
+});
+
+test("AIChat fails once after its incomplete tool recovery budget is exhausted", async () => {
   const registry = new Registry();
   registry.register({
     name: "write",
@@ -84,11 +133,10 @@ test("AIChat fails once after a second incomplete call", async () => {
   const events = [];
   for await (const event of agent.loop("Create pycompiler.py")) events.push(event);
 
-  assert.equal(requests, 2);
+  assert.equal(requests, 3);
   assert.equal(events.filter(event => event.type === "error").length, 1);
   assert.equal(events.find(event => event.type === "error")?.content, "AIChat could not complete the tool call.");
   assert.equal(events.some(event => event.type === "tool-call"), false);
-  assert.equal(events.some(event => event.type === "tool-result"), false);
 });
 
 test("other providers retain their existing invalid tool-call handling", async () => {

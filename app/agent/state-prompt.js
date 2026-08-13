@@ -141,11 +141,15 @@ export class StatePromptMethods {
     return null;
   }
 
+  _toolBatchLimit() {
+    return Math.max(1, Math.min(50, Number(this._applyEffectiveSettings().maxToolsPerIteration) || 8));
+  }
+
   _extractNativeTool(text) {
     try {
       const parsed = JSON.parse(String(text || "").trim());
       if (Array.isArray(parsed)) {
-        const tools = parsed.slice(0, 8).map(entry => this._parseToolJson(entry)).filter(Boolean);
+        const tools = parsed.slice(0, this._toolBatchLimit()).map(entry => this._parseToolJson(entry)).filter(Boolean);
         return tools.length ? { tool: tools[0], tools, error: null, kind: null } : { tool: null, error: null, kind: null };
       }
       const tool = this._parseToolJson(parsed);
@@ -166,7 +170,7 @@ export class StatePromptMethods {
     try {
       const parsed = JSON.parse(reply);
       if (Array.isArray(parsed)) {
-        const tools = parsed.slice(0, 8).map(entry => this._parseToolJson(entry)).filter(Boolean);
+        const tools = parsed.slice(0, this._toolBatchLimit()).map(entry => this._parseToolJson(entry)).filter(Boolean);
         if (tools.length) return { tool: tools[0], tools, error: null, kind: null };
       }
       const tool = this._parseToolJson(parsed);

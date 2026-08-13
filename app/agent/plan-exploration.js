@@ -1,7 +1,8 @@
 import { toolMetadata } from "./helpers/task.js";
 
 export function planBatchCanRunConcurrently(agent, calls) {
-  return calls.length > 1
+  return agent._applyEffectiveSettings().parallelToolCalls !== false
+    && calls.length > 1
     && calls.every(call => {
       const definition = agent._registry.get(call.name);
       return definition

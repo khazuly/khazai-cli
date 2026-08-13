@@ -58,6 +58,43 @@ test("native read-only tool batches preserve IDs and execute concurrently", asyn
   assert.deepEqual(events.filter(event => event.type === "tool-result").map(event => event.callId), ["call-a", "call-b"]);
 });
 
+test("tool batch settings cap calls and can keep read-only work serial", async () => {
+  const registry = new Registry();
+  const started = [];
+  for (const name of ["read", "glob", "grep"]) {
+    registry.register({
+      name,
+      description: name,
+      parameters: { type: "object", properties: {}, required: [] },
+      async execute() {
+        started.push(Date.now());
+        await new Promise(resolve => setTimeout(resolve, 80));
+        return `${name} result`;
+      },
+    });
+  }
+  const calls = ["read", "glob", "grep"].map((tool, index) => ({ tool, args: {}, id: `call-${index}` }));
+  const agent = new Agent(registry, {
+    workspace: mkdtempSync(join(tmpdir(), "khazai-batch-settings-")),
+    model: "big-cock",
+    config: { modelSettings: { "big-cock": { parallelToolCalls: false, maxToolsPerIteration: 2 } } },
+    intentResolver: async () => ({ intent: "inspect", category: "INSPECTION", operation: "inspect_code", requiredEvidence: [], requiresPlan: false }),
+    chat: async (_messages, options) => {
+      const reply = JSON.stringify(calls);
+      options.onToken?.(reply);
+      return reply;
+    },
+  });
+  const events = [];
+  for await (const event of agent.loop("inspect files")) {
+    events.push(event);
+    if (event.type === "tool-result" && event.callId === "call-1") agent.abort();
+  }
+  assert.equal(started.length, 2);
+  assert.ok(started[1] - started[0] >= 70);
+  assert.deepEqual(events.filter(event => event.type === "tool-call").map(event => event.callId), ["call-0", "call-1"]);
+});
+
 test("apply_patch performs atomic add, update, move, delete, and rollback", async () => {
   const workspace = mkdtempSync(join(tmpdir(), "khazai-patch-"));
   writeFileSync(join(workspace, "old.txt"), "alpha\n");

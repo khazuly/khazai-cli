@@ -115,6 +115,25 @@ test("provider capabilities remove unsupported request fields", async () => {
   }
 });
 
+test("provider capabilities include parallel tool calls when supported", async () => {
+  const originalFetch = globalThis.fetch;
+  let body;
+  globalThis.fetch = async (_url, options) => {
+    body = JSON.parse(options.body);
+    return jsonResponse();
+  };
+  try {
+    const provider = new OpenAICompatibleProvider({ id: "local", baseURL: "https://local.test/v1" });
+    await provider.chat([{ role: "user", content: "test" }], {
+      model: "test", tools: [validTool], parallelToolCalls: true,
+      capabilities: { supportsStreaming: true, supportsToolCalling: true, supportsParallelTools: true },
+    });
+    assert.equal(body.parallel_tool_calls, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("invalid tool schemas fail locally before provider execution", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

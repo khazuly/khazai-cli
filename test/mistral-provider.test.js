@@ -349,3 +349,22 @@ test("non-retryable provider errors are not retried", async () => {
     assert.equal(attempts, 1);
   });
 });
+
+test("vibe disables feature callbacks by default for lower latency", async () => {
+  const requests = [];
+  await withFactory([
+    { test: target => target.endsWith("/") && !target.includes("api"), landing: true, response: () => landingResponse() },
+    { test: target => target.includes("message.newChat"), response: init => { requests.push({ url: "newChat", body: JSON.parse(init.body) }); return newChatResponse(); } },
+    { test: target => target.endsWith("/api/chat"), response: init => { requests.push({ url: "chat", body: JSON.parse(init.body) }); return sseResponse(chatStream([])); } },
+  ], async () => {
+    const provider = new MistralLeChatProvider();
+    const text = await provider.chat([{ role: "user", content: "hi" }], { sessionId: "feature-default-test" });
+    assert.equal(text, "Hello world");
+  });
+
+  const newChat = requests.find(request => request.url === "newChat");
+  const chat = requests.find(request => request.url === "chat");
+  assert.deepEqual(newChat.body["0"].json.features, []);
+  assert.deepEqual(chat.body.features, []);
+  assert.deepEqual(chat.body.supportedTaskCallbacks, []);
+});
