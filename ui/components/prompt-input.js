@@ -186,7 +186,7 @@ export function PromptInput({
       }
       return;
     }
-    if (ch && !key.return && !key.shift && !key.ctrl && !key.meta) {
+    if (ch && !key.return && !key.ctrl && !key.meta) {
       const text = printableText(ch);
       if (text) {
         queueText(text);
@@ -250,9 +250,9 @@ export function PromptInput({
           return;
         }
         if (inSubMode) {
-          onCommand(subInfo.cmd.name, sel.name);
+          onCommand(subInfo.cmd.name, sel.value || sel.name);
         } else {
-          onCommand(sel.name, "");
+          onCommand(sel.value || sel.name, "");
         }
         setInput({ value: "", cursor: 0 });
         setPastePreview(null);
@@ -287,11 +287,12 @@ export function PromptInput({
       if (key.tab) {
         const sel = commandViewport.selectedItem;
         if (!sel) return;
+        const value = sel.value || sel.name;
         if (inSubMode) {
           const spaceIdx = input.value.lastIndexOf(" ") + 1;
-          setInput({ value: input.value.slice(0, spaceIdx) + sel.name + " ", cursor: input.value.slice(0, spaceIdx).length + sel.name.length + 1 });
+          setInput({ value: input.value.slice(0, spaceIdx) + value + " ", cursor: input.value.slice(0, spaceIdx).length + value.length + 1 });
         } else {
-          setInput({ value: sel.name + " ", cursor: sel.name.length + 1 });
+          setInput({ value: value + " ", cursor: value.length + 1 });
         }
         commandViewport.resetSelection();
         return;

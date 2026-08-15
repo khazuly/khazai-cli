@@ -17,15 +17,17 @@ const PROJECT_FILES = [".khazai-ai.json", ".khazai-airc"];
 const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 const OPENCODE_GLOBAL_FILES = ["opencode.json", "opencode.jsonc"];
 const OPENCODE_PROJECT_FILES = ["opencode.json", "opencode.jsonc"];
-const MODEL = "big-cock";
-const AUTO_FREE_MODEL = "auto-free";
-const MODEL_ALIASES = new Set([MODEL, "cock", "gpt", AUTO_FREE_MODEL]);
+const MODEL = "auto-free";
+const BIG_COCK_MODEL = "big-cock";
+const MODEL_ALIASES = new Set([BIG_COCK_MODEL, "cock", "gpt"]);
+const DIRECT_MODELS = new Set(["gemini/3.5-flash", "3.5-flash", "gemini-guest", "gemini/3.5-flash-lite", "3.5-flash-lite"]);
 
 export function normalizeModel(model) {
   const value = String(model || "").toLowerCase();
   if (!value) return MODEL;
-  if (value === AUTO_FREE_MODEL) return AUTO_FREE_MODEL;
-  if (MODEL_ALIASES.has(value)) return MODEL;
+  if (value === MODEL) return MODEL;
+  if (DIRECT_MODELS.has(value)) return value;
+  if (MODEL_ALIASES.has(value)) return BIG_COCK_MODEL;
   return canonicalModelKey(model) || String(model);
 }
 
@@ -208,13 +210,14 @@ export function configuredModels() {
   const config = loadConfig();
   const aliases = zenModels(config)
     .map(model => model.key)
-    .filter(alias => alias !== MODEL && alias !== AUTO_FREE_MODEL);
+    .filter(alias => alias !== MODEL && alias !== BIG_COCK_MODEL);
   return [
     MODEL,
+    BIG_COCK_MODEL,
     "vibe",
     "aichat/claude-haiku-4-5",
+    "gemini/3.5-flash",
     ...aliases,
-    AUTO_FREE_MODEL,
     ...Object.entries(config.providers || {}).flatMap(([provider, value]) =>
       (value.models || []).map(model => typeof model === "string"
         ? `${provider}/${model}`

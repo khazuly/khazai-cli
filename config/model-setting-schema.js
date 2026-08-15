@@ -58,6 +58,20 @@ const PROVIDER_CAPABILITIES = {
     temperatureRange: [0, 2],
     topPRange: [0, 1],
   },
+  "gemini-guest": {
+    supportsTemperature: false,
+    supportsTopP: false,
+    supportsMaxTokens: false,
+    supportsStreaming: false,
+    supportsReasoningEffort: false,
+    supportsParallelTools: true,
+    supportsToolCalling: true,
+    supportsToolChoice: false,
+    supportsStreamOptions: false,
+    outputLimit: 8_192,
+    temperatureRange: [0, 2],
+    topPRange: [0, 1],
+  },
   mistral: {
     supportsTemperature: true,
     supportsTopP: true,
@@ -124,6 +138,7 @@ export function resolveProviderId(model) {
   if (lower === "auto-free") return "auto-free";
   if (lower.startsWith("codex/")) return "codex";
   if (lower === "vibe" || lower === "mistral/vibe") return "mistral";
+  if (["gemini-guest", "gemini/3.5-flash-lite", "3.5-flash-lite"].includes(lower)) return "gemini-guest";
   if (lower === "aichat/claude-haiku-4-5") return "aichat";
   if (findQwenCloudModel(lower)) return "qwen-cloud";
   const zen = resolveZenModel(lower);

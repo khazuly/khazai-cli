@@ -3,10 +3,12 @@ import { zenModels } from "../config/khazai-free-models.js";
 
 const MODELS = [
   ...zenModels().filter(model => model.upstreamModel).map(model => ({
-    name: model.key,
-    description: model.alias === "big-cock" ? "Big Cock (default)" : model.description,
+    name: model.displayName,
+    value: model.key,
+    description: model.description,
   })),
-  { name: "auto-free", description: "Auto (free)" },
+  { name: "auto-free", description: "Auto (free, default)" },
+  { name: "Gemini 3.5 Flash", value: "gemini/3.5-flash", description: "Gemini model with tool calling" },
 ];
 
 const THEMES = THEME_NAMES.map(name => ({ name, description: THEME_DESCRIPTIONS[name] || name }));

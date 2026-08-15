@@ -15,7 +15,7 @@ const CMD_FIXES = [
 ];
 
 function fixCommand(cmd) {
-  let fixed = cmd;
+  let fixed = String(cmd || "").replace(/\[([^\]\s]+:\/\/[^\]\s]+)\]\(\1\)/g, "$1");
   for (const { from, to } of CMD_FIXES) {
     if (from.test(fixed)) {
       fixed = fixed.replace(from, to);

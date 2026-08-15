@@ -115,7 +115,7 @@ test("AIChat accepts a final answer after a partial tool call", async () => {
   assert.match(events.filter(event => event.type === "stream").map(event => event.token).join(""), /completed successfully/);
 });
 
-test("AIChat fails once after its incomplete tool recovery budget is exhausted", async () => {
+test("AIChat falls back to a normal answer after its incomplete tool recovery budget is exhausted", async () => {
   const registry = new Registry();
   registry.register({
     name: "write",
@@ -133,9 +133,9 @@ test("AIChat fails once after its incomplete tool recovery budget is exhausted",
   const events = [];
   for await (const event of agent.loop("Create pycompiler.py")) events.push(event);
 
-  assert.equal(requests, 3);
-  assert.equal(events.filter(event => event.type === "error").length, 1);
-  assert.equal(events.find(event => event.type === "error")?.content, "AIChat could not complete the tool call.");
+  assert.equal(requests, 6);
+  assert.equal(events.some(event => event.type === "error"), false);
+  assert.match(events.find(event => event.type === "answer")?.content || "", /could not produce a safe complete tool call/);
   assert.equal(events.some(event => event.type === "tool-call"), false);
 });
 

@@ -317,3 +317,40 @@ test("AIChat steering retries an early clarification only for a concrete URL wit
     hasTools: true, hasEvidence: true, attempt: 0,
   }), false);
 });
+
+test("AIChat caches usage checks for faster repeated Claude turns", async () => {
+  const requests = [];
+  const provider = providerWith([
+    chatPage(1), usage(100), sse("first"), sse("second"),
+  ], requests);
+  assert.equal(await provider.chat([{ role: "user", content: "one" }], {
+    model: "anthropic/claude-haiku-4-5", sessionId: "session-usage-cache",
+  }), "first");
+  assert.equal(await provider.chat([{ role: "user", content: "two" }], {
+    model: "anthropic/claude-haiku-4-5", sessionId: "session-usage-cache",
+  }), "second");
+
+  assert.equal(requests.filter(request => request.url.endsWith("/api/chat/usage")).length, 1);
+  assert.equal(requests.filter(request => request.url.endsWith("/api/chat")).length, 2);
+});
+
+test("AIChat marks retryable Claude failures without rotating sessions", async () => {
+  const requests = [];
+  const provider = providerWith([
+    chatPage(1), usage(10), {
+      ok: false,
+      status: 503,
+      statusText: "Overloaded",
+      headers: headers({ "retry-after": "2" }),
+      text: async () => "temporary overload",
+    },
+  ], requests);
+
+  await assert.rejects(
+    provider.chat([{ role: "user", content: "wait" }], {
+      model: "anthropic/claude-haiku-4-5", sessionId: "session-503",
+    }),
+    error => error.status === 503 && error.failureClass === "provider_infrastructure" && error.retryAfterMs === 2_000,
+  );
+  assert.equal(requests.filter(request => request.url === "https://aichat.test/chat").length, 1);
+});

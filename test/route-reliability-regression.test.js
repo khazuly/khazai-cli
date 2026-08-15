@@ -302,7 +302,7 @@ test("two aliases sharing one route are not treated as fallback alternatives", (
 
   const config = {
     model: "big-cock",
-    providers: { opencode: { baseURL: "https://opencode.ai/zen/v1" } },
+    providers: { opencode: { baseURL: "https://opencode.ai/zen/go/v1" } },
     providerFallback: true,
     fallbackModel: "cock",
     khazaiFreeModels: { aliases: [] },

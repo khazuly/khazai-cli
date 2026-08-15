@@ -86,6 +86,13 @@ export class StatePromptMethods {
     return value;
   }
 
+  _sanitizeToolArgs(value) {
+    if (typeof value === "string") return value.replace(/\[([^\]\s]+:\/\/[^\]\s]+)\]\(\1\)/g, "$1");
+    if (Array.isArray(value)) return value.map(entry => this._sanitizeToolArgs(entry));
+    if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, this._sanitizeToolArgs(entry)]));
+    return value;
+  }
+
   _parseToolJson(parsed) {
     if (typeof parsed === "string") {
       try { return this._parseToolJson(JSON.parse(parsed)); } catch { return null; }
@@ -98,13 +105,13 @@ export class StatePromptMethods {
       return null;
     }
     if (typeof parsed?.tool === "string" && parsed.tool.trim() && isObject(parsed.args)) {
-      const tool = { name: parsed.tool, args: parsed.args };
+      const tool = { name: parsed.tool, args: this._sanitizeToolArgs(parsed.args) };
       const id = parsed.id || parsed.tool_call_id;
       if (id) tool.id = id;
       return tool;
     }
     if (typeof parsed?.tool === "string" && parsed.tool.trim() && isObject(parsed.arguments)) {
-      return { name: parsed.tool, args: parsed.arguments };
+      return { name: parsed.tool, args: this._sanitizeToolArgs(parsed.arguments) };
     }
     if (typeof parsed?.tool === "string" && parsed.tool.trim()) {
       const registered = this._registry.get(parsed.tool);

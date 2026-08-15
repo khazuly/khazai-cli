@@ -9,6 +9,11 @@ export const MODEL_LABELS = {
     [model.key, model.displayName],
   ])),
   "auto-free": "Auto (free)",
+  "gemini/3.5-flash": "Gemini 3.5 Flash",
+  "3.5-flash": "Gemini 3.5 Flash",
+  "gemini-guest": "Gemini 3.5 Flash",
+  "gemini/3.5-flash-lite": "Gemini 3.5 Flash",
+  "3.5-flash-lite": "Gemini 3.5 Flash",
 };
 
 export function Banner({ model, workspace, agent = "build", autoApprove = false }) {

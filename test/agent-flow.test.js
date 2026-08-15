@@ -287,7 +287,7 @@ test("Big Pickle prompt keeps KhazAI branding and composes exact environment met
   const system = agent._buildSystem();
 
   assert.match(system, /You are KhazAI, an interactive CLI agent/);
-  assert.match(system, /powered by the model opencode\/big-pickle/);
+  assert.match(system, /powered by the model opencode\/gpt-5.6-luna/);
   assert.match(system, new RegExp(`Working directory: ${workspace.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(system, new RegExp(`Worktree: ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(system, /Is directory a git repo: yes/);

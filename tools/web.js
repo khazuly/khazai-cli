@@ -14,7 +14,7 @@ import { extractByTag, extractLinks, extractMeta, htmlToText, primaryContent, st
 export { htmlToText } from "./web-content.js";
 
 export function normalizeUrl(value) {
-  let input = String(value || "").trim();
+  let input = String(value || "").trim().replace(/^\[([^\]\s]+:\/\/[^\]\s]+)\]\(\1\)$/i, "$1");
   if (!input || /\s/.test(input)) throw new Error("Invalid URL");
   if (input.startsWith("//")) input = `https:${input}`;
   if (!/^[a-z][a-z0-9+.-]*:/i.test(input)) input = `https://${input}`;

@@ -18,7 +18,7 @@ test("prompt families follow OpenCode's model-based routing while preserving Kha
   assert.equal(promptFamily("codex/gpt-5.6-terra"), "gpt");
   assert.equal(promptFamily("anthropic/claude-sonnet"), "anthropic");
   assert.equal(promptFamily("google/gemini-3-pro"), "gemini");
-  assert.equal(promptFamily("opencode/big-pickle"), "default");
+  assert.equal(promptFamily("opencode/gpt-5.6-luna"), "default");
   const codex = getProviderPrompt("codex/gpt-5.3-codex");
   const gpt = getProviderPrompt("codex/gpt-5.6-terra");
   assert.match(codex, /You are KhazAI/);

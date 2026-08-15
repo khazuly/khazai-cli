@@ -227,3 +227,15 @@ test("one write advances only overlapping requirements proven by source", () => 
   assert.equal(mutationSatisfiesPlanItem(tool, "Create unit test cases"), false);
   assert.equal(mutationSatisfiesPlanItem(tool, "Create README.md documentation"), false);
 });
+
+test("tool parser unwraps markdown-link URLs in tool arguments", () => {
+  const registry = new Registry();
+  registry.register({
+    name: "webfetch",
+    description: "Fetch URL",
+    parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    async execute() { return ""; },
+  });
+  const parsed = new Agent(registry)._extractTool('{"tool":"webfetch","args":{"url":"[https://aichat.org](https://aichat.org)"}}');
+  assert.deepEqual(parsed.tool, { name: "webfetch", args: { url: "https://aichat.org" } });
+});

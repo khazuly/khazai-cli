@@ -218,6 +218,7 @@ export function Session({ workspace, mcpManager = null, initialMcpTools = [], te
       loginCodex,
       lspStatus,
       manageMcpCommand,
+      mcpManager,
       mcpToolsRef,
       messageQueueRef,
       pendingQuestion,

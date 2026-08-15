@@ -238,7 +238,9 @@ export class LoopMethods {
         yield scoped({ type: "stream-discard" }); for (const lifecyclePart of this._lifecycle.finishStep("partial-tool-call")) yield scoped({ type: "tool-part", part: lifecyclePart });
         yield scoped({ type: "provider-diagnostic", diagnostic: partialRecovery.diagnostic });
         if (partialRecovery.terminal) {
-          this._finishLatency(); if (finalizeRun()) yield scoped({ type: "error", content: "AIChat could not complete the tool call." }); return;
+          this._finishLatency();
+          if (finalizeRun()) yield scoped({ type: "answer", content: partialRecovery.answer || "I could not produce a safe complete tool call for this request." });
+          return;
         }
         continue;
       }

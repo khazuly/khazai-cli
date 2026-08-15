@@ -87,7 +87,7 @@ export class SessionStore {
     return join(this.directory, `${id}.json`);
   }
 
-  create({ title = "New session", model = "big-cock", agent = "build" } = {}) {
+  create({ title = "New session", model = "auto-free", agent = "build" } = {}) {
     const now = new Date().toISOString();
     const session = {
       version: 6,

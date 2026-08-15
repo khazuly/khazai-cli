@@ -32,6 +32,13 @@ test("Big Cock reuses the OpenCode Zen credential when it exists", () => {
   assert.equal(getOpenCodeCredential(path), "zen-key");
 });
 
+test("OpenCode auth content is reused without exporting an API key", () => {
+  const environment = {
+    OPENCODE_AUTH_CONTENT: JSON.stringify({ opencode: { type: "api", key: "inherited-zen-key" } }),
+  };
+  assert.equal(getOpenCodeCredential("/missing/auth.json", environment), "inherited-zen-key");
+});
+
 test("session lists only include sessions from the current workspace", () => {
   const root = mkdtempSync(join(tmpdir(), "khazai-workspace-sessions-"));
   const data = join(root, "data");
@@ -127,7 +134,7 @@ test("shared provider retry discards failed attempt deltas and preserves context
     },
   };
   const result = await chatWithRetry(provider, messages, {
-    model: "big-pickle",
+    model: "gpt-5.6-luna",
     runId: "run-1",
     turnId: "turn-1",
     onEvent: event => seen.push(event),
@@ -151,7 +158,7 @@ test("shared provider retry exhausts once and cancellation stops backoff", async
   };
   let exhausted;
   try {
-    await chatWithRetry(provider, [], { model: "big-pickle" }, 3);
+    await chatWithRetry(provider, [], { model: "gpt-5.6-luna" }, 3);
   } catch (error) {
     exhausted = error;
   }
@@ -170,7 +177,7 @@ test("shared provider retry exhausts once and cancellation stops backoff", async
     },
   };
   await assert.rejects(
-    chatWithRetry(cancelling, [], { model: "big-pickle", signal: controller.signal }, 3),
+    chatWithRetry(cancelling, [], { model: "gpt-5.6-luna", signal: controller.signal }, 3),
     /Cancelled/,
   );
   assert.equal(calls, 1);

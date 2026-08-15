@@ -1,5 +1,5 @@
 export const DEFAULTS = {
-  model: "big-cock",
+  model: "auto-free",
   theme: "system",
   providers: {},
   models: {},

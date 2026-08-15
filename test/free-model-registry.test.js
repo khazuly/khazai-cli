@@ -117,7 +117,7 @@ test("Existing sessions using stealth aliases resume correctly and report canoni
   assert.equal(descriptor.providerID, "khazai-free");
   assert.equal(descriptor.exactID, "deepseek/deepseek-v4-flash-free");
   assert.equal(canonicalModelKey("boboiboy"), "deepseek/deepseek-v4-flash-free");
-  assert.equal(publicModelName("komodo"), "mimo/mimo-v2.5-free");
+  assert.equal(publicModelName("komodo"), "mimo-v2.5-free");
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENCODE_API_KEY;
   delete process.env.OPENCODE_API_KEY;
@@ -160,7 +160,7 @@ test("Model settings remain attached to the correct canonical key after migratio
       "boboiboy": { temperature: 0.9 },
     },
     models: {
-      "opencode/north-mini-code-free": { contextLimit: 5000 },
+      "opencode/nemotron-3-ultra-free": { contextLimit: 5000 },
     },
   });
   assert.equal(migrated.model, "big-cock", "legacy active model name migrates to big-cock");
@@ -174,7 +174,7 @@ test("Model settings remain attached to the correct canonical key after migratio
     tools: false,
   }, "legacy settings merge into one canonical entry");
   assert.ok(!migrated.modelSettings["opencode-zen/deepseek-v4-flash-free"], "no duplicate entry remains");
-  assert.deepEqual(migrated.models["north/north-mini-code-free"], { contextLimit: 5000 });
+  assert.deepEqual(migrated.models["nemotron/nemotron-3-ultra-free"], { contextLimit: 5000 });
   assert.equal(Object.keys(migrated.modelSettings).length, 1);
 });
 
@@ -206,16 +206,17 @@ test("modelDetails resolves by canonical key and display name", async () => {
   await withDiscovery([], async () => {
     const byKey = await modelDetails("deepseek/deepseek-v4-flash-free");
     assert.ok(byKey, "canonical key resolves");
-    assert.match(byKey, /deepseek\/deepseek-v4-flash-free/);
+    assert.match(byKey, /deepseek-v4-flash-free/);
     const byLegacy = await modelDetails("boboiboy");
     assert.ok(byLegacy, "legacy alias still resolves");
-    assert.match(byLegacy, /deepseek\/deepseek-v4-flash-free/);
+    assert.match(byLegacy, /deepseek-v4-flash-free/);
   });
 });
 
 test("sanitizePublicBranding hides upstream identifiers", () => {
   const output = sanitizePublicBranding("opencode-zen/deepseek-v4-flash-free and opencode/big-pickle");
   assert.match(output, /deepseek\/deepseek-v4-flash-free/);
+  assert.match(output, /Big Cock/);
   assert.doesNotMatch(output, /opencode-zen|opencode\//i);
 });
 
@@ -241,7 +242,7 @@ test("stored sessions migrate stealth aliases to canonical names without losing 
   assert.equal(migrated.model, "deepseek/deepseek-v4-flash-free");
   assert.equal(migrated.agentState.model, "mimo/mimo-v2.5-free");
   assert.equal(migrated.turns[0].agentStateBefore.model, "laguna/laguna-s-2.1-free");
-  assert.equal(migrated.turns[0].agentStateAfter.model, "ling/ling-3.0-flash-free");
+  assert.equal(migrated.turns[0].agentStateAfter.model, "hy3/hy3-free");
   assert.equal(migrated.id, "session-9");
   assert.equal(migrated.agent, "build");
   assert.equal(migrated.messages.length, 1);

@@ -4,83 +4,74 @@ export const KHAZAI_FREE_PROVIDER_NAME = "KhazAI";
 export const KHAZAI_AUTO_FREE_NAME = "KhazAI Auto Free";
 export const KHAZAI_FREE_MODEL_CATEGORY = "KhazAI Free Models";
 
+const TOOL_REASONING_CAPABILITIES = {
+  streaming: true,
+  tools: true,
+  reasoning: true,
+  usage: false,
+  contextLimit: null,
+  temperature: true,
+  topP: true,
+  maxOutputTokens: true,
+  parallelTools: true,
+  toolChoice: false,
+  reasoningEffort: false,
+};
+
+const TOOL_CAPABILITIES = {
+  ...TOOL_REASONING_CAPABILITIES,
+  reasoning: false,
+};
+
 const MODELS = [
   {
     alias: "big-cock",
     publicName: "Big Cock",
     upstreamModel: "big-pickle",
     description: "General coding",
-    capabilities: {
-      streaming: true, tools: true, reasoning: true, usage: true, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: { ...TOOL_REASONING_CAPABILITIES, usage: true },
   },
   {
     alias: "boboiboy",
     publicName: "deepseek/deepseek-v4-flash-free",
     upstreamModel: "deepseek-v4-flash-free",
     description: "Advanced reasoning and coding",
-    capabilities: {
-      streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_REASONING_CAPABILITIES,
   },
   {
     alias: "komodo",
     publicName: "mimo/mimo-v2.5-free",
     upstreamModel: "mimo-v2.5-free",
     description: "Fast coding assistant",
-    capabilities: {
-      streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_REASONING_CAPABILITIES,
   },
   {
     alias: "ombak",
     publicName: "laguna/laguna-s-2.1-free",
     upstreamModel: "laguna-s-2.1-free",
     description: "Balanced coding model",
-    capabilities: {
-      streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_CAPABILITIES,
   },
   {
     alias: "petir",
-    publicName: "ling/ling-3.0-flash-free",
-    upstreamModel: "ling-3.0-flash-free",
+    publicName: "hy3/hy3-free",
+    upstreamModel: "hy3-free",
     description: "Lightweight and fast",
-    capabilities: {
-      streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_CAPABILITIES,
   },
   {
     alias: "kutub",
-    publicName: "north/north-mini-code-free",
-    upstreamModel: "north-mini-code-free",
+    publicName: "nemotron/nemotron-3-ultra-free",
+    upstreamModel: "nemotron-3-ultra-free",
     description: "Compact coding model",
-    capabilities: {
-      streaming: true, tools: true, reasoning: false, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_CAPABILITIES,
   },
   {
     alias: "mecha",
-    publicName: "nemotron/nemotron-3-ultra-free",
-    upstreamModel: "nemotron-3-ultra-free",
+    publicName: "nemotron/nemotron-3.5-lightning-free",
+    upstreamModel: "nemotron-3.5-lightning-free",
     description: "Tool-capable reasoning model",
-    capabilities: {
-      streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: true, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
-    },
+    capabilities: TOOL_REASONING_CAPABILITIES,
   },
   {
     alias: "auto-free",
@@ -89,9 +80,17 @@ const MODELS = [
     routing: true,
     description: "Automatic routing across healthy free models",
     capabilities: {
-      streaming: true, tools: true, reasoning: true, usage: false, contextLimit: null,
-      temperature: true, topP: false, maxOutputTokens: true, parallelTools: true,
-      toolChoice: false, reasoningEffort: false,
+      streaming: true,
+      tools: true,
+      reasoning: true,
+      usage: false,
+      contextLimit: null,
+      temperature: true,
+      topP: false,
+      maxOutputTokens: true,
+      parallelTools: true,
+      toolChoice: false,
+      reasoningEffort: false,
     },
   },
 ];
@@ -99,6 +98,12 @@ const MODELS = [
 function validAlias(value) {
   const alias = String(value || "").trim().toLowerCase();
   return /^[a-z0-9][a-z0-9-]{1,31}$/.test(alias) ? alias : null;
+}
+
+export function shortModelName(value) {
+  const name = String(value || "").trim();
+  const separator = name.indexOf("/");
+  return separator > 0 && separator < name.length - 1 ? name.slice(separator + 1) : name;
 }
 
 export function zenModels(config = {}) {
@@ -116,7 +121,7 @@ export function zenModels(config = {}) {
       id: alias,
       alias,
       publicName,
-      displayName: publicName,
+      displayName: shortModelName(publicName),
       key: model.alias === "big-cock" || !model.upstreamModel ? model.alias : publicName,
       provider: model.provider || "khazai-free",
       transportAdapter: "openai-compatible",
@@ -143,7 +148,7 @@ export function resolveZenModel(value, config = {}) {
       || requested === publicKey
       || requested === normalizedPublic
       || requested === MODELS.find(entry => entry.upstreamModel === model.upstreamModel)?.alias
-      || requested === "cock" && model.upstreamModel === "big-pickle";
+      || requested === "cock" && model.alias === "big-cock";
   }) || null;
 }
 
@@ -164,7 +169,7 @@ export function legacyModelKeys(value, config = {}) {
 
 export function publicModelName(value, config = {}) {
   const model = resolveZenModel(value, config);
-  return model?.publicName || String(value || "");
+  return model?.displayName || shortModelName(value);
 }
 
 export function sanitizePublicBranding(value, config = {}) {
@@ -190,16 +195,17 @@ export function sanitizePublicBranding(value, config = {}) {
 
 export function sanitizePublicSerializable(value, config = {}) {
   if (typeof value === "string") return sanitizePublicBranding(value, config);
-  if (Array.isArray(value)) return value.map(entry => sanitizePublicSerializable(entry, config));
+  if (Array.isArray(value)) return value.map(item => sanitizePublicSerializable(item, config));
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-    sanitizePublicBranding(key, config),
-    sanitizePublicSerializable(entry, config),
-  ]));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, sanitizePublicSerializable(entry, config)]),
+  );
 }
 
 export function zenUpstreamIds(config = {}) {
-  return zenModels(config)
-    .map(model => model.upstreamModel)
-    .filter(Boolean);
+  return zenModels(config).filter(model => model.upstreamModel).map(model => model.upstreamModel);
+}
+
+export function zenModelAliases(config = {}) {
+  return zenModels(config).map(model => model.alias);
 }
